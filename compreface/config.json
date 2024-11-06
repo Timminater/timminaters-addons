@@ -1,6 +1,6 @@
 {
   "name": "Exadel CompreFace",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "url": "https://github.com/exadel-inc/CompreFace",
   "slug": "compreface",
   "description": "Exadel CompreFace is a leading free and open-source face recognition system",
@@ -16,7 +16,7 @@
   "options": {
     "POSTGRES_URL": "jdbc:postgresql://localhost:5432/frs",
     "POSTGRES_USER": "compreface",
-    "POSTGRES_PASSWORD": "M7yfTsBscdqvZs49",
+    "POSTGRES_PASSWORD": "compreface",
     "POSTGRES_DB": "frs",
     "API_JAVA_OPTS": "-Xmx1g"
   },

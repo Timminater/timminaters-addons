@@ -1,21 +1,21 @@
 {
-  "name": "double-take-hassio-addons",
+  "name": "timminaters-hassio-addons",
   "version": "1.0.0",
-  "description": "Double Take Hass.io Add-ons",
+  "description": "Timminaters Hass.io Add-ons",
   "scripts": {
     "prepare": "husky install"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jakowenko/double-take-hassio-addons.git"
+    "url": "git+https://github.com/Timminater/timminaters-hassio-addons.git"
   },
   "keywords": [],
-  "author": "David Jakowenko",
+  "author": "Timminater",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/jakowenko/double-take-hassio-addons/issues"
+    "url": "https://github.com/Timminater/timminaters-hassio-addons/issues"
   },
-  "homepage": "https://github.com/jakowenko/double-take-hassio-addons#readme",
+  "homepage": "https://github.com/Timminater/timminatersv-hassio-addons#readme",
   "devDependencies": {
     "@commitlint/cli": "^13.2.1",
     "@commitlint/config-conventional": "^13.2.0",

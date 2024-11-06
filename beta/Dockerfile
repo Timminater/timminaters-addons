@@ -1,1 +1,0 @@
-FROM jakowenko/double-take:beta
