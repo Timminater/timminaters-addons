@@ -6,4 +6,9 @@
 
 ### [CompreFace](./compreface)
 
-![amd64][amd64-shield]
+
+
+## Media Add-ons
+
+### [Samsung the frame changer](./homeassistant-samsung-frame-art)
+
