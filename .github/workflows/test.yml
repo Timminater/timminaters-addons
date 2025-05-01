@@ -1,0 +1,19 @@
+name: "Test"
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build:
+    name: Test build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v4
+      - name: Test build
+        uses: home-assistant/builder@master
+        with:
+          args: |
+            --test \
+            --all \
+            --target /data/homeassistant-samsung-frametv-artchanger \
+            --docker-hub timminater
