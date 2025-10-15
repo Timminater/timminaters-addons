@@ -27,7 +27,9 @@ parser.add_argument('--debugimage', action='store_true', help='Save downloaded a
 args = parser.parse_args()
 
 # Set the path to the file that will store the list of uploaded filenames
-upload_list_path = 'uploaded_files.json'
+DATA_DIR = '/data'
+os.makedirs(DATA_DIR, exist_ok=True)
+upload_list_path = os.path.join(DATA_DIR, 'uploaded_files.json')
 
 # Load the list of uploaded filenames from the file
 if os.path.isfile(upload_list_path):
@@ -122,8 +124,42 @@ def save_debug_image(image_data: BytesIO, filename: str) -> None:
 
 if tvip:
     if len(tvip) > 1 and use_same_image:
-        image_data, file_type, image_url, remote_filename, source_name = get_image_for_tv(None)
+        selected_source = random.choice(sources)
+        logging.info(f'Selected source: {selected_source.__name__}')
+
+        image_url = selected_source.get_image_url(args)
+        if not image_url:
+            logging.error('No image URL available for same-image mode.')
+            sys.exit(1)
+
+        source_name = selected_source.__name__
+        remote_filenames = {}
+        upload_targets = []
+
         for tv_ip in tvip:
+            remote = utils.get_remote_filename(image_url, source_name, tv_ip)
+            if remote:
+                remote_filenames[tv_ip] = remote
+            else:
+                upload_targets.append(tv_ip)
+
+        image_data = None
+        file_type = None
+        if upload_targets:
+            original_image_data, file_type = selected_source.get_image(args, image_url)
+            if original_image_data is None:
+                logging.error('Failed to retrieve image data for same-image mode.')
+                sys.exit(1)
+
+            save_debug_image(original_image_data, f'debug_{source_name}_original.jpg')
+
+            logging.info('Resizing and cropping the image...')
+            image_data = utils.resize_and_crop_image(original_image_data)
+
+            save_debug_image(image_data, f'debug_{source_name}_resized.jpg')
+
+        for tv_ip in tvip:
+            remote_filename = remote_filenames.get(tv_ip)
             process_tv(tv_ip, image_data, file_type, image_url, remote_filename, source_name)
     else:
         for tv_ip in tvip:
