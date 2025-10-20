@@ -9,6 +9,7 @@ import random
 sys.path.append('../')
 
 from samsungtvws import SamsungTVWS
+from samsungtvws.exceptions import ResponseError
 from sources import bing_wallpapers, google_art, media_folder
 from utils.utils import Utils
 
@@ -27,8 +28,22 @@ parser.add_argument('--debugimage', action='store_true', help='Save downloaded a
 args = parser.parse_args()
 
 # Set the path to the file that will store the list of uploaded filenames
-DATA_DIR = '/data'
-os.makedirs(DATA_DIR, exist_ok=True)
+PREFERRED_DIR = '/share/SamsungFrameTVArtChanger'
+FALLBACK_DIR = '/data'
+
+
+def ensure_upload_dir() -> str:
+    for path in (PREFERRED_DIR, FALLBACK_DIR):
+        try:
+            os.makedirs(path, exist_ok=True)
+            return path
+        except OSError as err:
+            logging.warning(f'Could not create directory {path}: {err}')
+    logging.error('No writable directory available for upload list. Using current working directory.')
+    return '.'
+
+
+DATA_DIR = ensure_upload_dir()
 upload_list_path = os.path.join(DATA_DIR, 'uploaded_files.json')
 
 # Load the list of uploaded filenames from the file
@@ -53,45 +68,120 @@ if not sources:
     logging.error('No image source specified. Please use --google-art, --bing-wallpapers, or --media-folder')
     sys.exit(1)
 
+source_lookup = {
+    bing_wallpapers.__name__: bing_wallpapers,
+    google_art.__name__: google_art,
+    media_folder.__name__: media_folder,
+}
+
 tvip = args.tvip.split(',') if args.tvip else []
 use_same_image = args.same_image
 
 utils = Utils(args.tvip, uploaded_files)
 
+
+def remove_uploaded_entry(image_url: str, source_name: str, tv_ip: str) -> None:
+    target_ip = tv_ip if len(tvip) > 1 else None
+    original_len = len(uploaded_files)
+    uploaded_files[:] = [
+        entry for entry in uploaded_files
+        if not (
+            entry.get('file') == image_url
+            and entry.get('source') == source_name
+            and entry.get('tv_ip') == target_ip
+        )
+    ]
+    if len(uploaded_files) != original_len:
+        with open(upload_list_path, 'w') as f:
+            json.dump(uploaded_files, f)
+
+
+def ensure_image_data(
+    image_data: BytesIO,
+    file_type: str,
+    source_name: str,
+    image_url: str
+):
+    if image_data is not None and file_type is not None:
+        return image_data, file_type
+
+    source_module = source_lookup.get(source_name)
+    if source_module is None:
+        logging.error(f'Unknown source "{source_name}", cannot retrieve image data.')
+        return None, None
+
+    original_image_data, retrieved_file_type = source_module.get_image(args, image_url)
+    if original_image_data is None:
+        logging.error(f'Failed to retrieve image data from {source_name} for {image_url}')
+        return None, None
+
+    save_debug_image(original_image_data, f'debug_{source_name}_original.jpg')
+
+    logging.info('Resizing and cropping the image...')
+    resized_image_data = utils.resize_and_crop_image(original_image_data)
+
+    save_debug_image(resized_image_data, f'debug_{source_name}_resized.jpg')
+
+    return resized_image_data, retrieved_file_type
+
 def process_tv(tv_ip: str, image_data: BytesIO, file_type: str, image_url: str, remote_filename: str, source_name: str):
     tv = SamsungTVWS(tv_ip)
-    
+
     # Check if TV supports art mode
     if not tv.art().supported():
         logging.warning(f'TV at {tv_ip} does not support art mode.')
         return
 
-    if remote_filename is None:
-        try:
-            logging.info(f'Uploading image to TV at {tv_ip}')
-            remote_filename = tv.art().upload(image_data.getvalue(), file_type=file_type, matte="none")
-            if remote_filename is None:
-                raise Exception('No remote filename returned')
+    needs_upload = remote_filename is None or args.upload_all
 
-            tv.art().select_image(remote_filename, show=True)
-            logging.info(f'Image uploaded and selected on TV at {tv_ip}')
-            # Add the filename to the list of uploaded filenames
-            uploaded_files.append({
-                'file': image_url,
-                'remote_filename': remote_filename,
-                'tv_ip': tv_ip if len(tvip) > 1 else None,
-                'source': source_name
-            })
-            # Save the list of uploaded filenames to the file
-            with open(upload_list_path, 'w') as f:
-                json.dump(uploaded_files, f)
-        except Exception as e:
-            logging.error(f'There was an error uploading the image to TV at {tv_ip}: ' + str(e))
-    else:
-        if not args.upload_all:
-            # Select the image using the remote file name only if not in 'upload-all' mode
+    if remote_filename is not None and not args.upload_all:
+        try:
             logging.info(f'Setting existing image on TV at {tv_ip}, skipping upload')
             tv.art().select_image(remote_filename, show=True)
+            return
+        except ResponseError as err:
+            logging.warning(f'Existing image on TV at {tv_ip} unavailable, re-uploading: {err}')
+            remove_uploaded_entry(image_url, source_name, tv_ip)
+            needs_upload = True
+            remote_filename = None
+        except Exception as err:
+            logging.warning(f'Failed to select existing image on TV at {tv_ip}, re-uploading: {err}')
+            remove_uploaded_entry(image_url, source_name, tv_ip)
+            needs_upload = True
+            remote_filename = None
+
+    if not needs_upload:
+        return
+
+    image_data, file_type = ensure_image_data(image_data, file_type, source_name, image_url)
+    if image_data is None or file_type is None:
+        logging.error(f'Unable to prepare image data for TV at {tv_ip}, skipping upload.')
+        return
+
+    # Remove stale entry before uploading a new copy
+    if remote_filename is not None:
+        remove_uploaded_entry(image_url, source_name, tv_ip)
+
+    try:
+        logging.info(f'Uploading image to TV at {tv_ip}')
+        remote_filename = tv.art().upload(image_data.getvalue(), file_type=file_type, matte="none")
+        if remote_filename is None:
+            raise Exception('No remote filename returned')
+
+        tv.art().select_image(remote_filename, show=True)
+        logging.info(f'Image uploaded and selected on TV at {tv_ip}')
+        # Add the filename to the list of uploaded filenames
+        uploaded_files.append({
+            'file': image_url,
+            'remote_filename': remote_filename,
+            'tv_ip': tv_ip if len(tvip) > 1 else None,
+            'source': source_name
+        })
+        # Save the list of uploaded filenames to the file
+        with open(upload_list_path, 'w') as f:
+            json.dump(uploaded_files, f)
+    except Exception as e:
+        logging.error(f'There was an error uploading the image to TV at {tv_ip}: {e}')
 
 def get_image_for_tv(tv_ip: str):
     selected_source = random.choice(sources)
