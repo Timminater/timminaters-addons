@@ -10,7 +10,16 @@ class Utils:
 
     @staticmethod
     def resize_and_crop_image(image_data, target_width=3840, target_height=2160):
+        try:
+            image_data.seek(0)
+        except (AttributeError, OSError):
+            pass
+
         with Image.open(image_data) as img:
+            if img.mode not in ('RGB', 'L'):
+                # JPEG can't handle palette/alpha modes; normalize to RGB
+                img = img.convert('RGB')
+
             # Calculate the aspect ratio
             img_ratio = img.width / img.height
             target_ratio = target_width / target_height
@@ -38,6 +47,8 @@ class Utils:
 
             # Save the processed image to a BytesIO object
             output = BytesIO()
+            if img.mode not in ('RGB', 'L'):
+                img = img.convert('RGB')
             img.save(output, format='JPEG', quality=90)
             output.seek(0)
             return output
