@@ -1,0 +1,13 @@
+{
+  "assets": {},
+  "last_refresh": "2026-02-23T21:31:30.798403+00:00",
+  "schema_version": 1,
+  "tv_status": {
+    "192.168.10.170": {
+      "active_content_id": "SAM-F0222",
+      "error": null,
+      "online": true,
+      "supported": true
+    }
+  }
+}

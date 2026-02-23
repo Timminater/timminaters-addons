@@ -1,25 +1,19 @@
 # Samsung Frame TV Art Changer add-on for Home Assistant
 
-![TV with some art on it ](https://i.imgur.com/BunHdwb.jpeg)
+This add-on now runs as a continuous web service with a Home Assistant Ingress interface.
 
-This add-on is built on the awesome work of <https://github.com/ow/samsung-frame-art> and <https://github.com/gijsvdhoven/homeassistant-addons>. 
-It adds the ability to push images from different sources to your Samsung Frame TV, currently supported are Google Art and Culture, Bing Wallpapers and Local Media folder. 
+## Features
 
-By starting the add-on it will randomly pick an image based on your configuration and put it on your frame; after the image is placed the add-on will automatically stop again. This for instance can be triggered via an automation to run on a daily basis. Please find an example below.
-
-If multiple sources are enabled it will randomly choose a source on each run. 
-
-# Google Art
-By default the addon configuration has "Google Art" mode enabled which instead of taking images from the "media" folder takes random images from the Google Arts and Culture site and pushes it to the Samsung Frame TV. 
-
-# Bing Wallpaper
-The addon now also supports "Bing Wallpapers" mode, which allows you to display random high-quality wallpapers from Bing on your Samsung Frame TV.
-
-# Local Media Folder
-Looks for images in the /media/frame folder and randomly pushes an image to your Samsung Frame TV. When you start the addon for the first time it creates a specific directory in Media called "frame" where you can place your custom images.
-
-Please note you must upload pictures with a lower-case extension and only .png and .jpg are supported.
-
+- Ingress web gallery for `/media/frame` images.
+- Sync flags for Home Assistant vs TV availability.
+- Upload with interactive crop and fixed export resolution `3840x2160`.
+- Per-image actions:
+  - Set active on selected TV(s)
+  - Delete on TV, Home Assistant, or both
+- Automation endpoint for random art selection:
+  - Picks a random local gallery item
+  - Uploads to TV if missing
+  - Activates it on selected TV(s)
 
 ## Installation
 
@@ -27,35 +21,51 @@ Install this addon by adding the repository:
 
 [![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fvivalatech%2Fhomeassistant-addons)
 
-
 ## Configuration Options
 
-1. **IP Address**: Set the IP address of your Samsung The Frame TV.
-2. **Google Art**: Enable to use random images from Google Arts and Culture.
-3. **Bing Wallpapers**: Enable to use random high-quality wallpapers from Bing.
-4. **High Res**: (For Google Art only) Enable to get high-resolution images using dezoomify.
+1. `tv`: Comma-separated list of Samsung The Frame TV IP addresses.
+2. `automation_token`: Bearer token required for `POST /api/automation/random`.
 
+## UI Access
 
-## Example Automation
+Open the add-on and click **Open Web UI**. The UI is exposed through Home Assistant Ingress only.
 
-Here's an example of how to set up an automation to change the image daily at 23:00:
+## Automation: Random Art Trigger
+
+The old `hassio.addon_start` random-flow is deprecated in v2.
+Use a REST call to the add-on endpoint instead.
+
+Example Home Assistant configuration:
 
 ```yaml
-description: "Change Samsung Frame TV Art Daily"
+rest_command:
+  frame_random_art:
+    url: "http://a0d7b954-hass-frametv-artchanger:8099/api/automation/random"
+    method: POST
+    headers:
+      Authorization: "Bearer YOUR_AUTOMATION_TOKEN"
+      Content-Type: "application/json"
+    payload: >-
+      {
+        "tv_ips": ["192.168.1.199"],
+        "ensure_upload": true,
+        "activate": true
+      }
+```
+
+Example automation:
+
+```yaml
+description: "Random Frame Art"
 mode: single
 trigger:
   - platform: time
     at: "23:00:00"
-condition: []
 action:
-  - service: hassio.addon_start
-    data:
-      addon: local_hass-frametv-artchanger
+  - service: rest_command.frame_random_art
 ```
 
-## TODO
+## Migration Notes
 
-Here's some ideas for stuff to implement
-- [ ] Delete old N images on TV, e.g. configurable to keep last 100 uploaded images and delete an older image everytime a new one is uploaded
-- [ ] More sources, especially something for high res contemporary art would be awesome or other curated sources
-- [ ] Dashboard card that shows currently active art and maybe allows selection of other art
+- Existing `/media/frame` images are indexed automatically.
+- Legacy `uploaded_files.json` entries are migrated automatically on startup.

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Frame TV Art Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="./static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape bg-shape-a"></div>
+    <div class="bg-shape bg-shape-b"></div>
+
+    <main class="layout">
+      <header class="topbar">
+        <div>
+          <h1>Frame Art Gallery</h1>
+          <p>Beheer TV- en Home Assistant-art in een workflow.</p>
+        </div>
+        <div class="toolbar">
+          <select id="filterSelect">
+            <option value="all">Alles</option>
+            <option value="tv">Alleen TV</option>
+            <option value="ha">Alleen HA</option>
+            <option value="synced">Gesynchroniseerd</option>
+            <option value="unsynced">Niet gesynchroniseerd</option>
+          </select>
+          <button id="refreshBtn" class="btn secondary">Refresh</button>
+          <button id="openUploadBtn" class="btn primary">Upload</button>
+        </div>
+      </header>
+
+      <section class="tv-panel" id="tvPanel"></section>
+
+      <section class="gallery" id="gallery"></section>
+    </main>
+
+    <dialog id="uploadDialog" class="upload-dialog">
+      <form method="dialog" id="uploadForm">
+        <h2>Upload en crop</h2>
+        <label class="file-input">
+          <span>Kies afbeelding (.jpg/.png)</span>
+          <input type="file" id="fileInput" accept="image/png,image/jpeg" required />
+        </label>
+
+        <div class="crop-wrap" id="cropWrap">
+          <img id="cropImage" alt="Crop preview" draggable="false" />
+        </div>
+
+        <div class="crop-controls">
+          <label>Zoom <input id="zoomInput" type="range" min="1" max="4" step="0.01" value="1" /></label>
+          <label>Activeer na upload <input id="activateInput" type="checkbox" checked /></label>
+          <label>TV IPs (comma-separated) <input id="uploadTvIps" type="text" placeholder="leeg = alle TVs" /></label>
+        </div>
+
+        <menu>
+          <button value="cancel" class="btn secondary">Annuleren</button>
+          <button id="confirmUploadBtn" value="default" class="btn primary" type="submit">Upload</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <template id="cardTemplate">
+      <article class="card">
+        <div class="thumb-wrap">
+          <span class="sync-flag" hidden>SYNC</span>
+          <img class="thumb" alt="Gallery image" />
+        </div>
+        <div class="card-body">
+          <div class="meta">
+            <strong class="name"></strong>
+            <div class="badges"></div>
+          </div>
+          <div class="actions">
+            <button class="btn tiny activate-btn">Actief maken</button>
+            <button class="btn tiny danger delete-btn">Verwijderen</button>
+          </div>
+        </div>
+      </article>
+    </template>
+
+    <script src="./static/app.js"></script>
+  </body>
+</html>
