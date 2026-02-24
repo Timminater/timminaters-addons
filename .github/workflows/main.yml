@@ -30,7 +30,5 @@ jobs:
           args: |
             --aarch64 \
             --amd64 \
-            --armv7 \
-            --i386 \
             --target /data/homeassistant-samsung-frametv-artchanger \
             --docker-hub timminater \
