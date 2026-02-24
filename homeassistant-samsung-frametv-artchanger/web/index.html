@@ -27,6 +27,11 @@
             <option value="synced">Gesynchroniseerd</option>
             <option value="unsynced">Niet gesynchroniseerd</option>
           </select>
+          <div id="statusIndicator" class="status-indicator status-unknown" title="Status laden...">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="statusLabel">Status</span>
+          </div>
+          <button id="openSettingsBtn" class="btn secondary">Instellingen</button>
           <button id="refreshBtn" class="btn secondary">Refresh</button>
           <button id="openUploadBtn" class="btn primary">Upload</button>
         </div>
@@ -47,26 +52,126 @@
 
         <div class="crop-wrap" id="cropWrap">
           <img id="cropImage" alt="Crop preview" draggable="false" />
+          <div class="crop-bounds" id="cropBounds" aria-hidden="true"></div>
         </div>
 
         <div class="crop-controls">
-          <label>Zoom <input id="zoomInput" type="range" min="1" max="4" step="0.01" value="1" /></label>
-          <label>Activeer na upload <input id="activateInput" type="checkbox" checked /></label>
-          <label>TV IPs (comma-separated) <input id="uploadTvIps" type="text" placeholder="leeg = alle TVs" /></label>
+          <label class="slider-control">
+            <span class="slider-head"><span>Zoom</span><span id="zoomValue">1.00x</span></span>
+            <input id="zoomInput" type="range" min="1" max="4" step="0.01" value="1" />
+          </label>
+          <label class="slider-control">
+            <span class="slider-head"><span>Rotatie</span><span id="rotationValue">0&deg;</span></span>
+            <input id="rotationInput" type="range" min="-45" max="45" step="1" value="0" />
+          </label>
+          <label class="action-control">
+            <span>&nbsp;</span>
+            <div class="crop-action-buttons">
+              <button id="rotate90Btn" type="button" class="btn secondary icon-btn" title="Roteer 90 graden" aria-label="Roteer 90 graden">
+                &#8635;
+              </button>
+              <button id="flipHorizontalBtn" type="button" class="btn secondary icon-btn" title="Spiegel horizontaal" aria-label="Spiegel horizontaal" aria-pressed="false">
+                &#8644;
+              </button>
+            </div>
+          </label>
         </div>
+        <fieldset class="target-choice">
+          <legend class="section-label">Upload naar TV's</legend>
+          <div id="uploadTvList" class="upload-tv-list"></div>
+        </fieldset>
 
         <menu>
-          <button value="cancel" class="btn secondary">Annuleren</button>
+          <button id="cancelUploadBtn" type="button" class="btn secondary">Annuleren</button>
+          <button id="confirmUploadActivateBtn" value="default" class="btn primary" type="submit">Upload en activeer</button>
           <button id="confirmUploadBtn" value="default" class="btn primary" type="submit">Upload</button>
         </menu>
       </form>
     </dialog>
+
+    <dialog id="settingsDialog" class="simple-dialog">
+      <form method="dialog" id="settingsForm">
+        <h2>Instellingen</h2>
+
+        <label class="file-input">
+          <span>TV IP toevoegen</span>
+          <div class="inline-input">
+            <input id="newTvIpInput" type="text" placeholder="bijv. 192.168.10.170" />
+            <button id="addTvIpBtn" type="button" class="btn secondary">Toevoegen</button>
+          </div>
+        </label>
+
+        <div>
+          <span class="section-label">Geconfigureerde TV's</span>
+          <div id="settingsTvList" class="settings-tv-list"></div>
+        </div>
+
+        <div class="settings-grid">
+          <label>
+            Refresh interval (sec)
+            <input id="refreshIntervalInput" type="number" min="5" max="3600" step="1" />
+          </label>
+          <label>
+            Snapshot cache TTL (sec)
+            <input id="snapshotTtlInput" type="number" min="1" max="600" step="1" />
+          </label>
+        </div>
+
+        <fieldset class="target-choice">
+          <label>Netwerk scan (optioneel subnet, bv. 192.168.10.0/24)</label>
+          <div class="inline-input">
+            <input id="discoverSubnetInput" type="text" placeholder="leeg = auto detectie" />
+            <button id="discoverBtn" type="button" class="btn secondary">Scan TV's</button>
+          </div>
+          <ul id="discoverResults" class="result-list"></ul>
+        </fieldset>
+
+        <menu>
+          <button id="cancelSettingsBtn" type="button" class="btn secondary">Sluiten</button>
+          <button id="saveSettingsBtn" type="submit" class="btn primary">Opslaan</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="deleteDialog" class="simple-dialog">
+      <form method="dialog" id="deleteForm">
+        <h2>Afbeelding verwijderen</h2>
+        <p id="deleteMessage"></p>
+
+        <fieldset class="target-choice">
+          <label><input type="radio" name="deleteTarget" value="both" checked /> TV + HA</label>
+          <label><input type="radio" name="deleteTarget" value="tv" /> Alleen TV</label>
+          <label><input type="radio" name="deleteTarget" value="ha" /> Alleen HA</label>
+        </fieldset>
+
+        <menu>
+          <button id="cancelDeleteBtn" type="button" class="btn secondary">Annuleren</button>
+          <button id="confirmDeleteBtn" value="default" class="btn danger" type="submit">Verwijderen</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="resultDialog" class="simple-dialog">
+      <form method="dialog" id="resultForm">
+        <h2 id="resultTitle">Actieresultaat</h2>
+        <p id="resultMessage"></p>
+        <ul id="resultList" class="result-list"></ul>
+
+        <menu>
+          <button id="retryFailedBtn" type="button" class="btn secondary" hidden>Retry failed</button>
+          <button value="default" class="btn primary" type="submit">Sluiten</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <section class="toast-stack" id="toastStack" aria-live="polite"></section>
 
     <template id="cardTemplate">
       <article class="card">
         <div class="thumb-wrap">
           <span class="sync-flag" hidden>SYNC</span>
           <img class="thumb" alt="Gallery image" />
+          <div class="card-progress" hidden>Bezig...</div>
         </div>
         <div class="card-body">
           <div class="meta">

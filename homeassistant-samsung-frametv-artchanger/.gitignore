@@ -1,0 +1,23 @@
+# Local standalone runtime data
+standalone-data/
+standalone-data-queue/
+standalone-data-queue2/
+standalone-data-queue3/
+standalone-media/
+standalone-media-queue3/
+
+# Local logs
+standalone-uvicorn.out.log
+standalone-uvicorn.err.log
+*.log
+
+# Local virtual env / caches
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+
+# Local env overrides
+.env
+.env.*
+*.local

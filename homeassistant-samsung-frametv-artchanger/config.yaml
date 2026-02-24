@@ -1,11 +1,12 @@
 name: "Samsung Frame TV Art Changer"
 description: "Manage Samsung Frame TV artwork with a gallery UI, crop upload, and automation trigger."
-version: "2.0.0"
+version: "2.1.0"
 url: "https://github.com/vivalatech/homeassistant-addons"
 slug: "hass-frametv-artchanger"
 init: false
 startup: services
 boot: auto
+stdin: true
 arch:
   - aarch64
   - amd64
@@ -18,6 +19,7 @@ panel_icon: mdi:image-multiple
 panel_title: Frame Art
 map:
   - "media:rw"
+  - "share:rw"
 options:
   tv: "192.168.1.199"
   automation_token: ""

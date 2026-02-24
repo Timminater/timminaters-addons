@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from io import BytesIO
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image, ImageOps
 
@@ -31,7 +31,55 @@ class MediaService:
         return image.crop((0, top, width, top + new_height))
 
     @staticmethod
-    def _apply_crop(image: Image.Image, crop: Optional[Dict[str, float]]) -> Image.Image:
+    def _rotation_from_crop(crop: Optional[Dict[str, Any]]) -> float:
+        if not crop:
+            return 0.0
+        try:
+            return float(crop.get("rotation", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _quarter_turns_from_crop(crop: Optional[Dict[str, Any]]) -> int:
+        if not crop:
+            return 0
+        try:
+            turns = int(crop.get("quarter_turns", 0))
+        except (TypeError, ValueError):
+            return 0
+        return turns % 4
+
+    @staticmethod
+    def _flip_horizontal_from_crop(crop: Optional[Dict[str, Any]]) -> bool:
+        if not crop:
+            return False
+        return bool(crop.get("flip_horizontal", False))
+
+    @staticmethod
+    def _apply_flip_horizontal(image: Image.Image, flip_horizontal: bool) -> Image.Image:
+        if not flip_horizontal:
+            return image
+        return ImageOps.mirror(image)
+
+    @staticmethod
+    def _apply_quarter_turns(image: Image.Image, quarter_turns: int) -> Image.Image:
+        turns = quarter_turns % 4
+        if turns == 0:
+            return image
+        result = image
+        for _ in range(turns):
+            # Pillow's ROTATE_270 equals +90 degrees clockwise.
+            result = result.transpose(Image.Transpose.ROTATE_270)
+        return result
+
+    @staticmethod
+    def _apply_rotation(image: Image.Image, rotation: float) -> Image.Image:
+        if abs(rotation) < 0.001:
+            return image
+        return image.rotate(-rotation, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(0, 0, 0))
+
+    @staticmethod
+    def _apply_crop(image: Image.Image, crop: Optional[Dict[str, Any]]) -> Image.Image:
         if not crop:
             return MediaService._center_crop(image, TARGET_WIDTH / TARGET_HEIGHT)
 
@@ -48,10 +96,16 @@ class MediaService:
 
         return image.crop((int(x), int(y), int(x + w), int(y + h)))
 
-    def prepare_image(self, file_bytes: bytes, crop: Optional[Dict[str, float]] = None) -> Tuple[bytes, str]:
+    def prepare_image(self, file_bytes: bytes, crop: Optional[Dict[str, Any]] = None) -> Tuple[bytes, str]:
         with Image.open(BytesIO(file_bytes)) as opened:
             image = self._normalize_orientation(opened.convert("RGB"))
-            cropped = self._apply_crop(image, crop)
+            flip_horizontal = self._flip_horizontal_from_crop(crop)
+            quarter_turns = self._quarter_turns_from_crop(crop)
+            rotation = self._rotation_from_crop(crop)
+            transformed = self._apply_flip_horizontal(image, flip_horizontal)
+            transformed = self._apply_quarter_turns(transformed, quarter_turns)
+            rotated = self._apply_rotation(transformed, rotation)
+            cropped = self._apply_crop(rotated, crop)
             resized = cropped.resize((TARGET_WIDTH, TARGET_HEIGHT), Image.Resampling.LANCZOS)
 
             output = BytesIO()

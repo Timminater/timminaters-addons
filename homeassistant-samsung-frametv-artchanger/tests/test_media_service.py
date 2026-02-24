@@ -37,6 +37,15 @@ class MediaServiceTests(unittest.TestCase):
         image = Image.open(io.BytesIO(thumb))
         self.assertEqual(image.size, (640, 360))
 
+    def test_prepare_image_supports_rotation(self):
+        source = self._sample_image(1400, 900, color=(140, 200, 20))
+        payload, _ = self.service.prepare_image(
+            source,
+            crop={"rotation": 18.0},
+        )
+        image = Image.open(io.BytesIO(payload))
+        self.assertEqual(image.size, (3840, 2160))
+
 
 if __name__ == "__main__":
     unittest.main()
