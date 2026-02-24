@@ -1,7 +1,7 @@
 name: "Samsung Frame TV Art Changer"
 description: "Manage Samsung Frame TV artwork with a gallery UI, crop upload, and automation trigger."
 version: "2.1.0"
-url: "https://github.com/vivalatech/homeassistant-addons"
+url: "https://github.com/Timminater/timminaters-addons"
 slug: "hass-frametv-artchanger"
 init: false
 startup: services
@@ -26,4 +26,4 @@ options:
 schema:
   tv: "str"
   automation_token: "str?"
-image: vivalatech/{arch}-addon-homeassistant-samsung-frametv-artchanger
+image: timminater/{arch}-addon-homeassistant-samsung-frametv-artchanger
