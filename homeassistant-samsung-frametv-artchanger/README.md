@@ -64,7 +64,7 @@ Voorbeeld: random item kiezen, zo nodig uploaden, en activeren.
 action:
   - service: hassio.addon_stdin
     data:
-      addon: local_hass-frametv-artchanger
+      addon: 88e5264e_hass-frametv-artchanger
       input: >-
         {"action":"random_activate","tv_ips":["192.168.10.170"],"ensure_upload":true,"activate":true}
 ```
@@ -75,9 +75,15 @@ Voorbeeld: handmatige refresh triggeren.
 action:
   - service: hassio.addon_stdin
     data:
-      addon: local_hass-frametv-artchanger
+      addon: 88e5264e_hass-frametv-artchanger
       input: '{"action":"refresh"}'
 ```
+
+Belangrijk:
+
+- Gebruik bij `addon:` altijd jouw echte add-on id uit Home Assistant.
+- Voor custom repositories is dit vaak `<repo_hash>_hass-frametv-artchanger` (zoals `88e5264e_hass-frametv-artchanger`).
+- Je vindt deze id op de add-on pagina of via Ontwikkelaarstools bij de service call.
 
 Ondersteunde stdin acties:
 
@@ -98,7 +104,7 @@ Voorbeeld `rest_command` in Home Assistant:
 ```yaml
 rest_command:
   frame_random_art:
-    url: "http://a0d7b954-hass-frametv-artchanger:8099/api/automation/random"
+    url: "http://<jouw-addon-hostname>:8099/api/automation/random"
     method: POST
     headers:
       Authorization: "Bearer YOUR_AUTOMATION_TOKEN"
@@ -183,5 +189,5 @@ Open daarna:
   - TV thumbnail fetching loopt via queue (een voor een); geef het even tijd.
   - Controleer netwerkbereikbaarheid van de TV.
 - `hassio.addon_stdin` werkt niet:
-  - Controleer add-on slug in `addon` veld.
+  - Controleer dat `addon` het echte add-on id is (bijv. `88e5264e_hass-frametv-artchanger`).
   - Controleer dat de add-on draait en `stdin: true` actief is.
