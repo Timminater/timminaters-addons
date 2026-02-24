@@ -1,6 +1,6 @@
 name: "Samsung Frame TV Art Changer"
 description: "Manage Samsung Frame TV artwork with a gallery UI, crop upload, and automation trigger."
-version: "2.1.0"
+version: "2.1.1"
 url: "https://github.com/Timminater/timminaters-addons"
 slug: "hass-frametv-artchanger"
 init: false
