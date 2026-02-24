@@ -1,11 +1,11 @@
 ARG BUILD_FROM
 FROM $BUILD_FROM
 
-RUN apk add --no-cache python3 py3-pip
+RUN apk add --no-cache python3 py3-pip git
 
 RUN pip3 install --no-cache-dir \
     fastapi \
-    "uvicorn[standard]" \
+    uvicorn \
     python-multipart \
     pillow \
     git+https://github.com/NickWaterton/samsung-tv-ws-api.git
