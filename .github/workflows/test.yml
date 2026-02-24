@@ -16,7 +16,6 @@ jobs:
             --test \
             --aarch64 \
             --amd64 \
-            --armhf \
             --armv7 \
             --i386 \
             --target /data/homeassistant-samsung-frametv-artchanger \
