@@ -14,6 +14,7 @@ jobs:
         with:
           args: |
             --test \
-            --all \
+            --amd64 \
+            --aarch64 \
             --target /data/homeassistant-samsung-frametv-artchanger \
-            --docker-hub vivalatech
+            --docker-hub timminater
