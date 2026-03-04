@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.18
 FROM golang:1.22-alpine AS builder
 
 RUN apk add --no-cache \
@@ -20,7 +20,8 @@ COPY models ./models
 COPY main.go ./
 
 RUN mkdir -p /out \
-    && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/llm_proxy .
+    && CGO_ENABLED=1 CGO_CFLAGS="-D_LARGEFILE64_SOURCE -D_GNU_SOURCE" \
+       go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/llm_proxy .
 
 FROM $BUILD_FROM
 
