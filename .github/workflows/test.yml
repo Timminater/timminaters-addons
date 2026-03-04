@@ -4,8 +4,13 @@ on: [push, pull_request, workflow_dispatch]
 
 jobs:
   build:
-    name: Test build
+    name: Test build (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - /data/homeassistant-samsung-frametv-artchanger
+          - /data/llm_proxy
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4
@@ -16,5 +21,5 @@ jobs:
             --test \
             --aarch64 \
             --amd64 \
-            --target /data/homeassistant-samsung-frametv-artchanger \
+            --target ${{ matrix.target }} \
             --docker-hub timminater

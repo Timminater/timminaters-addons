@@ -7,8 +7,13 @@ on:
 
 jobs:
   publish:
-    name: Publish
+    name: Publish (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - /data/homeassistant-samsung-frametv-artchanger
+          - /data/llm_proxy
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4
@@ -30,5 +35,5 @@ jobs:
           args: |
             --aarch64 \
             --amd64 \
-            --target /data/homeassistant-samsung-frametv-artchanger \
-            --docker-hub timminater \
+            --target ${{ matrix.target }} \
+            --docker-hub timminater

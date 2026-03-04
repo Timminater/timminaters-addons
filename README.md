@@ -18,6 +18,7 @@ Repository URL:
 | Add-on | Slug | Description | Documentation |
 |---|---|---|---|
 | Samsung Frame TV Art Changer | `hass-frametv-artchanger` | Manage Samsung Frame TV artwork via Ingress gallery, upload/crop, sync, and automation triggers. | [homeassistant-samsung-frametv-artchanger/README.md](homeassistant-samsung-frametv-artchanger/README.md) |
+| LLM Proxy | `llm_proxy` | Ollama-compatible proxy for OpenAI/Ollama backends with logging and web UI. | [llm_proxy/README.md](llm_proxy/README.md) |
 
 ## Notes
 

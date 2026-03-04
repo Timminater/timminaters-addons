@@ -1,0 +1,55 @@
+name: "LLM Proxy"
+description: "Ollama-compatible proxy for OpenAI/Ollama backends with logging and a web UI."
+version: "0.1.1"
+url: "https://github.com/stevelittlefish/llm_proxy"
+slug: "llm_proxy"
+init: false
+startup: services
+boot: auto
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+ingress: true
+ingress_port: 11434
+panel_icon: mdi:transit-connection-variant
+panel_title: LLM Proxy
+ports:
+  11434/tcp: 11434
+ports_description:
+  11434/tcp: Ollama-compatible API and web UI
+options:
+  backend_type: "openai"
+  backend_endpoint: "http://localhost:8008"
+  backend_timeout: 300
+  enable_cors: false
+  log_messages: false
+  log_raw_requests: false
+  log_raw_responses: false
+  verbose: false
+  tool_blacklist: ""
+  force_prompt_cache: false
+  max_requests: 100
+  cleanup_interval: 5
+  chat_text_injection_enabled: false
+  chat_text_injection_text: "/nothink"
+  chat_text_injection_mode: "last"
+schema:
+  backend_type: "str"
+  backend_endpoint: "str"
+  backend_timeout: "int(1,)"
+  enable_cors: "bool"
+  log_messages: "bool"
+  log_raw_requests: "bool"
+  log_raw_responses: "bool"
+  verbose: "bool"
+  tool_blacklist: "str"
+  force_prompt_cache: "bool"
+  max_requests: "int(0,)"
+  cleanup_interval: "int(0,)"
+  chat_text_injection_enabled: "bool"
+  chat_text_injection_text: "str"
+  chat_text_injection_mode: "str"
+image: "timminater/{arch}-addon-llm_proxy"
