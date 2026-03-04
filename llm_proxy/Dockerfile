@@ -19,7 +19,8 @@ COPY middleware ./middleware
 COPY models ./models
 COPY main.go ./
 
-RUN CGO_ENABLED=1 go build -trimpath -ldflags "-s -w" -o /out/llm_proxy .
+RUN mkdir -p /out \
+    && CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags "-s -w" -o /out/llm_proxy .
 
 FROM $BUILD_FROM
 
