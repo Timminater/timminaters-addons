@@ -2,7 +2,11 @@ FROM ghcr.io/home-assistant/base@sha256:94ff231402a5e7ad2a82e261ad5fa4ffae7d7bb0
 
 RUN apk add --no-cache python3 py3-pip git
 
-RUN pip3 install --no-cache-dir \
+RUN python3 -m venv /opt/venv
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
+RUN pip install --no-cache-dir \
     fastapi \
     uvicorn \
     python-multipart \
