@@ -26,4 +26,4 @@ schema:
   log_level: list(DEBUG|INFO|WARNING|ERROR)
 backup: hot
 apparmor: true
-image: timminater/{arch}-addon-esphome_mcp
+image: ghcr.io/timminater/addon-esphome-mcp

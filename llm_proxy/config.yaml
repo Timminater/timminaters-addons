@@ -9,9 +9,6 @@ boot: auto
 arch:
   - aarch64
   - amd64
-  - armhf
-  - armv7
-  - i386
 ingress: true
 ingress_port: 11434
 panel_icon: mdi:transit-connection-variant
@@ -52,4 +49,4 @@ schema:
   chat_text_injection_enabled: "bool"
   chat_text_injection_text: "str"
   chat_text_injection_mode: "str"
-image: "timminater/{arch}-addon-llm_proxy"
+image: "ghcr.io/timminater/addon-llm-proxy"
