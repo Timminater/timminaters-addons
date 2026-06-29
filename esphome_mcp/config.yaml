@@ -1,5 +1,5 @@
 name: ESPHome MCP
-version: "2026.06.0"
+version: "2026.06.1"
 slug: esphome_mcp
 description: MCP server for the ESPHome Device Builder dashboard
 url: https://github.com/Timminater/timminaters-addons
@@ -16,13 +16,12 @@ ports_description:
   8080/tcp: MCP Streamable HTTP endpoint
 options:
   esphome_dashboard_url: null
-  mcp_auth_token: null
   log_level: INFO
 schema:
   esphome_dashboard_url: url
   esphome_dashboard_username: str?
   esphome_dashboard_password: password?
-  mcp_auth_token: password
+  mcp_auth_token: password?
   log_level: list(DEBUG|INFO|WARNING|ERROR)
 backup: hot
 apparmor: true

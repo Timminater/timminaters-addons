@@ -15,23 +15,32 @@ from pathlib import Path
 import httpx
 
 URL = "http://localhost:8080/mcp"
+TOKEN_PATH = Path("/data/mcp_auth_token")
 HEADERS = {
     "Accept": "application/json, text/event-stream",
     "Content-Type": "application/json",
 }
 
 
-def _auth_token() -> str:
+def _auth_token(
+    options_path: Path = Path("/data/options.json"),
+    token_path: Path = TOKEN_PATH,
+) -> str:
     """Read auth from env or Home Assistant's options file."""
     if token := os.environ.get("MCP_AUTH_TOKEN"):
         return token
-    options_path = Path("/data/options.json")
     if options_path.is_file():
         try:
             options = json.loads(options_path.read_text(encoding="utf-8"))
-            return str(options.get("mcp_auth_token") or "")
+            if token := str(options.get("mcp_auth_token") or ""):
+                return token
         except (OSError, ValueError, TypeError):
-            return ""
+            pass
+    if token_path.is_file():
+        try:
+            return token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
     return ""
 
 
@@ -119,9 +128,7 @@ def main() -> None:
         # Tool errors are returned as plain text (not JSON-RPC errors); treat a
         # dashboard-connectivity failure as unhealthy.
         text = " ".join(
-            block.get("text", "")
-            for block in result.get("content", [])
-            if isinstance(block, dict)
+            block.get("text", "") for block in result.get("content", []) if isinstance(block, dict)
         )
         if "Error fetching devices" in text:
             print(f"dashboard unreachable: {text}", file=sys.stderr)

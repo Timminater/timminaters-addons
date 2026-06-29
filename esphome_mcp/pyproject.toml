@@ -1,6 +1,6 @@
 [project]
 name = "esphome-mcp"
-version = "2026.06.0"
+version = "2026.06.1"
 description = "MCP server for the ESPHome 2026.6+ Device Builder dashboard"
 license = "MIT"
 requires-python = ">=3.13"
