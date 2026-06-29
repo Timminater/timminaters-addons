@@ -1,39 +1,29 @@
-name: "Publish"
+name: Publish
 
 on:
   workflow_dispatch:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   publish:
-    name: Publish (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    name: Publish ${{ matrix.app }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - /data/homeassistant-samsung-frametv-artchanger
-          - /data/llm_proxy
-    steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v4
-      - name: Validate DockerHub token
-        run: |
-          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "::error::Missing GitHub Actions secret DOCKERHUB_TOKEN."
-            echo "::error::Go to Settings -> Secrets and variables -> Actions -> New repository secret."
-            exit 1
-          fi
-      - name: Login to DockerHub
-        uses: docker/login-action@v3
-        with:
-          username: timminater
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Publish
-        uses: home-assistant/builder@master
-        with:
-          args: |
-            --aarch64 \
-            --amd64 \
-            --target ${{ matrix.target }} \
-            --docker-hub timminater
+        app:
+          - homeassistant-samsung-frametv-artchanger
+          - llm_proxy
+          - esphome_mcp
+    uses: ./.github/workflows/build-app.yml
+    with:
+      app: ${{ matrix.app }}
+      publish: true
+    secrets: inherit

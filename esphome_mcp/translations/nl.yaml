@@ -1,0 +1,18 @@
+configuration:
+  esphome_dashboard_url:
+    name: ESPHome-dashboard-URL
+    description: URL van het ESPHome Device Builder-dashboard bereikbaar vanuit deze App.
+  esphome_dashboard_username:
+    name: ESPHome-gebruikersnaam
+    description: Optionele gebruikersnaam voor Device Builder.
+  esphome_dashboard_password:
+    name: ESPHome-wachtwoord
+    description: Optioneel wachtwoord voor Device Builder.
+  mcp_auth_token:
+    name: MCP-bearertoken
+    description: Geheim van minimaal 16 tekens dat MCP-clients moeten meesturen.
+  log_level:
+    name: Logniveau
+    description: Hoeveel detail naar het App-logboek wordt geschreven.
+network:
+  8080/tcp: MCP Streamable HTTP-endpoint

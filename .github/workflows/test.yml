@@ -1,25 +1,33 @@
-name: "Test"
+name: Test
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Test build (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    name: Test ${{ matrix.app }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - /data/homeassistant-samsung-frametv-artchanger
-          - /data/llm_proxy
-    steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v4
-      - name: Test build
-        uses: home-assistant/builder@master
-        with:
-          args: |
-            --test \
-            --aarch64 \
-            --amd64 \
-            --target ${{ matrix.target }} \
-            --docker-hub timminater
+        app:
+          - homeassistant-samsung-frametv-artchanger
+          - llm_proxy
+          - esphome_mcp
+    uses: ./.github/workflows/build-app.yml
+    with:
+      app: ${{ matrix.app }}
+      publish: false
+    secrets: inherit
