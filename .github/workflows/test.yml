@@ -11,6 +11,7 @@ jobs:
         target:
           - /data/homeassistant-samsung-frametv-artchanger
           - /data/llm_proxy
+          - /data/esphome_mcp
     steps:
       - name: Checkout the repository
         uses: actions/checkout@v4

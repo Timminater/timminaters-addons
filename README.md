@@ -19,6 +19,7 @@ Repository URL:
 |---|---|---|---|
 | Samsung Frame TV Art Changer | `hass-frametv-artchanger` | Manage Samsung Frame TV artwork via Ingress gallery, upload/crop, sync, and automation triggers. | [homeassistant-samsung-frametv-artchanger/README.md](homeassistant-samsung-frametv-artchanger/README.md) |
 | LLM Proxy | `llm_proxy` | Ollama-compatible proxy for OpenAI/Ollama backends with logging and web UI. | [llm_proxy/README.md](llm_proxy/README.md) |
+| ESPHome MCP | `esphome_mcp` | Secure Streamable HTTP MCP server for ESPHome Device Builder 2026.6+. | [esphome_mcp/README.md](esphome_mcp/README.md) |
 
 ## Notes
 
