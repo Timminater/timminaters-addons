@@ -10,7 +10,7 @@ configuration:
     description: Optioneel wachtwoord voor Device Builder.
   mcp_auth_token:
     name: MCP-bearertoken
-    description: Geheim van minimaal 16 tekens dat MCP-clients moeten meesturen.
+    description: Optioneel handmatig geheim. Wanneer leeg genereert en logt de App een blijvende token.
   log_level:
     name: Logniveau
     description: Hoeveel detail naar het App-logboek wordt geschreven.

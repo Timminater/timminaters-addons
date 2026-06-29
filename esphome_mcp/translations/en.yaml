@@ -10,7 +10,7 @@ configuration:
     description: Optional Device Builder password.
   mcp_auth_token:
     name: MCP bearer token
-    description: Secret of at least 16 characters required by MCP clients.
+    description: Optional manual secret. When empty, the App generates and logs a persistent token.
   log_level:
     name: Log level
     description: Amount of detail written to the App log.

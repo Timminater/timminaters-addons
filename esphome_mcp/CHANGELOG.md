@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026.06.1
+
+- Generate and persist a secure MCP bearer token when none is configured.
+- Show the active bearer token in the App log at every start and restart.
+- Keep an optional manually configured token as an override.
+
 ## 2026.06.0
 
 - Package ESPHome MCP as a Home Assistant App.

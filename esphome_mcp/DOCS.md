@@ -8,11 +8,15 @@
   is intentionally not hard-coded here.
 - `esphome_dashboard_username` and `esphome_dashboard_password`: optional
   Device Builder credentials.
-- `mcp_auth_token`: required secret of at least 16 characters. Generate a long,
-  random value. Every MCP client must send it as a bearer token.
+- `mcp_auth_token`: optional manual override of at least 16 characters. When
+  omitted, the App generates a secure token and persists it in `/data`.
 - `log_level`: `DEBUG`, `INFO`, `WARNING`, or `ERROR`.
 
 Restart the App after changing its configuration.
+
+The active bearer token is written to the App log at every start and restart.
+Anyone who can read the App log can use the token, so restrict Home Assistant
+administrator access accordingly.
 
 ## MCP client
 
@@ -39,7 +43,7 @@ intended for MCP clients that support that transport and authentication method.
 
 ## Troubleshooting
 
-- If startup reports a missing option, set both the dashboard URL and token.
+- If startup reports a missing option, set the dashboard URL.
 - If tools report dashboard connection errors, verify the URL from inside the
   Home Assistant App network and confirm Device Builder is running.
 - The Docker healthcheck includes a real `list_device_names` MCP call. A stopped
