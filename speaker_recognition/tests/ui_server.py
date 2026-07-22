@@ -10,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import app.api as api
+from app.models import AssistSatelliteInfo
 from app.recognizer import SpeakerRecognizer
 
 
@@ -25,6 +26,24 @@ api.recognizer = SpeakerRecognizer(
     encoder_factory=DemoEncoder,
     preprocess=lambda wav, _rate: wav,
 )
+
+
+class DemoHomeAssistant:
+    def satellites(self):
+        return [
+            AssistSatelliteInfo(
+                entity_id="assist_satellite.home_assistant_voice_095b3e_assist_satellite",
+                name="Home Assistant Voice 095b3e Assist satellite",
+                state="idle",
+            )
+        ]
+
+    def ask_for_enrollment_sample(self, _entity_id):
+        return None
+
+
+api.home_assistant = DemoHomeAssistant()
+api._is_supervisor_request = lambda _request: True
 
 
 class SimulatedIngress(BaseHTTPMiddleware):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import html
 import logging
 import secrets
@@ -18,14 +20,25 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.config import Settings
 from app.models import (
+    AssistSatelliteInfo,
     EnrollmentRequest,
     EnrollmentResult,
     HealthResponse,
     RecognitionRequest,
     RecognitionResult,
     SpeakerInfo,
+    SatelliteEnrollmentClaim,
+    SatelliteEnrollmentCompleteRequest,
+    SatelliteEnrollmentFailureRequest,
+    SatelliteEnrollmentSession,
+    SatelliteEnrollmentStartRequest,
 )
 from app.recognizer import SpeakerRecognizer
+from app.satellite import (
+    HomeAssistantApiError,
+    HomeAssistantClient,
+    SatelliteEnrollmentCoordinator,
+)
 
 _LOGGER = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent.parent / "web"
@@ -36,12 +49,21 @@ recognizer = SpeakerRecognizer(
     threshold=settings.recognition_threshold,
     max_audio_seconds=settings.max_audio_seconds,
 )
+home_assistant = HomeAssistantClient()
+satellite_enrollment = SatelliteEnrollmentCoordinator()
+satellite_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await asyncio.to_thread(recognizer.initialize)
-    yield
+    try:
+        yield
+    finally:
+        for task in satellite_tasks:
+            task.cancel()
+        if satellite_tasks:
+            await asyncio.gather(*satellite_tasks, return_exceptions=True)
 
 
 app = FastAPI(
@@ -141,6 +163,162 @@ async def enroll(request: EnrollmentRequest) -> EnrollmentResult:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get(
+    "/api/assist-satellites",
+    response_model=list[AssistSatelliteInfo],
+    dependencies=[Depends(authorize_api)],
+)
+async def assist_satellites() -> list[AssistSatelliteInfo]:
+    try:
+        return await asyncio.to_thread(home_assistant.satellites)
+    except HomeAssistantApiError as error:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"
+        ) from error
+
+
+@app.post(
+    "/api/satellite-enrollment",
+    response_model=SatelliteEnrollmentSession,
+    dependencies=[Depends(authorize_api)],
+)
+async def start_satellite_enrollment(
+    request: SatelliteEnrollmentStartRequest,
+) -> SatelliteEnrollmentSession:
+    try:
+        satellites = await asyncio.to_thread(home_assistant.satellites)
+        satellite = next(
+            (item for item in satellites if item.entity_id == request.satellite_entity_id), None
+        )
+        if satellite is None:
+            raise HTTPException(status_code=404, detail="Voice-apparaat niet gevonden")
+        if satellite.state != "idle":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Voice-apparaat is niet beschikbaar (status: {satellite.state})",
+            )
+        session = await satellite_enrollment.arm(request.satellite_entity_id)
+        task = asyncio.create_task(
+            _run_satellite_prompt(session.id, request.satellite_entity_id),
+            name=f"speaker-recognition-enrollment-{session.id}",
+        )
+        satellite_tasks.add(task)
+        task.add_done_callback(satellite_tasks.discard)
+        return session
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except HomeAssistantApiError as error:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"
+        ) from error
+
+
+async def _run_satellite_prompt(session_id: str, satellite_entity_id: str) -> None:
+    """Run the blocking HA question while the GUI polls the enrollment session."""
+    try:
+        await asyncio.to_thread(
+            home_assistant.ask_for_enrollment_sample, satellite_entity_id
+        )
+    except HomeAssistantApiError as error:
+        await satellite_enrollment.fail(session_id, f"Kon Voice-apparaat niet starten: {error}")
+        return
+    try:
+        result = await satellite_enrollment.get(session_id)
+    except KeyError:
+        return
+    if result.status == "armed":
+        await satellite_enrollment.fail(
+            session_id,
+            "Geen audio ontvangen. Gebruik in deze Assist-pipeline de Speaker "
+            "Recognition STT-proxy.",
+        )
+
+
+@app.post(
+    "/api/satellite-enrollment/claim",
+    response_model=SatelliteEnrollmentClaim,
+    dependencies=[Depends(authorize_api)],
+)
+async def claim_satellite_enrollment() -> SatelliteEnrollmentClaim:
+    # SpeechMetadata does not identify its originating satellite. Only accept a
+    # stream while the selected satellite is the sole listening satellite.
+    try:
+        armed = await satellite_enrollment.peek_armed()
+        if armed is None:
+            return SatelliteEnrollmentClaim()
+        satellites = await asyncio.to_thread(home_assistant.satellites)
+        listening = [item.entity_id for item in satellites if item.state == "listening"]
+        if listening != [armed.satellite_entity_id]:
+            return SatelliteEnrollmentClaim()
+        return SatelliteEnrollmentClaim(session=await satellite_enrollment.claim())
+    except HomeAssistantApiError as error:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"
+        ) from error
+
+
+@app.post(
+    "/api/satellite-enrollment/{session_id}/complete",
+    response_model=SatelliteEnrollmentSession,
+    dependencies=[Depends(authorize_api)],
+)
+async def complete_satellite_enrollment(
+    session_id: str, request: SatelliteEnrollmentCompleteRequest
+) -> SatelliteEnrollmentSession:
+    try:
+        try:
+            pcm = base64.b64decode(request.audio.audio_data, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError("Audio data is not valid base64") from error
+        if not pcm or len(pcm) % 2:
+            raise ValueError("Audio must contain signed 16-bit PCM samples")
+        max_bytes = request.audio.sample_rate * settings.max_audio_seconds * 2
+        if len(pcm) > max_bytes:
+            raise ValueError(f"Audio exceeds the {settings.max_audio_seconds} second limit")
+        return await satellite_enrollment.complete(session_id, request.audio)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Voice-opname niet gevonden") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.post(
+    "/api/satellite-enrollment/{session_id}/fail",
+    status_code=204,
+    dependencies=[Depends(authorize_api)],
+)
+async def fail_satellite_enrollment(
+    session_id: str, request: SatelliteEnrollmentFailureRequest
+) -> Response:
+    await satellite_enrollment.fail(session_id, request.error)
+    return Response(status_code=204)
+
+
+@app.get(
+    "/api/satellite-enrollment/{session_id}",
+    response_model=SatelliteEnrollmentSession,
+    dependencies=[Depends(authorize_api)],
+)
+async def get_satellite_enrollment(session_id: str) -> SatelliteEnrollmentSession:
+    try:
+        return await satellite_enrollment.get(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Voice-opname niet gevonden") from error
+
+
+@app.delete(
+    "/api/satellite-enrollment/{session_id}",
+    status_code=204,
+    dependencies=[Depends(authorize_api)],
+)
+async def cancel_satellite_enrollment(session_id: str) -> Response:
+    try:
+        await satellite_enrollment.cancel(session_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Voice-opname niet gevonden") from error
+    return Response(status_code=204)
 
 
 @app.delete("/api/speakers/{speaker_id}", status_code=204, dependencies=[Depends(authorize_api)])

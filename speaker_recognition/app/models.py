@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -45,6 +46,38 @@ class SpeakerInfo(BaseModel):
 class EnrollmentResult(BaseModel):
     status: str = "success"
     speaker: SpeakerInfo
+
+
+class AssistSatelliteInfo(BaseModel):
+    entity_id: str
+    name: str
+    state: str
+
+
+class SatelliteEnrollmentStartRequest(BaseModel):
+    satellite_entity_id: str = Field(pattern=r"^assist_satellite\.[a-z0-9_]+$")
+
+
+class SatelliteEnrollmentCompleteRequest(BaseModel):
+    audio: AudioInput
+
+
+class SatelliteEnrollmentFailureRequest(BaseModel):
+    error: str = Field(default="Opname mislukt", max_length=300)
+
+
+class SatelliteEnrollmentSession(BaseModel):
+    id: str
+    satellite_entity_id: str
+    status: Literal["armed", "capturing", "complete", "failed", "cancelled", "expired"]
+    created_at: datetime
+    expires_at: datetime
+    error: str | None = None
+    audio: AudioInput | None = None
+
+
+class SatelliteEnrollmentClaim(BaseModel):
+    session: SatelliteEnrollmentSession | None = None
 
 
 class RecognitionResult(BaseModel):

@@ -9,7 +9,7 @@ de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
 
 ## Functies
 
-- Enroll speakers via audioupload of browsermicrofoon.
+- Enroll speakers via audioupload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
 - Combineer meerdere samples tot één genormaliseerd stemprofiel.
 - Herken een speaker met een apart testfragment en een instelbare confidence-drempel.
 - Beheer en verwijder profielen via Home Assistant Ingress.
@@ -22,6 +22,11 @@ de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
 2. Installeer **Speaker Recognition**.
 3. Start de App en kies **Open webinterface**.
 4. Voeg per speaker liefst 2–3 heldere fragmenten van 5–30 seconden toe.
+
+Voor enrollment en herkenning via een Voice-apparaat voeg je in de Speaker Recognition-
+integratie een STT-proxy toe rond je normale STT-engine. Gebruik daarna een Assist-pipeline
+met die proxy als STT-engine voor het Voice-apparaat. De GUI kan het apparaat vervolgens
+zelf laten luisteren.
 
 Op dit moment wordt alleen `amd64` aangeboden. PyTorch/Resemblyzer is groot en de upstream ARM64-builds zijn niet betrouwbaar genoeg om als ondersteund te publiceren.
 

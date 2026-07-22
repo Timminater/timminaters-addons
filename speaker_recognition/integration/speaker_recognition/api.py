@@ -38,8 +38,43 @@ class SpeakerRecognitionApi:
             },
         )
 
+    async def async_claim_satellite_enrollment(self) -> dict[str, Any] | None:
+        result = await self._request(
+            "POST", "/api/satellite-enrollment/claim", json={}, timeout=2
+        )
+        return result.get("session")
+
+    async def async_complete_satellite_enrollment(
+        self, session_id: str, pcm: bytes, sample_rate: int
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/satellite-enrollment/{session_id}/complete",
+            json={
+                "audio": {
+                    "audio_data": base64.b64encode(pcm).decode(),
+                    "sample_rate": sample_rate,
+                }
+            },
+        )
+
+    async def async_fail_satellite_enrollment(self, session_id: str, error: str) -> None:
+        await self._request(
+            "POST",
+            f"/api/satellite-enrollment/{session_id}/fail",
+            json={"error": error},
+            expect_json=False,
+        )
+
     async def _request(
-        self, method: str, path: str, *, authenticated: bool = True, json: dict | None = None
+        self,
+        method: str,
+        path: str,
+        *,
+        authenticated: bool = True,
+        json: dict | None = None,
+        expect_json: bool = True,
+        timeout: int = 30,
     ) -> Any:
         try:
             async with self._session.request(
@@ -47,13 +82,13 @@ class SpeakerRecognitionApi:
                 f"{self._url}{path}",
                 headers=self._headers if authenticated else None,
                 json=json,
-                timeout=30,
+                timeout=timeout,
             ) as response:
                 if response.status >= 400:
                     detail = await response.text()
                     raise SpeakerRecognitionApiError(
                         f"App returned HTTP {response.status}: {detail[:200]}"
                     )
-                return await response.json()
+                return await response.json() if expect_json else None
         except (ClientError, TimeoutError) as error:
             raise SpeakerRecognitionApiError(str(error)) from error
