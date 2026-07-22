@@ -1,0 +1,27 @@
+name: Publish Speaker Recognition
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - speaker_recognition/**
+      - .github/workflows/publish-speaker-recognition.yml
+      - .github/workflows/build-app.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish Speaker Recognition
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/build-app.yml
+    with:
+      app: speaker_recognition
+      publish: true
+    secrets: inherit
