@@ -2,7 +2,7 @@
 
 const basePath = document.querySelector('meta[name="ingress-base"]').content;
 const apiUrl = (path) => `${basePath}${path.replace(/^\//, "")}`;
-const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null, previewUrls: [], speechExamples: [], speechExampleIndex: -1 };
+const state = { speakers: [], samples: [], testSample: null, recording: null, satellites: [], persons: [], satelliteSession: null, previewUrls: [], speechExamples: [], speechExampleIndex: -1 };
 
 const elements = {
   dialog: document.querySelector("#enroll-dialog"),
@@ -19,8 +19,16 @@ const elements = {
   search: document.querySelector("#search"),
   status: document.querySelector("#engine-status"),
   toast: document.querySelector("#toast"),
-  testFile: document.querySelector("#test-file"),
+  testDialog: document.querySelector("#test-dialog"),
+  testForm: document.querySelector("#test-form"),
+  testFile: document.querySelector("#test-audio-file"),
+  testSample: document.querySelector("#test-sample"),
+  testError: document.querySelector("#test-form-error"),
+  testRecord: document.querySelector("#test-record-button"),
+  testRecognize: document.querySelector("#recognize-sample"),
   testResult: document.querySelector("#test-result"),
+  testSatellite: document.querySelector("#test-voice-satellite"),
+  testVoiceRecord: document.querySelector("#test-voice-record-button"),
   satellite: document.querySelector("#voice-satellite"),
   voiceRecord: document.querySelector("#voice-record-button"),
   speechExample: document.querySelector("#speech-example-text"),
@@ -93,6 +101,16 @@ async function openEnroll() {
   await Promise.all([loadSatellites(), loadPersons(), loadSpeechExamples()]);
 }
 
+async function openTest() {
+  revokePreviewUrls();
+  state.testSample = null;
+  elements.testForm.reset();
+  elements.testError.hidden = true;
+  renderTestSample();
+  elements.testDialog.showModal();
+  await loadTestSatellites();
+}
+
 async function loadSpeechExamples() {
   if (!state.speechExamples.length) {
     try { state.speechExamples = await request("assets/speech-prompts.json"); }
@@ -141,13 +159,33 @@ async function loadSatellites() {
   }
 }
 
-async function captureFromSatellite() {
-  const entityId = elements.satellite.value;
+async function loadTestSatellites() {
+  elements.testSatellite.replaceChildren(new Option("Voice-apparaten laden…", ""));
+  elements.testVoiceRecord.disabled = true;
+  try {
+    state.satellites = await request("api/assist-satellites");
+    const available = state.satellites.filter((item) => item.state === "idle");
+    elements.testSatellite.replaceChildren(
+      new Option(available.length ? "Kies een Voice-apparaat" : "Geen beschikbaar Voice-apparaat", ""),
+      ...available.map((item) => new Option(item.name, item.entity_id)),
+    );
+  } catch (error) {
+    elements.testSatellite.replaceChildren(new Option("Voice-apparaten niet bereikbaar", ""));
+    setTestError(error.message);
+  }
+}
+
+async function captureFromSatellite(mode = "enroll") {
+  const testing = mode === "test";
+  const satelliteSelect = testing ? elements.testSatellite : elements.satellite;
+  const recordButton = testing ? elements.testVoiceRecord : elements.voiceRecord;
+  const activeDialog = testing ? elements.testDialog : elements.dialog;
+  const entityId = satelliteSelect.value;
   if (!entityId) return;
   let sessionId = null;
-  elements.error.hidden = true;
-  elements.voiceRecord.disabled = true;
-  elements.voiceRecord.textContent = "Luisteren…";
+  if (testing) elements.testError.hidden = true; else elements.error.hidden = true;
+  recordButton.disabled = true;
+  recordButton.textContent = "Luisteren…";
   try {
     let session = await request("api/satellite-enrollment", {
       method: "POST",
@@ -164,21 +202,27 @@ async function captureFromSatellite() {
       throw new Error(session.error || "Geen stemfragment ontvangen. Controleer of deze Assist-pipeline de Speaker Recognition STT gebruikt.");
     }
     const bytes = atob(session.audio.audio_data).length;
-    state.samples.push({
+    const sample = {
       ...session.audio,
       duration: bytes / 2 / session.audio.sample_rate,
       label: state.satellites.find((item) => item.entity_id === entityId)?.name || "Home Assistant Voice",
       source: "voice",
-    });
-    renderSamples();
-    selectSpeechExample();
+    };
+    if (testing) {
+      state.testSample = sample;
+      renderTestSample();
+    } else {
+      state.samples.push(sample);
+      renderSamples();
+      selectSpeechExample();
+    }
     showToast("Voice-fragment ontvangen");
   } catch (error) {
-    if (elements.dialog.open) setFormError(error.message);
+    if (activeDialog.open) (testing ? setTestError : setFormError)(error.message);
   } finally {
     if (state.satelliteSession === sessionId) state.satelliteSession = null;
-    elements.voiceRecord.textContent = "Opnemen via Voice";
-    elements.voiceRecord.disabled = !elements.satellite.value;
+    recordButton.textContent = "Opnemen via Voice";
+    recordButton.disabled = !satelliteSelect.value;
   }
 }
 
@@ -195,6 +239,24 @@ function renderSamples() {
     row.append(icon, description, preview, remove); return row;
   }));
   updateSaveState();
+}
+
+function renderTestSample() {
+  revokePreviewUrls();
+  elements.testSample.replaceChildren();
+  if (state.testSample) {
+    const sample = state.testSample;
+    const row = document.createElement("div"); row.className = "sample-row";
+    const icon = document.createElement("span"); icon.textContent = sample.source === "microfoon" ? "●" : sample.source === "voice" ? "◉" : "♪";
+    const description = document.createElement("span"); description.textContent = `${sample.label} · ${sample.duration.toFixed(1)} sec`;
+    const preview = document.createElement("audio"); preview.controls = true; preview.preload = "metadata"; preview.ariaLabel = `${sample.label} afspelen`;
+    preview.src = samplePreviewUrl(sample); state.previewUrls.push(preview.src);
+    const remove = document.createElement("button"); remove.type = "button"; remove.ariaLabel = "Testfragment verwijderen"; remove.textContent = "×";
+    remove.addEventListener("click", () => { state.testSample = null; renderTestSample(); });
+    row.append(icon, description, preview, remove);
+    elements.testSample.append(row);
+  }
+  elements.testRecognize.disabled = !state.testSample;
 }
 
 function updateSaveState() {
@@ -255,10 +317,12 @@ function makeSample(floatSamples, sourceRate, label, source) {
   return { audio_data: btoa(binary), sample_rate: targetRate, duration, label, source };
 }
 
-async function toggleRecording() {
+async function toggleRecording(mode = "enroll") {
   if (state.recording) { stopRecording(); return; }
+  const testing = mode === "test";
+  const recordButton = testing ? elements.testRecord : elements.record;
   if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
-    setFormError("Microfoonopname is hier niet beschikbaar. Open Home Assistant via HTTPS of upload een audiofragment."); return;
+    (testing ? setTestError : setFormError)("Microfoonopname is hier niet beschikbaar. Open Home Assistant via HTTPS of upload een audiofragment."); return;
   }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }, video: false });
@@ -268,28 +332,34 @@ async function toggleRecording() {
     const chunks = [];
     processor.onaudioprocess = (event) => chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
     source.connect(processor); processor.connect(context.destination);
-    state.recording = { stream, context, source, processor, chunks, started: performance.now() };
-    elements.record.classList.add("recording"); elements.record.querySelector("span").textContent = "Opname stoppen";
-  } catch (_) { setFormError("Geen toegang tot de microfoon. Controleer de browsertoestemming of gebruik upload."); }
+    state.recording = { stream, context, source, processor, chunks, started: performance.now(), mode };
+    recordButton.classList.add("recording"); recordButton.querySelector("span").textContent = "Opname stoppen";
+  } catch (_) { (testing ? setTestError : setFormError)("Geen toegang tot de microfoon. Controleer de browsertoestemming of gebruik upload."); }
 }
 
 function stopRecording() {
   const recording = state.recording; if (!recording) return;
+  const testing = recording.mode === "test";
+  const recordButton = testing ? elements.testRecord : elements.record;
   recording.processor.disconnect(); recording.source.disconnect(); recording.stream.getTracks().forEach((track) => track.stop());
   const length = recording.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const merged = new Float32Array(length); let offset = 0;
   recording.chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.length; });
   const sampleRate = recording.context.sampleRate; recording.context.close(); state.recording = null;
-  elements.record.classList.remove("recording"); elements.record.querySelector("span").textContent = "Opnemen";
-  try { state.samples.push(makeSample(merged, sampleRate, "Microfoonopname", "microfoon")); renderSamples(); selectSpeechExample(); }
-  catch (error) { setFormError(error.message); }
+  recordButton.classList.remove("recording"); recordButton.querySelector("span").textContent = "Opnemen";
+  try {
+    const sample = makeSample(merged, sampleRate, "Microfoonopname", "microfoon");
+    if (testing) { state.testSample = sample; renderTestSample(); }
+    else { state.samples.push(sample); renderSamples(); selectSpeechExample(); }
+  } catch (error) { (testing ? setTestError : setFormError)(error.message); }
 }
 
 function discardRecording() {
   const recording = state.recording; if (!recording) return;
+  const recordButton = recording.mode === "test" ? elements.testRecord : elements.record;
   recording.processor.disconnect(); recording.source.disconnect(); recording.stream.getTracks().forEach((track) => track.stop());
   recording.context.close(); state.recording = null;
-  elements.record.classList.remove("recording"); elements.record.querySelector("span").textContent = "Opnemen";
+  recordButton.classList.remove("recording"); recordButton.querySelector("span").textContent = "Opnemen";
 }
 
 function closeEnroll() {
@@ -299,6 +369,16 @@ function closeEnroll() {
   revokePreviewUrls();
   state.samples = [];
   if (elements.dialog.open) elements.dialog.close("cancel");
+  if (sessionId) request(`api/satellite-enrollment/${sessionId}`, { method: "DELETE" }).catch(() => {});
+}
+
+function closeTest() {
+  if (state.recording?.mode === "test") discardRecording();
+  const sessionId = state.satelliteSession;
+  state.satelliteSession = null;
+  revokePreviewUrls();
+  state.testSample = null;
+  if (elements.testDialog.open) elements.testDialog.close("cancel");
   if (sessionId) request(`api/satellite-enrollment/${sessionId}`, { method: "DELETE" }).catch(() => {});
 }
 
@@ -318,26 +398,35 @@ async function deleteSpeaker(speaker) {
   catch (error) { showToast(error.message); }
 }
 
-async function testAudio(file) {
+async function testAudio() {
+  if (!state.testSample) return;
   elements.testResult.hidden = false; elements.testResult.classList.remove("no-match"); elements.testResult.textContent = "Analyseren…";
+  elements.testRecognize.disabled = true; elements.testRecognize.textContent = "Analyseren…";
   try {
-    const sample = await decodeFile(file);
+    const sample = state.testSample;
     const result = await request("api/recognize", { method: "POST", body: JSON.stringify({ audio: { audio_data: sample.audio_data, sample_rate: sample.sample_rate } }) });
     elements.testResult.classList.toggle("no-match", !result.matched);
     elements.testResult.textContent = result.matched ? `${result.speaker.name} · ${(result.confidence * 100).toFixed(1)}%` : `Onbekende speaker · ${(result.confidence * 100).toFixed(1)}%`;
+    closeTest();
   } catch (error) { elements.testResult.classList.add("no-match"); elements.testResult.textContent = error.message; }
+  finally { elements.testRecognize.textContent = "Fragment testen"; elements.testRecognize.disabled = !state.testSample; }
 }
 
 function setFormError(message) { elements.error.textContent = message; elements.error.hidden = false; }
+function setTestError(message) { elements.testError.textContent = message; elements.testError.hidden = false; }
 function showToast(message) { elements.toast.textContent = message; elements.toast.classList.add("show"); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => elements.toast.classList.remove("show"), 3200); }
 
 document.querySelector("#open-enroll").addEventListener("click", openEnroll);
 document.querySelector('[data-action="enroll"]').addEventListener("click", openEnroll);
+document.querySelector("#open-test").addEventListener("click", openTest);
 elements.name.addEventListener("input", updateSaveState);
 elements.search.addEventListener("input", renderSpeakers);
-elements.record.addEventListener("click", toggleRecording);
+elements.record.addEventListener("click", () => toggleRecording("enroll"));
+elements.testRecord.addEventListener("click", () => toggleRecording("test"));
 elements.satellite.addEventListener("change", () => { elements.voiceRecord.disabled = !elements.satellite.value; });
-elements.voiceRecord.addEventListener("click", captureFromSatellite);
+elements.testSatellite.addEventListener("change", () => { elements.testVoiceRecord.disabled = !elements.testSatellite.value; });
+elements.voiceRecord.addEventListener("click", () => captureFromSatellite("enroll"));
+elements.testVoiceRecord.addEventListener("click", () => captureFromSatellite("test"));
 elements.newSpeechExample.addEventListener("click", selectSpeechExample);
 elements.save.addEventListener("click", saveSpeaker);
 elements.audioFiles.addEventListener("change", async () => {
@@ -347,8 +436,18 @@ elements.audioFiles.addEventListener("change", async () => {
   }
   elements.audioFiles.value = ""; renderSamples();
 });
-elements.testFile.addEventListener("change", () => { if (elements.testFile.files[0]) testAudio(elements.testFile.files[0]); elements.testFile.value = ""; });
+elements.testFile.addEventListener("change", async () => {
+  elements.testError.hidden = true;
+  if (elements.testFile.files[0]) {
+    try { state.testSample = await decodeFile(elements.testFile.files[0]); renderTestSample(); }
+    catch (error) { setTestError(error.message); }
+  }
+  elements.testFile.value = "";
+});
+elements.testRecognize.addEventListener("click", testAudio);
 document.querySelectorAll('[data-action="close-enroll"]').forEach((button) => button.addEventListener("click", closeEnroll));
+document.querySelectorAll('[data-action="close-test"]').forEach((button) => button.addEventListener("click", closeTest));
 elements.dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeEnroll(); });
+elements.testDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeTest(); });
 
 refresh();

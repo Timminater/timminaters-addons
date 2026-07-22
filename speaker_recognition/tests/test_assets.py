@@ -33,3 +33,18 @@ def test_speech_prompts_are_varied_and_easy_to_read():
     assert len(prompts) == 50
     assert len(set(prompts)) == 50
     assert all(18 <= len(prompt.split()) <= 45 for prompt in prompts)
+
+
+def test_recognition_modal_supports_all_capture_sources():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="test-dialog"' in document
+    assert 'id="test-audio-file"' in document
+    assert 'id="test-record-button"' in document
+    assert 'id="test-voice-satellite"' in document
+    assert 'id="test-voice-record-button"' in document
+    assert 'id="recognize-sample"' in document
+    assert 'captureFromSatellite("test")' in script
+    assert 'toggleRecording("test")' in script
+    assert "renderTestSample()" in script

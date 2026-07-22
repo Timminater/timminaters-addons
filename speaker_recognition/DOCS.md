@@ -72,6 +72,14 @@ stemprofiel opgeslagen en wordt ook in herkenningsevents teruggegeven.
 
 Upload werkt met audioformaten die de actieve browser kan decoderen. Microfoonopname is een progressive enhancement: `getUserMedia` vereist HTTPS, browsertoestemming en ondersteuning door de Home Assistant Ingress-iframe. Als dat niet beschikbaar is, blijft upload volledig werken.
 
+## Herkenning testen
+
+Kies **Test een fragment** om een apart testvenster te openen. Daar kun je één bestand
+uploaden, de microfoon van de browser gebruiken of opnemen via een beschikbaar Home
+Assistant Voice-apparaat. Luister het fragment desgewenst terug en kies daarna **Fragment
+testen**. Het resultaat toont de herkende speaker en confidence, of meldt dat de speaker
+onbekend is. Gebruik voor een eerlijke test bij voorkeur andere audio dan voor enrollment.
+
 ### Opnemen via Home Assistant Voice
 
 De GUI toont online `assist_satellite`-apparaten die een gesprek op afstand kunnen starten.

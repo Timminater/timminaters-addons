@@ -54,7 +54,7 @@
 
       <section class="panel test-panel">
         <div><p class="eyebrow">Herkenningstest</p><h2>Test een fragment</h2><p>Gebruik een ander fragment dan waarmee je hebt enrolled voor een eerlijke test.</p></div>
-        <label class="secondary-button file-button">Kies audio<input id="test-file" type="file" accept="audio/*" hidden></label>
+        <button id="open-test" class="secondary-button" type="button">Test een fragment</button>
         <div id="test-result" class="test-result" hidden></div>
       </section>
     </main>
@@ -75,7 +75,7 @@
             <p id="speech-example-text">Vandaag loop ik rustig naar buiten. De zon schijnt op het groene gras en een kleine vogel zingt vrolijk bij het open raam.</p>
           </aside>
           <div class="capture-actions">
-            <button id="record-button" class="capture-button" type="button"><i></i><span>Opnemen</span></button>
+            <button id="record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button>
             <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="audio-files" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" multiple hidden></label>
           </div>
           <p id="mic-help" class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p>
@@ -89,6 +89,26 @@
         <label class="check-row"><input id="replace-profile" type="checkbox"><span>Bestaand profiel met dezelfde naam vervangen</span></label>
         <div id="form-error" class="error-box" hidden></div>
         <div class="dialog-actions"><button class="secondary-button" data-action="close-enroll" type="button">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="test-dialog">
+      <form id="test-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">Herkenningstest</p><h2>Wie spreekt er?</h2></div><button class="icon-button" data-action="close-test" aria-label="Sluiten" type="button">×</button></div>
+        <p class="field-help">Neem een nieuw fragment op of upload audio. Je kunt het fragment eerst terugluisteren voordat je de herkenning start.</p>
+        <div class="capture-actions">
+          <button id="test-record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button>
+          <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="test-audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" hidden></label>
+        </div>
+        <p class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p>
+        <div class="voice-capture">
+          <label class="field"><span>Home Assistant Voice-apparaat</span><select id="test-voice-satellite"><option value="">Voice-apparaten laden…</option></select></label>
+          <button id="test-voice-record-button" class="secondary-button" type="button" disabled>Opnemen via Voice</button>
+        </div>
+        <p class="field-help">Het gekozen apparaat vraagt om één testfragment. De tekst wordt niet als Assist-commando uitgevoerd.</p>
+        <div id="test-sample" class="samples"></div>
+        <div id="test-form-error" class="error-box" hidden></div>
+        <div class="dialog-actions"><button class="secondary-button" data-action="close-test" type="button">Annuleren</button><button id="recognize-sample" class="primary-button" type="button" disabled>Fragment testen</button></div>
       </form>
     </dialog>
 

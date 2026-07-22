@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.5
+
+- **Test een fragment** opent voortaan een eigen modal met audio-upload, browsermicrofoon en Home Assistant Voice.
+- Testfragmenten kunnen vóór herkenning worden teruggeluisterd, vervangen of verwijderd.
+- Actieve browser- en Voice-opnames worden bij annuleren veilig afgebroken.
+
 ## 1.3.4
 
 - **Laatste herkenning** en **Laatste gesprekscontext** worden 30 seconden na hun eigen laatste update automatisch gewist.
