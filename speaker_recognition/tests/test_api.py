@@ -20,15 +20,35 @@ def test_api_contract_and_ingress_auth(tmp_path, monkeypatch):
         assert client.get("/api/speakers").json() == []
         payload = {
             "speaker_name": "Alice",
+            "person_entity_id": "person.alice",
             "samples": [{"audio": audio(12000).model_dump()}],
             "replace": False,
         }
         enrolled = client.post("/api/enroll", json=payload)
         assert enrolled.status_code == 200
         speaker_id = enrolled.json()["speaker"]["id"]
+        assert enrolled.json()["speaker"]["person_entity_id"] == "person.alice"
         result = client.post("/api/recognize", json={"audio": audio(10000).model_dump()})
         assert result.json()["speaker"]["name"] == "Alice"
+        payload["person_entity_id"] = None
+        cleared = client.post("/api/enroll", json=payload)
+        assert cleared.status_code == 200
+        assert cleared.json()["speaker"]["person_entity_id"] is None
         assert client.delete(f"/api/speakers/{speaker_id}").status_code == 204
+
+
+def test_person_endpoint_uses_home_assistant_entities(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setattr(
+        api.home_assistant,
+        "persons",
+        lambda: [{"entity_id": "person.alice", "name": "Alice"}],
+    )
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    with TestClient(api.app, headers={"X-Ingress-Path": "/api/hassio_ingress/test"}) as client:
+        response = client.get("/api/home-assistant-persons")
+        assert response.status_code == 200
+        assert response.json() == [{"entity_id": "person.alice", "name": "Alice"}]
 
 
 def test_direct_api_is_forbidden_without_token(tmp_path):

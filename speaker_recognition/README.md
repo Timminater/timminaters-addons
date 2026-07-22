@@ -10,8 +10,11 @@ de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
 ## Functies
 
 - Enroll speakers via audioupload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
+- Koppel een stemprofiel optioneel aan een Home Assistant `person.*`-entiteit.
 - Combineer meerdere samples tot één genormaliseerd stemprofiel.
 - Herken een speaker met een apart testfragment en een instelbare confidence-drempel.
+- Maak een STT-proxy én een selecteerbare conversation-proxy rond bestaande Home Assistant-entiteiten.
+- Gebruik persoonsherkenning veilig als personalisatiecontext, nooit als authenticatie of rechtenbron.
 - Beheer en verwijder profielen via Home Assistant Ingress.
 - Bewaar profielen atomisch onder `/data`, inclusief restart en App-backups.
 - Optionele token-beveiligde REST-API; de hostpoort staat standaard uit.
@@ -27,6 +30,11 @@ Voor enrollment en herkenning via een Voice-apparaat voeg je in de Speaker Recog
 integratie een STT-proxy toe rond je normale STT-engine. Gebruik daarna een Assist-pipeline
 met die proxy als STT-engine voor het Voice-apparaat. De GUI kan het apparaat vervolgens
 zelf laten luisteren.
+
+Voeg de integratie nogmaals toe en kies **Conversation-proxy toevoegen** om een bestaande
+conversation-agent te koppelen. De ontstane `conversation.*`-entiteit kan vervolgens als
+agent in een Assist-pipeline worden gekozen. De backend-URL en companion-token staan onder
+**Configureren** bij de hoofdentry en worden vóór opslaan gecontroleerd.
 
 Op dit moment wordt alleen `amd64` aangeboden. PyTorch/Resemblyzer is groot en de upstream ARM64-builds zijn niet betrouwbaar genoeg om als ondersteund te publiceren.
 

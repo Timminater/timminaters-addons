@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0
+
+- Concept 6 toegevoegd als App-icoon en lokaal Home Assistant integration-brand.
+- Backend-URL en companion-token zijn zichtbaar configureerbaar en worden vóór opslaan gevalideerd.
+- Selecteerbare conversation-proxy rond een bestaande Home Assistant conversation-agent toegevoegd.
+- Optionele enrollmentkoppeling met een Home Assistant `person.*`-entiteit toegevoegd.
+- Herkenningsresultaten zijn kortlevend, satellietgebonden en worden maximaal één keer voor personalisatie gebruikt.
+- De oorspronkelijke Home Assistant-gebruiker en rechtencontext worden nooit door een stemmatch gewijzigd.
+
 ## 1.2.0
 
 - Enrollment via een bestaand Home Assistant Voice-/Assist Satellite-apparaat toegevoegd.

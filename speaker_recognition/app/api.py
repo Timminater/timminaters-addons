@@ -24,6 +24,7 @@ from app.models import (
     EnrollmentRequest,
     EnrollmentResult,
     HealthResponse,
+    HomeAssistantPersonInfo,
     RecognitionRequest,
     RecognitionResult,
     SpeakerInfo,
@@ -157,6 +158,8 @@ async def enroll(request: EnrollmentRequest) -> EnrollmentResult:
             request.speaker_name,
             [sample.audio for sample in request.samples],
             request.replace,
+            request.person_entity_id,
+            "person_entity_id" in request.model_fields_set,
         )
         return EnrollmentResult(speaker=speaker)
     except ValueError as error:
@@ -173,6 +176,21 @@ async def enroll(request: EnrollmentRequest) -> EnrollmentResult:
 async def assist_satellites() -> list[AssistSatelliteInfo]:
     try:
         return await asyncio.to_thread(home_assistant.satellites)
+    except HomeAssistantApiError as error:
+        raise HTTPException(
+            status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"
+        ) from error
+
+
+@app.get(
+    "/api/home-assistant-persons",
+    response_model=list[HomeAssistantPersonInfo],
+    dependencies=[Depends(authorize_api)],
+)
+async def home_assistant_persons() -> list[HomeAssistantPersonInfo]:
+    """List people for an optional, non-authorizing speaker association."""
+    try:
+        return await asyncio.to_thread(home_assistant.persons)
     except HomeAssistantApiError as error:
         raise HTTPException(
             status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"

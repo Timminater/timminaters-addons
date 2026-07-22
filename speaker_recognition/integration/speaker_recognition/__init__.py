@@ -13,6 +13,7 @@ from .const import (
     CONF_ENTRY_TYPE,
     CONF_TOKEN,
     CONF_URL,
+    ENTRY_TYPE_CONVERSATION,
     ENTRY_TYPE_MAIN,
     ENTRY_TYPE_STT,
 )
@@ -48,17 +49,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not health.get("ready"):
             raise ConfigEntryNotReady("Speaker Recognition App is still starting")
         entry.runtime_data = api
-        entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
         return True
 
     if get_main_entry(hass) is None:
         raise ConfigEntryNotReady("The Speaker Recognition backend is not configured")
-    if entry_type != ENTRY_TYPE_STT:
-        # Upstream conversation entries are kept loadable during migration, but no
-        # longer create an entity that could turn voice matching into authorization.
+    platform = (
+        Platform.STT
+        if entry_type == ENTRY_TYPE_STT
+        else Platform.CONVERSATION
+        if entry_type == ENTRY_TYPE_CONVERSATION
+        else None
+    )
+    if platform is None:
         return True
-    await hass.config_entries.async_forward_entry_setups(entry, [Platform.STT])
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+    await hass.config_entries.async_forward_entry_setups(entry, [platform])
     return True
 
 
@@ -80,10 +84,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_type = entry.data.get(CONF_ENTRY_TYPE, ENTRY_TYPE_MAIN)
     if entry_type == ENTRY_TYPE_MAIN:
         return True
-    if entry_type != ENTRY_TYPE_STT:
+    if entry_type not in {ENTRY_TYPE_STT, ENTRY_TYPE_CONVERSATION}:
         return True
-    return await hass.config_entries.async_unload_platforms(entry, [Platform.STT])
-
-
-async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
+    platform = (
+        Platform.STT if entry_type == ENTRY_TYPE_STT else Platform.CONVERSATION
+    )
+    return await hass.config_entries.async_unload_platforms(entry, [platform])

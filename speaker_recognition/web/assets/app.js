@@ -2,12 +2,13 @@
 
 const basePath = document.querySelector('meta[name="ingress-base"]').content;
 const apiUrl = (path) => `${basePath}${path.replace(/^\//, "")}`;
-const state = { speakers: [], samples: [], recording: null, satellites: [], satelliteSession: null };
+const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null };
 
 const elements = {
   dialog: document.querySelector("#enroll-dialog"),
   form: document.querySelector("#enroll-form"),
   name: document.querySelector("#speaker-name"),
+  person: document.querySelector("#speaker-person"),
   samples: document.querySelector("#samples"),
   save: document.querySelector("#save-speaker"),
   error: document.querySelector("#form-error"),
@@ -52,6 +53,10 @@ function renderSpeakers() {
     const name = document.createElement("strong"); name.textContent = speaker.name;
     const count = document.createElement("span"); count.textContent = `${speaker.sample_count} sample${speaker.sample_count === 1 ? "" : "s"}`;
     meta.append(name, count);
+    if (speaker.person_entity_id) {
+      const person = document.createElement("span"); person.textContent = `Persoon: ${speaker.person_entity_id}`;
+      meta.append(person);
+    }
     const remove = document.createElement("button"); remove.className = "delete-button"; remove.type = "button"; remove.ariaLabel = `${speaker.name} verwijderen`; remove.textContent = "⌫";
     remove.addEventListener("click", () => deleteSpeaker(speaker));
     card.append(avatar, meta, remove);
@@ -82,7 +87,21 @@ async function openEnroll() {
   renderSamples();
   elements.dialog.showModal();
   elements.name.focus();
-  await loadSatellites();
+  await Promise.all([loadSatellites(), loadPersons()]);
+}
+
+async function loadPersons() {
+  elements.person.replaceChildren(new Option("Personen laden…", ""));
+  try {
+    state.persons = await request("api/home-assistant-persons");
+    elements.person.replaceChildren(
+      new Option("Niet gekoppeld", ""),
+      ...state.persons.map((item) => new Option(item.name, item.entity_id)),
+    );
+  } catch (error) {
+    elements.person.replaceChildren(new Option("Personen niet bereikbaar", ""));
+    showToast(error.message);
+  }
 }
 
 async function loadSatellites() {
@@ -222,7 +241,7 @@ async function saveSpeaker() {
   const name = elements.name.value.trim(); if (!name || !state.samples.length) return;
   elements.save.disabled = true; elements.save.textContent = "Embedding maken…"; elements.error.hidden = true;
   try {
-    await request("api/enroll", { method: "POST", body: JSON.stringify({ speaker_name: name, replace: document.querySelector("#replace-profile").checked, samples: state.samples.map((item) => ({ audio: { audio_data: item.audio_data, sample_rate: item.sample_rate } })) }) });
+    await request("api/enroll", { method: "POST", body: JSON.stringify({ speaker_name: name, person_entity_id: elements.person.value || null, replace: document.querySelector("#replace-profile").checked, samples: state.samples.map((item) => ({ audio: { audio_data: item.audio_data, sample_rate: item.sample_rate } })) }) });
     elements.dialog.close(); showToast(`${name} is succesvol enrolled`); await refresh();
   } catch (error) { setFormError(error.message); }
   finally { elements.save.textContent = "Profiel opslaan"; renderSamples(); }

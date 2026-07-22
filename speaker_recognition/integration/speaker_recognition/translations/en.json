@@ -2,12 +2,41 @@
   "title": "Speaker Recognition",
   "config": {
     "step": {
-      "confirm": {"title": "Speaker Recognition App discovered", "description": "Connect Home Assistant to the running Speaker Recognition App?"},
-      "user": {"title": "Set up Speaker Recognition", "description": "The App is normally discovered automatically. Manual setup requires its internal URL and companion token.", "data": {"url": "App URL", "token": "Companion token"}, "menu_options": {"add_stt": "Add STT proxy"}},
-      "add_stt": {"title": "Add STT proxy", "description": "Wrap an existing speech-to-text entity to identify the speaker while it transcribes.", "data": {"stt_entity": "Speech-to-text entity"}}
+      "confirm": {
+        "title": "Speaker Recognition App discovered",
+        "description": "Connect Home Assistant to the running Speaker Recognition App? The discovered App is used as the recognition backend."
+      },
+      "user": {
+        "title": "Set up Speaker Recognition",
+        "description": "Configure a recognition backend, or add an STT/conversation proxy when the App is already connected.",
+        "data": {"url": "Recognition backend URL", "token": "Backend companion token"},
+        "data_description": {"url": "Internal URL of the Speaker Recognition App or compatible backend.", "token": "Token used by Home Assistant to authenticate with the backend."},
+        "menu_options": {"add_stt": "Add STT proxy", "add_conversation": "Add conversation proxy"}
+      },
+      "add_stt": {
+        "title": "Add STT proxy",
+        "description": "Wrap an existing speech-to-text entity so the transcript is preserved while the speaker is identified.",
+        "data": {"stt_entity": "Source speech-to-text entity"}
+      },
+      "add_conversation": {
+        "title": "Add conversation proxy",
+        "description": "Wrap an existing conversation agent and add a mapped person as untrusted personalization context. Voice recognition never changes Home Assistant users or permissions.",
+        "data": {"conversation_entity": "Source conversation agent", "min_confidence": "Minimum speaker confidence"},
+        "data_description": {"min_confidence": "Below this confidence, no person context is added and the source agent is used normally."}
+      }
     },
-    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition App"},
+    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
     "abort": {"already_configured": "This Speaker Recognition App is already configured", "discovery_error": "The discovery information is incomplete", "reconfigured": "The existing Speaker Recognition integration now uses the confirmed App"}
   },
-  "options": {"step": {"init": {"title": "Speaker Recognition options", "data": {"url": "App URL", "token": "Companion token", "stt_entity": "Speech-to-text entity"}}}, "abort": {"not_supported": "This legacy conversation proxy is no longer supported because voice recognition must not grant user permissions"}}
+  "options": {
+    "step": {
+      "init": {
+        "title": "Speaker Recognition options",
+        "description": "Backend connection settings are validated before they are saved. Conversation person context is personalization only and never authorization.",
+        "data": {"url": "Recognition backend URL", "token": "Backend companion token", "stt_entity": "Source speech-to-text entity", "conversation_entity": "Source conversation agent", "min_confidence": "Minimum speaker confidence"}
+      }
+    },
+    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
+    "abort": {"not_supported": "This entry type is not supported"}
+  }
 }

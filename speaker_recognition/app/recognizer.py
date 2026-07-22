@@ -73,7 +73,12 @@ class SpeakerRecognizer:
             return sorted(self._profiles.values(), key=lambda item: item.name.casefold())
 
     def enroll(
-        self, speaker_name: str, audio_inputs: list[AudioInput], replace: bool = False
+        self,
+        speaker_name: str,
+        audio_inputs: list[AudioInput],
+        replace: bool = False,
+        person_entity_id: str | None = None,
+        update_person_mapping: bool = False,
     ) -> SpeakerInfo:
         with self._lock:
             encoder = self._require_encoder()
@@ -93,6 +98,7 @@ class SpeakerRecognizer:
                     sample_count=len(embeddings),
                     created_at=now,
                     updated_at=now,
+                    person_entity_id=person_entity_id,
                 )
             else:
                 speaker_id = existing.id
@@ -106,6 +112,11 @@ class SpeakerRecognizer:
                     sample_count=len(embeddings) if replace else existing.sample_count + len(embeddings),
                     created_at=existing.created_at,
                     updated_at=now,
+                    person_entity_id=(
+                        person_entity_id
+                        if update_person_mapping
+                        else existing.person_entity_id
+                    ),
                 )
 
             previous_profile = self._profiles.get(speaker_id)
