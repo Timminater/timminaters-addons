@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- Enrollment via een bestaand Home Assistant Voice-/Assist Satellite-apparaat toegevoegd.
+- De App ontdekt beschikbare satellieten en start een veilige STT-only `ask_question`-opname.
+- Enrollmentspraak bereikt nooit de conversation- of intent-laag en kan dus geen commando uitvoeren.
+- Opnames worden alleen geaccepteerd als de gekozen satelliet de enige luisterende satelliet is.
+- Sessies zijn atomisch, begrensd en verlopen automatisch; ruwe opname blijft alleen kort in het geheugen.
+
 ## 1.1.0
 
 - Meegeleverde Home Assistant custom integration wordt automatisch geïnstalleerd en bijgewerkt.

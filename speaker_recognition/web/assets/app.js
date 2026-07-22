@@ -2,7 +2,7 @@
 
 const basePath = document.querySelector('meta[name="ingress-base"]').content;
 const apiUrl = (path) => `${basePath}${path.replace(/^\//, "")}`;
-const state = { speakers: [], samples: [], recording: null };
+const state = { speakers: [], samples: [], recording: null, satellites: [], satelliteSession: null };
 
 const elements = {
   dialog: document.querySelector("#enroll-dialog"),
@@ -20,6 +20,8 @@ const elements = {
   toast: document.querySelector("#toast"),
   testFile: document.querySelector("#test-file"),
   testResult: document.querySelector("#test-result"),
+  satellite: document.querySelector("#voice-satellite"),
+  voiceRecord: document.querySelector("#voice-record-button"),
 };
 
 async function request(path, options = {}) {
@@ -73,19 +75,77 @@ async function refresh() {
   }
 }
 
-function openEnroll() {
+async function openEnroll() {
   state.samples = [];
   elements.form.reset();
   elements.error.hidden = true;
   renderSamples();
   elements.dialog.showModal();
   elements.name.focus();
+  await loadSatellites();
+}
+
+async function loadSatellites() {
+  elements.satellite.replaceChildren(new Option("Voice-apparaten laden…", ""));
+  elements.voiceRecord.disabled = true;
+  try {
+    state.satellites = await request("api/assist-satellites");
+    const available = state.satellites.filter((item) => item.state === "idle");
+    elements.satellite.replaceChildren(
+      new Option(available.length ? "Kies een Voice-apparaat" : "Geen beschikbaar Voice-apparaat", ""),
+      ...available.map((item) => new Option(item.name, item.entity_id)),
+    );
+  } catch (error) {
+    elements.satellite.replaceChildren(new Option("Voice-apparaten niet bereikbaar", ""));
+    setFormError(error.message);
+  }
+}
+
+async function captureFromSatellite() {
+  const entityId = elements.satellite.value;
+  if (!entityId) return;
+  let sessionId = null;
+  elements.error.hidden = true;
+  elements.voiceRecord.disabled = true;
+  elements.voiceRecord.textContent = "Luisteren…";
+  try {
+    let session = await request("api/satellite-enrollment", {
+      method: "POST",
+      body: JSON.stringify({ satellite_entity_id: entityId }),
+    });
+    sessionId = session.id;
+    state.satelliteSession = sessionId;
+    while (["armed", "capturing"].includes(session.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      if (state.satelliteSession !== session.id) return;
+      session = await request(`api/satellite-enrollment/${session.id}`);
+    }
+    if (session.status !== "complete" || !session.audio) {
+      throw new Error(session.error || "Geen stemfragment ontvangen. Controleer of deze Assist-pipeline de Speaker Recognition STT gebruikt.");
+    }
+    const bytes = atob(session.audio.audio_data).length;
+    state.samples.push({
+      ...session.audio,
+      duration: bytes / 2 / session.audio.sample_rate,
+      label: state.satellites.find((item) => item.entity_id === entityId)?.name || "Home Assistant Voice",
+      source: "voice",
+    });
+    renderSamples();
+    showToast("Voice-fragment ontvangen");
+    await request(`api/satellite-enrollment/${session.id}`, { method: "DELETE" });
+  } catch (error) {
+    if (elements.dialog.open) setFormError(error.message);
+  } finally {
+    if (state.satelliteSession === sessionId) state.satelliteSession = null;
+    elements.voiceRecord.textContent = "Opnemen via Voice";
+    elements.voiceRecord.disabled = !elements.satellite.value;
+  }
 }
 
 function renderSamples() {
   elements.samples.replaceChildren(...state.samples.map((sample, index) => {
     const row = document.createElement("div"); row.className = "sample-row";
-    const icon = document.createElement("span"); icon.textContent = sample.source === "microfoon" ? "●" : "♪";
+    const icon = document.createElement("span"); icon.textContent = sample.source === "microfoon" ? "●" : sample.source === "voice" ? "◉" : "♪";
     const description = document.createElement("span"); description.textContent = `${sample.label} · ${sample.duration.toFixed(1)} sec`;
     const remove = document.createElement("button"); remove.type = "button"; remove.ariaLabel = "Sample verwijderen"; remove.textContent = "×";
     remove.addEventListener("click", () => { state.samples.splice(index, 1); renderSamples(); });
@@ -192,6 +252,8 @@ document.querySelector('[data-action="enroll"]').addEventListener("click", openE
 elements.name.addEventListener("input", renderSamples);
 elements.search.addEventListener("input", renderSpeakers);
 elements.record.addEventListener("click", toggleRecording);
+elements.satellite.addEventListener("change", () => { elements.voiceRecord.disabled = !elements.satellite.value; });
+elements.voiceRecord.addEventListener("click", captureFromSatellite);
 elements.save.addEventListener("click", saveSpeaker);
 elements.audioFiles.addEventListener("change", async () => {
   elements.error.hidden = true;
@@ -201,6 +263,12 @@ elements.audioFiles.addEventListener("change", async () => {
   elements.audioFiles.value = ""; renderSamples();
 });
 elements.testFile.addEventListener("change", () => { if (elements.testFile.files[0]) testAudio(elements.testFile.files[0]); elements.testFile.value = ""; });
-elements.dialog.addEventListener("close", () => { if (state.recording) stopRecording(); });
+elements.dialog.addEventListener("close", () => {
+  if (state.recording) stopRecording();
+  if (state.satelliteSession) {
+    request(`api/satellite-enrollment/${state.satelliteSession}`, { method: "DELETE" }).catch(() => {});
+    state.satelliteSession = null;
+  }
+});
 
 refresh();

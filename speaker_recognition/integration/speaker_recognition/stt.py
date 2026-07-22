@@ -27,9 +27,10 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import get_main_entry
 from .api import SpeakerRecognitionApiError
-from .const import CONF_STT_ENTITY, DOMAIN, EVENT_DETECTED
+from .const import CONF_STT_ENTITY, DOMAIN, EVENT_DETECTED, EVENT_ENROLLMENT_COMPLETED
 
 _LOGGER = logging.getLogger(__name__)
+MAX_CAPTURE_BYTES = 4 * 1024 * 1024
 
 
 async def async_setup_entry(
@@ -121,6 +122,19 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         if source is None:
             return SpeechResult(None, SpeechResultState.ERROR)
 
+        main = get_main_entry(self.hass)
+        enrollment = None
+        if main is not None:
+            try:
+                enrollment = await main.runtime_data.async_claim_satellite_enrollment()
+            except SpeakerRecognitionApiError as error:
+                _LOGGER.warning("Could not check satellite enrollment state: %s", error)
+                # The App may have accepted a claim before the response was lost.
+                # Fail closed so uncertain enrollment audio can never become an intent.
+                return SpeechResult(None, SpeechResultState.ERROR)
+        if enrollment is not None:
+            return await self._async_capture_enrollment(metadata, stream, enrollment)
+
         audio = bytearray()
         stream_complete = asyncio.Event()
 
@@ -168,3 +182,62 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             stream_complete.set()
         await recognition_task
         return transcript
+
+    async def _async_capture_enrollment(
+        self,
+        metadata: SpeechMetadata,
+        stream: AsyncIterable[bytes],
+        enrollment: dict,
+    ) -> SpeechResult:
+        """Consume one satellite utterance without forwarding it to intent handling."""
+        session_id = str(enrollment["id"])
+        audio = bytearray()
+        try:
+            async for chunk in stream:
+                audio.extend(chunk)
+                if len(audio) > MAX_CAPTURE_BYTES:
+                    raise ValueError("De Voice-opname is te lang")
+            if not audio:
+                raise ValueError("De Voice-opname bevat geen audio")
+            pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+            main = get_main_entry(self.hass)
+            if main is None:
+                raise SpeakerRecognitionApiError("Speaker Recognition backend is not loaded")
+            await main.runtime_data.async_complete_satellite_enrollment(
+                session_id, pcm, sample_rate
+            )
+        except asyncio.CancelledError:
+            main = get_main_entry(self.hass)
+            if main is not None:
+                try:
+                    await asyncio.shield(
+                        main.runtime_data.async_fail_satellite_enrollment(
+                            session_id, "Voice-opname geannuleerd"
+                        )
+                    )
+                except SpeakerRecognitionApiError:
+                    pass
+            raise
+        except Exception as error:
+            _LOGGER.warning("Satellite enrollment failed: %s", error)
+            main = get_main_entry(self.hass)
+            if main is not None:
+                try:
+                    await main.runtime_data.async_fail_satellite_enrollment(
+                        session_id, str(error)
+                    )
+                except SpeakerRecognitionApiError:
+                    _LOGGER.debug("Could not report failed satellite enrollment", exc_info=True)
+        else:
+            self.hass.bus.async_fire(
+                EVENT_ENROLLMENT_COMPLETED,
+                {
+                    "satellite_entity_id": enrollment["satellite_entity_id"],
+                    "stt_entity_id": self.entity_id,
+                    "session_id": session_id,
+                },
+            )
+            # assist_satellite.ask_question runs this as an STT-only pipeline. A
+            # successful non-empty result finishes without entering intent handling.
+            return SpeechResult("speaker enrollment complete", SpeechResultState.SUCCESS)
+        return SpeechResult(None, SpeechResultState.ERROR)
