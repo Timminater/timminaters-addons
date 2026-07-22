@@ -1,0 +1,13 @@
+{
+  "title": "Speaker Recognition",
+  "config": {
+    "step": {
+      "confirm": {"title": "Speaker Recognition App discovered", "description": "Connect Home Assistant to the running Speaker Recognition App?"},
+      "user": {"title": "Set up Speaker Recognition", "description": "The App is normally discovered automatically. Manual setup requires its internal URL and companion token.", "data": {"url": "App URL", "token": "Companion token"}, "menu_options": {"add_stt": "Add STT proxy"}},
+      "add_stt": {"title": "Add STT proxy", "description": "Wrap an existing speech-to-text entity to identify the speaker while it transcribes.", "data": {"stt_entity": "Speech-to-text entity"}}
+    },
+    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition App"},
+    "abort": {"already_configured": "This Speaker Recognition App is already configured", "discovery_error": "The discovery information is incomplete", "reconfigured": "The existing Speaker Recognition integration now uses the confirmed App"}
+  },
+  "options": {"step": {"init": {"title": "Speaker Recognition options", "data": {"url": "App URL", "token": "Companion token", "stt_entity": "Speech-to-text entity"}}}, "abort": {"not_supported": "This legacy conversation proxy is no longer supported because voice recognition must not grant user permissions"}}
+}

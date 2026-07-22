@@ -1,6 +1,11 @@
 name: Publish Speaker Recognition
 
 on:
+  pull_request:
+    paths:
+      - speaker_recognition/**
+      - .github/workflows/publish-speaker-recognition.yml
+      - .github/workflows/build-app.yml
   push:
     branches:
       - main
@@ -23,5 +28,5 @@ jobs:
     uses: ./.github/workflows/build-app.yml
     with:
       app: speaker_recognition
-      publish: true
+      publish: ${{ github.event_name != 'pull_request' }}
     secrets: inherit

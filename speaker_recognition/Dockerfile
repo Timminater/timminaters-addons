@@ -30,6 +30,7 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 \
 
 COPY app ./app
 COPY web ./web
+COPY integration ./integration
 COPY LICENSE.md ./LICENSE.md
 COPY THIRD_PARTY_NOTICES.md ./THIRD_PARTY_NOTICES.md
 
