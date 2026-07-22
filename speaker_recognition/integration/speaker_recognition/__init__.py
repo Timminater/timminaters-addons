@@ -17,6 +17,7 @@ from .const import (
     ENTRY_TYPE_MAIN,
     ENTRY_TYPE_STT,
 )
+from .results import cancel_diagnostic_timers
 
 SpeakerRecognitionConfigEntry = ConfigEntry[SpeakerRecognitionApi]
 
@@ -84,7 +85,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an entry."""
     entry_type = entry.data.get(CONF_ENTRY_TYPE, ENTRY_TYPE_MAIN)
     if entry_type == ENTRY_TYPE_MAIN:
-        return await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR])
+        unloaded = await hass.config_entries.async_unload_platforms(
+            entry, [Platform.SENSOR]
+        )
+        if unloaded:
+            cancel_diagnostic_timers(hass)
+        return unloaded
     if entry_type not in {ENTRY_TYPE_STT, ENTRY_TYPE_CONVERSATION}:
         return True
     platform = (

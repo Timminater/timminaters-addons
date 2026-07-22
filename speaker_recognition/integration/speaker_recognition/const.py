@@ -18,3 +18,4 @@ EVENT_DETECTED = "speaker_recognition_detected"
 EVENT_ENROLLMENT_COMPLETED = "speaker_recognition_enrollment_completed"
 SIGNAL_RESULT_UPDATED = f"{DOMAIN}_result_updated"
 SIGNAL_CONTEXT_UPDATED = f"{DOMAIN}_context_updated"
+DIAGNOSTIC_RESET_SECONDS = 30

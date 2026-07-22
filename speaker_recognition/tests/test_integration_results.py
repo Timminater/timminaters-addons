@@ -55,6 +55,20 @@ helpers = types.ModuleType("homeassistant.helpers")
 dispatcher = types.ModuleType("homeassistant.helpers.dispatcher")
 dispatcher.async_dispatcher_send = lambda hass, signal: hass.dispatched.append(signal)
 dispatcher.async_dispatcher_connect = lambda hass, signal, target: lambda: None
+event = types.ModuleType("homeassistant.helpers.event")
+
+
+def async_call_later(hass, delay, callback):
+    timer = SimpleNamespace(delay=delay, callback=callback, cancelled=False)
+    hass.timers.append(timer)
+
+    def cancel():
+        timer.cancelled = True
+
+    return cancel
+
+
+event.async_call_later = async_call_later
 device_registry = types.ModuleType("homeassistant.helpers.device_registry")
 device_registry.DeviceInfo = lambda **kwargs: kwargs
 entity = types.ModuleType("homeassistant.helpers.entity")
@@ -74,6 +88,7 @@ sys.modules.setdefault("homeassistant.helpers.device_registry", device_registry)
 sys.modules.setdefault("homeassistant.helpers.dispatcher", dispatcher)
 sys.modules.setdefault("homeassistant.helpers.entity", entity)
 sys.modules.setdefault("homeassistant.helpers.entity_platform", entity_platform)
+sys.modules.setdefault("homeassistant.helpers.event", event)
 integration_package = Path(__file__).parents[1] / "integration" / "speaker_recognition"
 speaker_recognition_package = types.ModuleType("speaker_recognition")
 speaker_recognition_package.__path__ = [str(integration_package)]
@@ -118,6 +133,7 @@ def fake_hass(now=100.0, states=None, person_exists=True):
         loop=FakeLoop(now),
         states=FakeStates(states, person_exists=person_exists),
         dispatched=[],
+        timers=[],
     )
 
 
@@ -153,6 +169,31 @@ def test_conversation_context_is_stored_and_dispatched():
 
     assert hass.data["speaker_recognition"]["last_conversation_context"] == context
     assert hass.dispatched == [SIGNAL_CONTEXT_UPDATED]
+
+
+def test_diagnostic_records_reset_after_30_seconds_and_new_values_win():
+    hass = fake_hass()
+    first = result(speaker_name="Alice")
+    second = result(speaker_name="Bob")
+
+    remember_result(hass, first)
+    remember_result(hass, second)
+
+    assert hass.timers[0].cancelled is True
+    assert hass.timers[1].delay == 30
+    hass.timers[0].callback(None)
+    assert hass.data["speaker_recognition"]["last_result"] is second
+    assert "last_result_reset_timer" in hass.data["speaker_recognition"]
+    hass.timers[1].callback(None)
+    assert hass.data["speaker_recognition"]["last_result"] is None
+    assert "last_result_reset_timer" not in hass.data["speaker_recognition"]
+
+    context = {"forwarded": True, "person_entity_id": "person.alice"}
+    remember_conversation_context(hass, context)
+    assert hass.timers[2].delay == 30
+    hass.timers[2].callback(None)
+    assert hass.data["speaker_recognition"]["last_conversation_context"] is None
+    assert hass.dispatched[-2:] == [SIGNAL_CONTEXT_UPDATED, SIGNAL_CONTEXT_UPDATED]
 
 
 def test_diagnostic_sensors_expose_recognition_and_forwarding_details():

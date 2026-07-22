@@ -95,7 +95,7 @@ class HomeAssistantClient:
             method="POST",
             payload={
                 "entity_id": satellite_entity_id,
-                "question": "Spreek nu je stemfragment in voor speakerherkenning.",
+                "question": "Spreek nu.",
                 "preannounce": True,
             },
         )

@@ -53,7 +53,9 @@ De hoofdentry maakt twee diagnostische sensoren aan op het apparaat **Speaker Re
 `forwarded: true` bewijst dat de integratie de persoonscontext via Home Assistants
 conversation-contract aan de vervolgagent heeft aangeboden. Het kan niet garanderen dat een
 externe LLM de instructie inhoudelijk volgt. Beide sensoren bewaren alleen het laatste
-resultaat in het geheugen en bevatten geen audio.
+resultaat in het geheugen en bevatten geen audio. Dertig seconden na hun eigen laatste
+update worden de status en attributen automatisch gewist, zodat oude herkenningen niet als
+actueel kunnen worden gelezen.
 
 ## Enrollment
 

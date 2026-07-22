@@ -2,7 +2,7 @@
 
 const basePath = document.querySelector('meta[name="ingress-base"]').content;
 const apiUrl = (path) => `${basePath}${path.replace(/^\//, "")}`;
-const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null, previewUrls: [] };
+const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null, previewUrls: [], speechExamples: [], speechExampleIndex: -1 };
 
 const elements = {
   dialog: document.querySelector("#enroll-dialog"),
@@ -23,6 +23,8 @@ const elements = {
   testResult: document.querySelector("#test-result"),
   satellite: document.querySelector("#voice-satellite"),
   voiceRecord: document.querySelector("#voice-record-button"),
+  speechExample: document.querySelector("#speech-example-text"),
+  newSpeechExample: document.querySelector("#new-speech-example"),
 };
 
 async function request(path, options = {}) {
@@ -88,7 +90,25 @@ async function openEnroll() {
   renderSamples();
   elements.dialog.showModal();
   elements.name.focus();
-  await Promise.all([loadSatellites(), loadPersons()]);
+  await Promise.all([loadSatellites(), loadPersons(), loadSpeechExamples()]);
+}
+
+async function loadSpeechExamples() {
+  if (!state.speechExamples.length) {
+    try { state.speechExamples = await request("assets/speech-prompts.json"); }
+    catch (_) { return; }
+  }
+  selectSpeechExample();
+}
+
+function selectSpeechExample() {
+  if (!state.speechExamples.length) return;
+  let nextIndex = Math.floor(Math.random() * state.speechExamples.length);
+  if (nextIndex === state.speechExampleIndex && state.speechExamples.length > 1) {
+    nextIndex = (nextIndex + 1 + Math.floor(Math.random() * (state.speechExamples.length - 1))) % state.speechExamples.length;
+  }
+  state.speechExampleIndex = nextIndex;
+  elements.speechExample.textContent = state.speechExamples[nextIndex];
 }
 
 async function loadPersons() {
@@ -151,6 +171,7 @@ async function captureFromSatellite() {
       source: "voice",
     });
     renderSamples();
+    selectSpeechExample();
     showToast("Voice-fragment ontvangen");
   } catch (error) {
     if (elements.dialog.open) setFormError(error.message);
@@ -260,7 +281,7 @@ function stopRecording() {
   recording.chunks.forEach((chunk) => { merged.set(chunk, offset); offset += chunk.length; });
   const sampleRate = recording.context.sampleRate; recording.context.close(); state.recording = null;
   elements.record.classList.remove("recording"); elements.record.querySelector("span").textContent = "Opnemen";
-  try { state.samples.push(makeSample(merged, sampleRate, "Microfoonopname", "microfoon")); renderSamples(); }
+  try { state.samples.push(makeSample(merged, sampleRate, "Microfoonopname", "microfoon")); renderSamples(); selectSpeechExample(); }
   catch (error) { setFormError(error.message); }
 }
 
@@ -317,6 +338,7 @@ elements.search.addEventListener("input", renderSpeakers);
 elements.record.addEventListener("click", toggleRecording);
 elements.satellite.addEventListener("change", () => { elements.voiceRecord.disabled = !elements.satellite.value; });
 elements.voiceRecord.addEventListener("click", captureFromSatellite);
+elements.newSpeechExample.addEventListener("click", selectSpeechExample);
 elements.save.addEventListener("click", saveSpeaker);
 elements.audioFiles.addEventListener("change", async () => {
   elements.error.hidden = true;

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.4
+
+- **Laatste herkenning** en **Laatste gesprekscontext** worden 30 seconden na hun eigen laatste update automatisch gewist.
+- Een nieuwe update vervangt de lopende reset-timer; timers worden bij het unloaden van de integratie opgeruimd.
+
+## 1.3.3
+
+- Vijftig eenvoudige Nederlandse voorbeeldteksten toegevoegd voor gevarieerde enrollment-opnames.
+- De modal kiest zonder directe herhaling een willekeurige tekst en toont na iedere nieuwe opname automatisch een volgende.
+- Een knop **Andere tekst** maakt handmatig wisselen mogelijk; voorlezen blijft optioneel.
+
+## 1.3.2
+
+- De Voice-enrollmentprompt is verkort naar “Spreek nu.”, zodat de luisterfase de gesproken instructie niet voortijdig afbreekt.
+
 ## 1.3.1
 
 - Diagnostische Home Assistant-sensor voor de laatste speakerherkenning toegevoegd.

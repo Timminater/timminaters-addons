@@ -7,11 +7,57 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later
 
-from .const import DOMAIN, SIGNAL_CONTEXT_UPDATED, SIGNAL_RESULT_UPDATED
+from .const import (
+    DIAGNOSTIC_RESET_SECONDS,
+    DOMAIN,
+    SIGNAL_CONTEXT_UPDATED,
+    SIGNAL_RESULT_UPDATED,
+)
 
 RESULT_TTL_SECONDS = 8.0
 MAX_RESULTS = 20
+_RESET_TIMER_KEYS = {
+    "last_result": "last_result_reset_timer",
+    "last_conversation_context": "last_conversation_context_reset_timer",
+}
+
+
+def _schedule_diagnostic_reset(
+    hass: HomeAssistant, key: str, signal: str, value: dict[str, Any]
+) -> None:
+    """Clear one diagnostic record after its short display window."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    timer_key = _RESET_TIMER_KEYS[key]
+    if cancel := domain_data.pop(timer_key, None):
+        cancel()
+
+    reset_cancel = None
+
+    def reset(_now) -> None:
+        if domain_data.get(timer_key) is not reset_cancel:
+            return
+        domain_data.pop(timer_key, None)
+        # The identity check above also ignores a stale callback if a newer
+        # timer and record replaced this value.
+        if domain_data.get(key) is not value:
+            return
+        domain_data[key] = None
+        async_dispatcher_send(hass, signal)
+
+    reset_cancel = async_call_later(
+        hass, DIAGNOSTIC_RESET_SECONDS, reset
+    )
+    domain_data[timer_key] = reset_cancel
+
+
+def cancel_diagnostic_timers(hass: HomeAssistant) -> None:
+    """Cancel pending diagnostic resets when the backend entry unloads."""
+    domain_data = hass.data.get(DOMAIN, {})
+    for timer_key in _RESET_TIMER_KEYS.values():
+        if cancel := domain_data.pop(timer_key, None):
+            cancel()
 
 
 def listening_satellite(hass: HomeAssistant) -> str | None:
@@ -31,12 +77,16 @@ def remember_result(hass: HomeAssistant, result: dict[str, Any]) -> None:
     results.append(result)
     domain_data["last_result"] = result
     async_dispatcher_send(hass, SIGNAL_RESULT_UPDATED)
+    _schedule_diagnostic_reset(hass, "last_result", SIGNAL_RESULT_UPDATED, result)
 
 
 def remember_conversation_context(hass: HomeAssistant, context: dict[str, Any]) -> None:
     """Expose whether speaker personalization was submitted to the source agent."""
     hass.data.setdefault(DOMAIN, {})["last_conversation_context"] = context
     async_dispatcher_send(hass, SIGNAL_CONTEXT_UPDATED)
+    _schedule_diagnostic_reset(
+        hass, "last_conversation_context", SIGNAL_CONTEXT_UPDATED, context
+    )
 
 
 def consume_result(

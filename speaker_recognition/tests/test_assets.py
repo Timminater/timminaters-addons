@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -24,3 +25,11 @@ def test_app_store_assets_have_expected_dimensions():
         with Image.open(ROOT / name) as image:
             assert image.size == size
             assert image.mode == "RGBA"
+
+
+def test_speech_prompts_are_varied_and_easy_to_read():
+    prompts = json.loads((ROOT / "web" / "assets" / "speech-prompts.json").read_text())
+
+    assert len(prompts) == 50
+    assert len(set(prompts)) == 50
+    assert all(18 <= len(prompt.split()) <= 45 for prompt in prompts)

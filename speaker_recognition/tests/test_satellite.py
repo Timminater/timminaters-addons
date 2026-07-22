@@ -111,7 +111,10 @@ def test_home_assistant_client_filters_and_uses_stt_only_question(monkeypatch):
     assert "start_conversation" not in url
     assert method == "POST"
     assert timeout == 70
-    assert json.loads(body)["entity_id"] == "assist_satellite.voice_a"
+    question = json.loads(body)
+    assert question["entity_id"] == "assist_satellite.voice_a"
+    assert question["question"] == "Spreek nu."
+    assert question["preannounce"] is True
     client.confirm_enrollment_sample("assist_satellite.voice_a")
     url, method, body, timeout = calls[-1]
     assert url.endswith("/services/assist_satellite/announce")
