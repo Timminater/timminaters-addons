@@ -41,6 +41,7 @@ from app.models import (
     RecognitionResult,
     SpeakerInfo,
     SampleActiveRequest,
+    SatelliteEnrollmentClaimRequest,
     SatelliteEnrollmentClaim,
     SatelliteEnrollmentCompleteRequest,
     SatelliteEnrollmentFailureRequest,
@@ -446,22 +447,22 @@ async def _run_satellite_prompt(session_id: str, satellite_entity_id: str) -> No
     response_model=SatelliteEnrollmentClaim,
     dependencies=[Depends(authorize_api)],
 )
-async def claim_satellite_enrollment() -> SatelliteEnrollmentClaim:
-    # SpeechMetadata does not identify its originating satellite. Only accept a
-    # stream while the selected satellite is the sole listening satellite.
-    try:
-        armed = await satellite_enrollment.peek_armed()
-        if armed is None:
-            return SatelliteEnrollmentClaim()
-        satellites = await asyncio.to_thread(home_assistant.satellites)
-        listening = [item.entity_id for item in satellites if item.state == "listening"]
-        if listening != [armed.satellite_entity_id]:
-            return SatelliteEnrollmentClaim()
-        return SatelliteEnrollmentClaim(session=await satellite_enrollment.claim())
-    except HomeAssistantApiError as error:
-        raise HTTPException(
-            status_code=502, detail=f"Home Assistant is niet bereikbaar: {error}"
-        ) from error
+async def claim_satellite_enrollment(
+    request: SatelliteEnrollmentClaimRequest,
+) -> SatelliteEnrollmentClaim:
+    # SpeechMetadata does not carry its originating satellite. The integration
+    # therefore snapshots Home Assistant's local state synchronously when the
+    # STT stream starts and submits that identity here. Re-querying HA from the
+    # App races the satellite's listening -> processing transition and can miss
+    # the only claim opportunity.
+    armed = await satellite_enrollment.peek_armed()
+    if (
+        armed is None
+        or request.satellite_entity_id is None
+        or request.satellite_entity_id != armed.satellite_entity_id
+    ):
+        return SatelliteEnrollmentClaim()
+    return SatelliteEnrollmentClaim(session=await satellite_enrollment.claim())
 
 
 @app.post(

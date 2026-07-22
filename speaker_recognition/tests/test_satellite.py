@@ -175,7 +175,7 @@ class FakeHomeAssistant:
         self.release.wait(timeout=2)
 
 
-def test_satellite_api_requires_auth_and_rejects_ambiguous_claim(monkeypatch, tmp_path):
+def test_satellite_api_claims_only_matching_local_satellite_snapshot(monkeypatch, tmp_path):
     fake = FakeHomeAssistant()
     monkeypatch.setattr(api, "home_assistant", fake)
     api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
@@ -194,12 +194,26 @@ def test_satellite_api_requires_auth_and_rejects_ambiguous_claim(monkeypatch, tm
         assert started.json()["status"] == "armed"
         armed_id = started.json()["id"]
 
-        fake.states = {
-            "assist_satellite.voice": "listening",
-            "assist_satellite.other": "listening",
-        }
-        claim = client.post("/api/satellite-enrollment/claim", json={}).json()
+        # The App must not re-query HA here: by the time the authenticated
+        # round-trip arrives, the selected satellite may already be processing
+        # or idle. The integration captured the listening identity locally.
+        fake.states = {"assist_satellite.voice": "idle"}
+        claim = client.post(
+            "/api/satellite-enrollment/claim",
+            json={"satellite_entity_id": "assist_satellite.other"},
+        ).json()
         assert claim["session"] is None
         session = client.get(f"/api/satellite-enrollment/{armed_id}").json()
         assert session["status"] == "armed"
+
+        claim = client.post(
+            "/api/satellite-enrollment/claim",
+            json={"satellite_entity_id": "assist_satellite.voice"},
+        ).json()
+        assert claim["session"]["id"] == armed_id
+        assert claim["session"]["status"] == "capturing"
+        assert client.post(
+            "/api/satellite-enrollment/claim",
+            json={"satellite_entity_id": "assist_satellite.voice"},
+        ).json()["session"] is None
         fake.release.set()

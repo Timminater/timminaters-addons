@@ -124,3 +124,22 @@ def test_analysis_and_finalize_use_v2_contract():
     assert session.calls[2][2]["json"]["conversation_reason"] == (
         "no_eligible_fresh_satellite_match"
     )
+
+
+def test_enrollment_claim_sends_the_locally_observed_satellite():
+    session = Session()
+    session.responses.append({"session": {"id": "capture-1"}})
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+
+    claimed = asyncio.run(
+        api.async_claim_satellite_enrollment("assist_satellite.voice")
+    )
+
+    assert claimed == {"id": "capture-1"}
+    assert session.calls[0][0:2] == (
+        "POST",
+        "http://app/api/satellite-enrollment/claim",
+    )
+    assert session.calls[0][2]["json"] == {
+        "satellite_entity_id": "assist_satellite.voice"
+    }

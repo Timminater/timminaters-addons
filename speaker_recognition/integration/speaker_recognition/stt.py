@@ -156,11 +156,16 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         if source is None:
             return SpeechResult(None, SpeechResultState.ERROR)
 
+        # Snapshot the originating satellite before the authenticated App call.
+        # The entity can leave `listening` while that network round-trip runs.
+        satellite_id = listening_satellite(self.hass)
         main = get_main_entry(self.hass)
         enrollment = None
         if main is not None:
             try:
-                enrollment = await main.runtime_data.async_claim_satellite_enrollment()
+                enrollment = await main.runtime_data.async_claim_satellite_enrollment(
+                    satellite_id
+                )
             except SpeakerRecognitionApiError as error:
                 _LOGGER.warning("Could not check satellite enrollment state: %s", error)
                 # The App may have accepted a claim before the response was lost.
@@ -169,7 +174,6 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         if enrollment is not None:
             return await self._async_capture_enrollment(metadata, stream, enrollment)
 
-        satellite_id = listening_satellite(self.hass)
         active_streams = self.hass.data.setdefault(DOMAIN, {}).setdefault(
             "active_stt_streams", []
         )

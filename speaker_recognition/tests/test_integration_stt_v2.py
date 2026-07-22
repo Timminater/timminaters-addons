@@ -166,6 +166,10 @@ class Api:
         self.finalize_calls = []
         self.policy_error = False
         self.analyze_error = False
+        self.enrollment = None
+        self.claim_calls = []
+        self.complete_enrollment_calls = []
+        self.fail_enrollment_calls = []
 
     @property
     def cached_pipeline_policy(self):
@@ -176,8 +180,17 @@ class Api:
             raise SpeakerRecognitionApiError("offline")
         return dict(self.policy)
 
-    async def async_claim_satellite_enrollment(self):
-        return None
+    async def async_claim_satellite_enrollment(self, satellite_entity_id):
+        self.claim_calls.append(satellite_entity_id)
+        return self.enrollment
+
+    async def async_complete_satellite_enrollment(
+        self, session_id, pcm, sample_rate
+    ):
+        self.complete_enrollment_calls.append((session_id, pcm, sample_rate))
+
+    async def async_fail_satellite_enrollment(self, session_id, error):
+        self.fail_enrollment_calls.append((session_id, error))
 
     async def async_analyze(self, pcm, sample_rate, **details):
         if self.analyze_error:
@@ -264,6 +277,34 @@ def test_off_and_compare_keep_original_audio_and_finalize_recording():
         result = hass.data["speaker_recognition"]["last_result"]
         assert result["recording_id"] == "rec-1"
         assert result["audio_variant"] == "original"
+
+
+def test_voice_enrollment_claim_uses_pre_round_trip_satellite_snapshot():
+    api = Api()
+    api.enrollment = {
+        "id": "capture-1",
+        "satellite_entity_id": "assist_satellite.voice",
+    }
+    proxy, hass, source = make_proxy(api)
+    original_pcm = b"\x01\x00" * 400
+
+    returned = asyncio.run(
+        proxy.async_process_audio_stream(
+            SpeechMetadata(), chunks(wav(original_pcm))
+        )
+    )
+
+    assert api.claim_calls == ["assist_satellite.voice"]
+    assert api.complete_enrollment_calls == [
+        ("capture-1", original_pcm, 16000)
+    ]
+    assert api.fail_enrollment_calls == []
+    assert source.calls == []
+    assert returned.result is SpeechResultState.SUCCESS
+    assert returned.text == "speaker enrollment complete"
+    assert hass.bus.events[0][1]["satellite_entity_id"] == (
+        "assist_satellite.voice"
+    )
 
 
 def test_before_stt_uses_valid_extracted_wav_and_metadata():

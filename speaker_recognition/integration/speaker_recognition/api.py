@@ -131,9 +131,14 @@ class SpeakerRecognitionApi:
             timeout=5,
         )
 
-    async def async_claim_satellite_enrollment(self) -> dict[str, Any] | None:
+    async def async_claim_satellite_enrollment(
+        self, satellite_entity_id: str | None
+    ) -> dict[str, Any] | None:
         result = await self._request(
-            "POST", "/api/satellite-enrollment/claim", json={}, timeout=2
+            "POST",
+            "/api/satellite-enrollment/claim",
+            json={"satellite_entity_id": satellite_entity_id},
+            timeout=2,
         )
         return result.get("session")
 

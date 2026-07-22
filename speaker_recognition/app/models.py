@@ -67,6 +67,14 @@ class SatelliteEnrollmentStartRequest(BaseModel):
     satellite_entity_id: str = Field(pattern=r"^assist_satellite\.[a-z0-9_]+$")
 
 
+class SatelliteEnrollmentClaimRequest(BaseModel):
+    """Identify the satellite observed locally when its STT stream began."""
+
+    satellite_entity_id: str | None = Field(
+        default=None, pattern=r"^assist_satellite\.[a-z0-9_]+$"
+    )
+
+
 class SatelliteEnrollmentCompleteRequest(BaseModel):
     audio: AudioInput
 
