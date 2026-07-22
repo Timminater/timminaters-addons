@@ -1,0 +1,6 @@
+fastapi==0.116.1
+numpy==1.26.4
+pydantic==2.11.7
+resemblyzer==0.1.4
+setuptools==80.9.0
+uvicorn==0.35.0

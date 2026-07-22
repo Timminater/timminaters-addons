@@ -22,6 +22,7 @@ jobs:
           - homeassistant-samsung-frametv-artchanger
           - llm_proxy
           - esphome_mcp
+          - speaker_recognition
     uses: ./.github/workflows/build-app.yml
     with:
       app: ${{ matrix.app }}

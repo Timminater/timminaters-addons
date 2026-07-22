@@ -1,0 +1,35 @@
+name: "Speaker Recognition"
+description: "Enroll and identify speakers locally through a Home Assistant ingress interface."
+version: "1.0.0"
+slug: "speaker_recognition"
+url: "https://github.com/Timminater/timminaters-addons/tree/main/speaker_recognition"
+stage: experimental
+startup: services
+boot: auto
+init: false
+arch:
+  - amd64
+ingress: true
+ingress_port: 8099
+ingress_stream: true
+panel_icon: mdi:account-voice
+panel_title: Speaker Recognition
+panel_admin: true
+watchdog: http://[HOST]:[PORT:8099]/health
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: "Optional direct REST API access"
+options:
+  log_level: info
+  recognition_threshold: 0.65
+  max_audio_seconds: 120
+  api_token: ""
+schema:
+  log_level: list(debug|info|warning|error)
+  recognition_threshold: float(0.0,1.0)
+  max_audio_seconds: int(5,120)
+  api_token: password?
+backup: cold
+apparmor: true
+image: ghcr.io/timminater/addon-speaker-recognition
