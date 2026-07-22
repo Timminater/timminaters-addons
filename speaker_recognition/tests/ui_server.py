@@ -10,7 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
 import app.api as api
-from app.models import AssistSatelliteInfo
+from app.models import AssistSatelliteInfo, HomeAssistantPersonInfo
 from app.recognizer import SpeakerRecognizer
 
 
@@ -40,6 +40,9 @@ class DemoHomeAssistant:
 
     def ask_for_enrollment_sample(self, _entity_id):
         return None
+
+    def persons(self):
+        return [HomeAssistantPersonInfo(entity_id="person.tim", name="Tim")]
 
 
 api.home_assistant = DemoHomeAssistant()

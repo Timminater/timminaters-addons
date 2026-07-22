@@ -14,10 +14,31 @@ integratie wordt eerst bewaard als
 `custom_components/speaker_recognition.pre-app-backup`; verwijdering van de App herstelt die
 backup niet automatisch.
 
-Voeg de integratie daarna nogmaals toe om een STT-proxy te maken. Iedere herkenning vuurt
+Voeg de integratie daarna nogmaals toe om een STT- of conversation-proxy te maken. Iedere herkenning vuurt
 het event `speaker_recognition_detected` af met profiel, confidence en scores. Herkenning
 wijzigt bewust nooit `Context.user_id` of gebruikersrechten: een stemmatch is metadata en
 geen authenticatiemiddel.
+
+### Backend en conversation-agent
+
+De originele upstreamintegratie noemt vier configuratiestappen. In deze versie zijn die als
+volgt beschikbaar:
+
+1. De herkenningsbackend wordt automatisch via de App ontdekt. Via **Configureren** op de
+   hoofdentry kun je desgewenst een andere compatibele interne URL en token instellen; de
+   verbinding wordt gecontroleerd voordat de wijziging wordt opgeslagen.
+2. Tijdens enrollment kan een profiel optioneel aan een Home Assistant `person.*`-entiteit
+   worden gekoppeld. Dit is uitsluitend metadata voor events en personalisatie.
+3. Via **Integratie toevoegen > Speaker Recognition > STT-proxy toevoegen** kies je een
+   bestaande `stt.*`-entiteit.
+4. Via **Conversation-proxy toevoegen** kies je een bestaande `conversation.*`-agent en een
+   minimale confidence. De nieuwe proxy verschijnt zelf als selecteerbare conversation-agent.
+
+De conversation-proxy bewaart tekst, taal, conversation-id, device/satellite-id en vooral
+de oorspronkelijke Home Assistant `Context` en gebruikersrechten. Alleen een verse,
+eenmalig gebruikte match van dezelfde Voice-satelliet kan de gekoppelde `person.*`-ID als
+expliciet niet-vertrouwde personalisatiecontext toevoegen. De proxy mag nooit op basis van
+een stemmatch extra rechten verlenen.
 
 ## Enrollment
 
@@ -27,6 +48,10 @@ Open de webinterface via Home Assistant Ingress en kies **Nieuwe speaker**. Je k
 - 5–30 seconden duidelijke, natuurlijke spraak per sample;
 - verschillende zinnen en liefst verschillende opnamemomenten;
 - zo min mogelijk muziek, echo en andere stemmen.
+
+Kies eventueel een Home Assistant-persoon in het enrollmentvenster. Bestaande profielen
+zonder koppeling blijven volledig compatibel. De koppeling wordt samen met het lokale
+stemprofiel opgeslagen en wordt ook in herkenningsevents teruggegeven.
 
 Upload werkt met audioformaten die de actieve browser kan decoderen. Microfoonopname is een progressive enhancement: `getUserMedia` vereist HTTPS, browsertoestemming en ondersteuning door de Home Assistant Ingress-iframe. Als dat niet beschikbaar is, blijft upload volledig werken.
 
@@ -65,6 +90,7 @@ Ingress verzorgt authenticatie voor de GUI. Bij rechtstreekse toegang stuur je `
 - `DELETE /api/speakers/{id}` — profiel verwijderen.
 - `POST /api/recognize` — speaker testen.
 - `GET /api/assist-satellites` — beschikbare Voice-apparaten.
+- `GET /api/home-assistant-persons` — beschikbare `person.*`-entiteiten voor enrollment.
 - `POST /api/satellite-enrollment` — een eenmalige Voice-opname starten.
 
 Audio in de JSON-contracten is base64-gecodeerde, little-endian signed 16-bit mono PCM met een expliciete sample-rate. De webinterface converteert uploads en microfoonopnames automatisch naar 16 kHz.
@@ -79,3 +105,4 @@ Stem-embeddings zijn biometrische gegevens. Ze blijven lokaal in `/data/speakers
 - Browsermicrofoon kan per Home Assistant-/browserrelease verschillen; upload is de gegarandeerde route.
 - Een volledig eerlijke herkenningstest gebruikt andere audio dan de enrollment-samples.
 - Voice-enrollment vereist dat de Assist-pipeline de Speaker Recognition STT-proxy gebruikt; zonder die proxy kan de App de microfoonstream niet ontvangen.
+- Speakerherkenning is probabilistisch en mag niet worden gebruikt als authenticatiefactor voor sloten, alarmen, betalingen of andere gevoelige acties.

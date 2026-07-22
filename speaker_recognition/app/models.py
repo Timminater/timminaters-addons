@@ -21,6 +21,9 @@ class EnrollmentRequest(BaseModel):
     speaker_name: str = Field(min_length=1, max_length=80)
     samples: list[VoiceSample] = Field(min_length=1, max_length=10)
     replace: bool = False
+    person_entity_id: str | None = Field(
+        default=None, pattern=r"^person\.[a-z0-9_]+$"
+    )
 
     @field_validator("speaker_name")
     @classmethod
@@ -41,6 +44,12 @@ class SpeakerInfo(BaseModel):
     sample_count: int
     created_at: datetime
     updated_at: datetime
+    person_entity_id: str | None = None
+
+
+class HomeAssistantPersonInfo(BaseModel):
+    entity_id: str
+    name: str
 
 
 class EnrollmentResult(BaseModel):

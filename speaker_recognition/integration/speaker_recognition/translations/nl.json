@@ -2,12 +2,41 @@
   "title": "Speakerherkenning",
   "config": {
     "step": {
-      "confirm": {"title": "Speaker Recognition App ontdekt", "description": "Home Assistant verbinden met de actieve Speaker Recognition App?"},
-      "user": {"title": "Speakerherkenning instellen", "description": "De App wordt normaal automatisch ontdekt. Voor handmatige configuratie zijn de interne URL en companion-token nodig.", "data": {"url": "App-URL", "token": "Companion-token"}, "menu_options": {"add_stt": "STT-proxy toevoegen"}},
-      "add_stt": {"title": "STT-proxy toevoegen", "description": "Koppel een bestaande spraak-naar-tekst-entiteit om tijdens transcriptie de spreker te herkennen.", "data": {"stt_entity": "Spraak-naar-tekst-entiteit"}}
+      "confirm": {
+        "title": "Speaker Recognition App ontdekt",
+        "description": "Home Assistant verbinden met de actieve Speaker Recognition App? De ontdekte App wordt gebruikt als herkenningsbackend."
+      },
+      "user": {
+        "title": "Speakerherkenning instellen",
+        "description": "Configureer een herkenningsbackend, of voeg een STT-/conversation-proxy toe wanneer de App al verbonden is.",
+        "data": {"url": "URL van herkenningsbackend", "token": "Companion-token van backend"},
+        "data_description": {"url": "Interne URL van de Speaker Recognition App of compatibele backend.", "token": "Token waarmee Home Assistant zich bij de backend aanmeldt."},
+        "menu_options": {"add_stt": "STT-proxy toevoegen", "add_conversation": "Conversation-proxy toevoegen"}
+      },
+      "add_stt": {
+        "title": "STT-proxy toevoegen",
+        "description": "Koppel een bestaande spraak-naar-tekst-entiteit zodat de transcriptie behouden blijft terwijl de spreker wordt herkend.",
+        "data": {"stt_entity": "Spraak-naar-tekst-bronentiteit"}
+      },
+      "add_conversation": {
+        "title": "Conversation-proxy toevoegen",
+        "description": "Koppel een bestaande conversation-agent en voeg een gekoppelde persoon toe als niet-vertrouwde personalisatiecontext. Stemherkenning wijzigt nooit Home Assistant-gebruikers of rechten.",
+        "data": {"conversation_entity": "Conversation-bronagent", "min_confidence": "Minimale speakerzekerheid"},
+        "data_description": {"min_confidence": "Onder deze zekerheid wordt geen persoonscontext toegevoegd en werkt de bronagent normaal."}
+      }
     },
-    "error": {"cannot_connect": "Kan geen verbinding maken met de Speaker Recognition App"},
+    "error": {"cannot_connect": "Kan geen verbinding maken met de Speaker Recognition-backend", "recursive_proxy": "Een Speaker Recognition-proxy kan niet een andere Speaker Recognition-proxy als bron gebruiken", "source_in_use": "Deze bron wordt al gebruikt door een andere Speaker Recognition-proxy"},
     "abort": {"already_configured": "Deze Speaker Recognition App is al geconfigureerd", "discovery_error": "De ontdekkingsinformatie is niet compleet", "reconfigured": "De bestaande Speaker Recognition-integratie gebruikt nu de bevestigde App"}
   },
-  "options": {"step": {"init": {"title": "Opties voor speakerherkenning", "data": {"url": "App-URL", "token": "Companion-token", "stt_entity": "Spraak-naar-tekst-entiteit"}}}, "abort": {"not_supported": "Deze oude conversatieproxy wordt niet meer ondersteund omdat stemherkenning geen gebruikersrechten mag verlenen"}}
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opties voor speakerherkenning",
+        "description": "De backendverbinding wordt vóór opslaan gecontroleerd. Persoonscontext is alleen personalisatie en nooit autorisatie.",
+        "data": {"url": "URL van herkenningsbackend", "token": "Companion-token van backend", "stt_entity": "Spraak-naar-tekst-bronentiteit", "conversation_entity": "Conversation-bronagent", "min_confidence": "Minimale speakerzekerheid"}
+      }
+    },
+    "error": {"cannot_connect": "Kan geen verbinding maken met de Speaker Recognition-backend", "recursive_proxy": "Een Speaker Recognition-proxy kan niet een andere Speaker Recognition-proxy als bron gebruiken", "source_in_use": "Deze bron wordt al gebruikt door een andere Speaker Recognition-proxy"},
+    "abort": {"not_supported": "Dit type configuratie wordt niet ondersteund"}
+  }
 }

@@ -28,6 +28,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import get_main_entry
 from .api import SpeakerRecognitionApiError
 from .const import CONF_STT_ENTITY, DOMAIN, EVENT_DETECTED, EVENT_ENROLLMENT_COMPLETED
+from .results import listening_satellite, remember_result
 
 _LOGGER = logging.getLogger(__name__)
 MAX_CAPTURE_BYTES = 4 * 1024 * 1024
@@ -135,6 +136,15 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         if enrollment is not None:
             return await self._async_capture_enrollment(metadata, stream, enrollment)
 
+        satellite_id = listening_satellite(self.hass)
+        active_streams = self.hass.data.setdefault(DOMAIN, {}).setdefault(
+            "active_stt_streams", []
+        )
+        stream_token = {"ambiguous": bool(active_streams)}
+        if active_streams:
+            for active_stream in active_streams:
+                active_stream["ambiguous"] = True
+        active_streams.append(stream_token)
         audio = bytearray()
         stream_complete = asyncio.Event()
 
@@ -165,23 +175,33 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             recognized = {
                 "speaker_id": speaker.get("id"),
                 "speaker_name": speaker.get("name"),
+                "person_entity_id": speaker.get("person_entity_id"),
                 "confidence": result.get("confidence", 0.0),
                 "matched": bool(result.get("matched")),
                 "scores": result.get("scores", {}),
                 "timestamp": self.hass.loop.time(),
                 "consumed": False,
                 "entity_id": self.entity_id,
+                "satellite_id": None if stream_token["ambiguous"] else satellite_id,
             }
-            self.hass.data.setdefault(DOMAIN, {})["last_result"] = recognized
+            remember_result(self.hass, recognized)
             self.hass.bus.async_fire(EVENT_DETECTED, recognized.copy())
 
         recognition_task = self.hass.async_create_task(recognize())
         try:
-            transcript = await source.async_process_audio_stream(metadata, tee_stream())
+            try:
+                transcript = await source.async_process_audio_stream(metadata, tee_stream())
+            finally:
+                stream_complete.set()
+            await recognition_task
+            return transcript
         finally:
             stream_complete.set()
-        await recognition_task
-        return transcript
+            try:
+                if not recognition_task.done():
+                    await recognition_task
+            finally:
+                active_streams.remove(stream_token)
 
     async def _async_capture_enrollment(
         self,

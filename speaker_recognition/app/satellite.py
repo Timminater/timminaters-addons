@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from app.models import (
     AssistSatelliteInfo,
     AudioInput,
+    HomeAssistantPersonInfo,
     SatelliteEnrollmentSession,
 )
 
@@ -71,6 +72,22 @@ class HomeAssistantClient:
                 )
             )
         return sorted(satellites, key=lambda item: item.name.casefold())
+
+    def persons(self) -> list[HomeAssistantPersonInfo]:
+        """Return Home Assistant person entities available for optional mapping."""
+        persons = []
+        for state in self._request("/states"):
+            entity_id = str(state.get("entity_id", ""))
+            if not entity_id.startswith("person."):
+                continue
+            attributes = state.get("attributes") or {}
+            persons.append(
+                HomeAssistantPersonInfo(
+                    entity_id=entity_id,
+                    name=attributes.get("friendly_name") or entity_id,
+                )
+            )
+        return sorted(persons, key=lambda item: item.name.casefold())
 
     def ask_for_enrollment_sample(self, satellite_entity_id: str) -> None:
         self._request(
