@@ -6,8 +6,9 @@ from collections import deque
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_CONTEXT_UPDATED, SIGNAL_RESULT_UPDATED
 
 RESULT_TTL_SECONDS = 8.0
 MAX_RESULTS = 20
@@ -29,6 +30,13 @@ def remember_result(hass: HomeAssistant, result: dict[str, Any]) -> None:
     results = domain_data.setdefault("recognition_results", deque(maxlen=MAX_RESULTS))
     results.append(result)
     domain_data["last_result"] = result
+    async_dispatcher_send(hass, SIGNAL_RESULT_UPDATED)
+
+
+def remember_conversation_context(hass: HomeAssistant, context: dict[str, Any]) -> None:
+    """Expose whether speaker personalization was submitted to the source agent."""
+    hass.data.setdefault(DOMAIN, {})["last_conversation_context"] = context
+    async_dispatcher_send(hass, SIGNAL_CONTEXT_UPDATED)
 
 
 def consume_result(
@@ -65,4 +73,5 @@ def consume_result(
     if hass.states.get(selected["person_entity_id"]) is None:
         return None
     selected["consumed"] = True
+    async_dispatcher_send(hass, SIGNAL_RESULT_UPDATED)
     return selected.copy()

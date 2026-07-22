@@ -61,12 +61,16 @@
 
     <dialog id="enroll-dialog">
       <form id="enroll-form" method="dialog">
-        <div class="dialog-heading"><div><p class="eyebrow">Nieuw stemprofiel</p><h2>Speaker enrollen</h2></div><button class="icon-button" value="cancel" aria-label="Sluiten" type="submit">×</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">Nieuw stemprofiel</p><h2>Speaker enrollen</h2></div><button class="icon-button" data-action="close-enroll" aria-label="Sluiten" type="button">×</button></div>
         <label class="field"><span>Naam</span><input id="speaker-name" maxlength="80" required autocomplete="off" placeholder="Bijvoorbeeld Tim"></label>
         <label class="field"><span>Home Assistant-persoon (optioneel)</span><select id="speaker-person"><option value="">Niet gekoppeld</option></select><small class="field-help">Deze koppeling is alleen voor personalisatie en verandert nooit gebruikersrechten.</small></label>
         <fieldset>
           <legend>Stemfragmenten</legend>
           <p class="field-help">Gebruik liefst 2–3 heldere samples van elk 5–30 seconden, zonder muziek.</p>
+          <aside class="speech-example" aria-labelledby="speech-example-title">
+            <strong id="speech-example-title">Voorbeeldtekst (niet verplicht)</strong>
+            <p>Vandaag loop ik rustig naar buiten. De zon schijnt op het groene gras en een kleine vogel zingt bij het raam. Daarna pak ik mijn jas, drink ik wat water en zeg ik: fijn dat je er bent.</p>
+          </aside>
           <div class="capture-actions">
             <button id="record-button" class="capture-button" type="button"><i></i><span>Opnemen</span></button>
             <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="audio-files" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" multiple hidden></label>
@@ -81,7 +85,7 @@
         </fieldset>
         <label class="check-row"><input id="replace-profile" type="checkbox"><span>Bestaand profiel met dezelfde naam vervangen</span></label>
         <div id="form-error" class="error-box" hidden></div>
-        <div class="dialog-actions"><button class="secondary-button" value="cancel" type="submit">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div>
+        <div class="dialog-actions"><button class="secondary-button" data-action="close-enroll" type="button">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div>
       </form>
     </dialog>
 

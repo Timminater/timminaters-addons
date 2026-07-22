@@ -49,6 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not health.get("ready"):
             raise ConfigEntryNotReady("Speaker Recognition App is still starting")
         entry.runtime_data = api
+        await hass.config_entries.async_forward_entry_setups(entry, [Platform.SENSOR])
         return True
 
     if get_main_entry(hass) is None:
@@ -83,7 +84,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload an entry."""
     entry_type = entry.data.get(CONF_ENTRY_TYPE, ENTRY_TYPE_MAIN)
     if entry_type == ENTRY_TYPE_MAIN:
-        return True
+        return await hass.config_entries.async_unload_platforms(entry, [Platform.SENSOR])
     if entry_type not in {ENTRY_TYPE_STT, ENTRY_TYPE_CONVERSATION}:
         return True
     platform = (

@@ -2,7 +2,7 @@
 
 const basePath = document.querySelector('meta[name="ingress-base"]').content;
 const apiUrl = (path) => `${basePath}${path.replace(/^\//, "")}`;
-const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null };
+const state = { speakers: [], samples: [], recording: null, satellites: [], persons: [], satelliteSession: null, previewUrls: [] };
 
 const elements = {
   dialog: document.querySelector("#enroll-dialog"),
@@ -81,6 +81,7 @@ async function refresh() {
 }
 
 async function openEnroll() {
+  revokePreviewUrls();
   state.samples = [];
   elements.form.reset();
   elements.error.hidden = true;
@@ -151,7 +152,6 @@ async function captureFromSatellite() {
     });
     renderSamples();
     showToast("Voice-fragment ontvangen");
-    await request(`api/satellite-enrollment/${session.id}`, { method: "DELETE" });
   } catch (error) {
     if (elements.dialog.open) setFormError(error.message);
   } finally {
@@ -162,15 +162,42 @@ async function captureFromSatellite() {
 }
 
 function renderSamples() {
+  revokePreviewUrls();
   elements.samples.replaceChildren(...state.samples.map((sample, index) => {
     const row = document.createElement("div"); row.className = "sample-row";
     const icon = document.createElement("span"); icon.textContent = sample.source === "microfoon" ? "●" : sample.source === "voice" ? "◉" : "♪";
     const description = document.createElement("span"); description.textContent = `${sample.label} · ${sample.duration.toFixed(1)} sec`;
+    const preview = document.createElement("audio"); preview.controls = true; preview.preload = "metadata"; preview.ariaLabel = `${sample.label} afspelen`;
+    preview.src = samplePreviewUrl(sample); state.previewUrls.push(preview.src);
     const remove = document.createElement("button"); remove.type = "button"; remove.ariaLabel = "Sample verwijderen"; remove.textContent = "×";
     remove.addEventListener("click", () => { state.samples.splice(index, 1); renderSamples(); });
-    row.append(icon, description, remove); return row;
+    row.append(icon, description, preview, remove); return row;
   }));
+  updateSaveState();
+}
+
+function updateSaveState() {
   elements.save.disabled = state.samples.length === 0 || !elements.name.value.trim();
+}
+
+function revokePreviewUrls() {
+  state.previewUrls.forEach((url) => URL.revokeObjectURL(url));
+  state.previewUrls = [];
+}
+
+function samplePreviewUrl(sample) {
+  const binary = atob(sample.audio_data);
+  const pcm = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) pcm[index] = binary.charCodeAt(index);
+  const wav = new ArrayBuffer(44 + pcm.length);
+  const view = new DataView(wav);
+  const write = (offset, value) => [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+  write(0, "RIFF"); view.setUint32(4, 36 + pcm.length, true); write(8, "WAVE"); write(12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, sample.sample_rate, true); view.setUint32(28, sample.sample_rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); write(36, "data"); view.setUint32(40, pcm.length, true);
+  new Uint8Array(wav, 44).set(pcm);
+  return URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
 }
 
 async function decodeFile(file) {
@@ -237,6 +264,23 @@ function stopRecording() {
   catch (error) { setFormError(error.message); }
 }
 
+function discardRecording() {
+  const recording = state.recording; if (!recording) return;
+  recording.processor.disconnect(); recording.source.disconnect(); recording.stream.getTracks().forEach((track) => track.stop());
+  recording.context.close(); state.recording = null;
+  elements.record.classList.remove("recording"); elements.record.querySelector("span").textContent = "Opnemen";
+}
+
+function closeEnroll() {
+  if (state.recording) discardRecording();
+  const sessionId = state.satelliteSession;
+  state.satelliteSession = null;
+  revokePreviewUrls();
+  state.samples = [];
+  if (elements.dialog.open) elements.dialog.close("cancel");
+  if (sessionId) request(`api/satellite-enrollment/${sessionId}`, { method: "DELETE" }).catch(() => {});
+}
+
 async function saveSpeaker() {
   const name = elements.name.value.trim(); if (!name || !state.samples.length) return;
   elements.save.disabled = true; elements.save.textContent = "Embedding maken…"; elements.error.hidden = true;
@@ -268,7 +312,7 @@ function showToast(message) { elements.toast.textContent = message; elements.toa
 
 document.querySelector("#open-enroll").addEventListener("click", openEnroll);
 document.querySelector('[data-action="enroll"]').addEventListener("click", openEnroll);
-elements.name.addEventListener("input", renderSamples);
+elements.name.addEventListener("input", updateSaveState);
 elements.search.addEventListener("input", renderSpeakers);
 elements.record.addEventListener("click", toggleRecording);
 elements.satellite.addEventListener("change", () => { elements.voiceRecord.disabled = !elements.satellite.value; });
@@ -282,12 +326,7 @@ elements.audioFiles.addEventListener("change", async () => {
   elements.audioFiles.value = ""; renderSamples();
 });
 elements.testFile.addEventListener("change", () => { if (elements.testFile.files[0]) testAudio(elements.testFile.files[0]); elements.testFile.value = ""; });
-elements.dialog.addEventListener("close", () => {
-  if (state.recording) stopRecording();
-  if (state.satelliteSession) {
-    request(`api/satellite-enrollment/${state.satelliteSession}`, { method: "DELETE" }).catch(() => {});
-    state.satelliteSession = null;
-  }
-});
+document.querySelectorAll('[data-action="close-enroll"]').forEach((button) => button.addEventListener("click", closeEnroll));
+elements.dialog.addEventListener("cancel", (event) => { event.preventDefault(); closeEnroll(); });
 
 refresh();

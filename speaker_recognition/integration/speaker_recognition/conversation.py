@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ConversationEntity
@@ -17,7 +18,7 @@ from .const import (
     CONF_MIN_CONFIDENCE,
     DEFAULT_MIN_CONFIDENCE,
 )
-from .results import consume_result
+from .results import consume_result, remember_conversation_context
 
 
 async def async_setup_entry(
@@ -97,6 +98,26 @@ class SpeakerRecognitionConversation(ConversationEntity):
             user_input,
             agent_id=self._source_entity_id,
             extra_system_prompt=prompt,
+        )
+        remember_conversation_context(
+            self.hass,
+            {
+                "forwarded": recognition is not None,
+                "reason": (
+                    "person_context_submitted"
+                    if recognition is not None
+                    else "no_eligible_fresh_satellite_match"
+                ),
+                "person_entity_id": (
+                    recognition.get("person_entity_id") if recognition else None
+                ),
+                "speaker_name": recognition.get("speaker_name") if recognition else None,
+                "confidence": recognition.get("confidence") if recognition else None,
+                "satellite_id": user_input.satellite_id,
+                "source_conversation_entity": self._source_entity_id,
+                "minimum_confidence": self._min_confidence,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+            },
         )
         # The original Context object is deliberately preserved. A voice match is
         # never allowed to become a Home Assistant user or authorization context.

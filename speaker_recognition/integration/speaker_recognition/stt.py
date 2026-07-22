@@ -8,6 +8,7 @@ import logging
 import wave
 from array import array
 from collections.abc import AsyncIterable
+from datetime import datetime, timezone
 
 from homeassistant.components.stt import (
     AudioBitRates,
@@ -180,6 +181,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                 "matched": bool(result.get("matched")),
                 "scores": result.get("scores", {}),
                 "timestamp": self.hass.loop.time(),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
                 "consumed": False,
                 "entity_id": self.entity_id,
                 "satellite_id": None if stream_token["ambiguous"] else satellite_id,

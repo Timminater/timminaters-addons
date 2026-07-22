@@ -100,6 +100,18 @@ class HomeAssistantClient:
             },
         )
 
+    def confirm_enrollment_sample(self, satellite_entity_id: str) -> None:
+        """Audibly confirm completion and force the satellite back through idle."""
+        self._request(
+            "/services/assist_satellite/announce",
+            method="POST",
+            payload={
+                "entity_id": satellite_entity_id,
+                "message": "Opname voltooid.",
+                "preannounce": False,
+            },
+        )
+
 
 class SatelliteEnrollmentCoordinator:
     """Coordinate a single short-lived audio capture across App and integration."""
@@ -190,5 +202,6 @@ class SatelliteEnrollmentCoordinator:
         async with self._lock:
             if self._session is None or self._session.id != session_id:
                 raise KeyError(session_id)
-            self._session.status = "cancelled"
-            self._session.audio = None
+            if self._session.status in {"armed", "capturing"}:
+                self._session.status = "cancelled"
+                self._session.audio = None

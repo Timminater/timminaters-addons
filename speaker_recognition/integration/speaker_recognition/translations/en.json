@@ -38,5 +38,11 @@
     },
     "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
     "abort": {"not_supported": "This entry type is not supported"}
+  },
+  "entity": {
+    "sensor": {
+      "last_recognition": {"name": "Last recognition"},
+      "last_conversation_context": {"name": "Last conversation context"}
+    }
   }
 }

@@ -1,6 +1,6 @@
 name: "Speaker Recognition"
 description: "Enroll and identify speakers locally through a Home Assistant ingress interface."
-version: "1.3.0"
+version: "1.3.1"
 slug: "speaker_recognition"
 url: "https://github.com/Timminater/timminaters-addons/tree/main/speaker_recognition"
 stage: experimental

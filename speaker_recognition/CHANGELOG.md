@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.1
+
+- Diagnostische Home Assistant-sensor voor de laatste speakerherkenning toegevoegd.
+- Aparte sensor toont expliciet of een gekoppelde `person.*`-context aan de vervolg-LLM is doorgegeven.
+- Confidence, matchstatus, speaker/person, satelliet, STT-bron, scores en tijdstip zijn als attributen zichtbaar.
+- Enrollment-modal kan altijd worden geannuleerd en breekt actieve browser- en Voice-opnames netjes af.
+- Opgenomen en geüploade fragmenten kunnen vóór opslaan worden teruggeluisterd.
+- Eenvoudige optionele voorbeeldtekst toegevoegd voor een bruikbaar spraakfragment.
+- Voice-enrollment sluit af met een korte bevestiging zodat het apparaat terugkeert naar de idle-status.
+- Een voltooid Voice-fragment kan niet meer door een late browser-cleanup naar `cancelled` veranderen.
+
 ## 1.3.0
 
 - Concept 6 toegevoegd als App-icoon en lokaal Home Assistant integration-brand.

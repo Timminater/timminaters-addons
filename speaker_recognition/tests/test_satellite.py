@@ -33,6 +33,7 @@ def test_coordinator_is_atomic_and_terminal_states_are_monotonic():
     completed = run(coordinator.complete(armed.id, sample))
     assert completed.status == "complete"
     run(coordinator.fail(armed.id, "late network failure"))
+    run(coordinator.cancel(armed.id))
     assert run(coordinator.get(armed.id)).status == "complete"
 
 
@@ -111,6 +112,47 @@ def test_home_assistant_client_filters_and_uses_stt_only_question(monkeypatch):
     assert method == "POST"
     assert timeout == 70
     assert json.loads(body)["entity_id"] == "assist_satellite.voice_a"
+    client.confirm_enrollment_sample("assist_satellite.voice_a")
+    url, method, body, timeout = calls[-1]
+    assert url.endswith("/services/assist_satellite/announce")
+    assert method == "POST"
+    assert timeout == 70
+    assert json.loads(body) == {
+        "entity_id": "assist_satellite.voice_a",
+        "message": "Opname voltooid.",
+        "preannounce": False,
+    }
+
+
+def test_completed_prompt_confirms_and_resets_satellite(monkeypatch):
+    class CompletedHomeAssistant:
+        def __init__(self):
+            self.asked = []
+            self.confirmed = []
+
+        def ask_for_enrollment_sample(self, entity_id):
+            self.asked.append(entity_id)
+
+        def confirm_enrollment_sample(self, entity_id):
+            self.confirmed.append(entity_id)
+
+    fake = CompletedHomeAssistant()
+    coordinator = SatelliteEnrollmentCoordinator()
+    monkeypatch.setattr(api, "home_assistant", fake)
+    monkeypatch.setattr(api, "satellite_enrollment", coordinator)
+
+    async def scenario():
+        session = await coordinator.arm("assist_satellite.voice")
+        await coordinator.claim()
+        await coordinator.complete(
+            session.id, AudioInput(audio_data="AAE=", sample_rate=16000)
+        )
+        await api._run_satellite_prompt(session.id, "assist_satellite.voice")
+
+    run(scenario())
+
+    assert fake.asked == ["assist_satellite.voice"]
+    assert fake.confirmed == ["assist_satellite.voice"]
 
 
 class FakeHomeAssistant:

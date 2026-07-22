@@ -15,6 +15,7 @@ de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
 - Herken een speaker met een apart testfragment en een instelbare confidence-drempel.
 - Maak een STT-proxy én een selecteerbare conversation-proxy rond bestaande Home Assistant-entiteiten.
 - Gebruik persoonsherkenning veilig als personalisatiecontext, nooit als authenticatie of rechtenbron.
+- Controleer de laatste herkenning, confidence en doorgifte aan de vervolgagent via twee diagnostische sensoren.
 - Beheer en verwijder profielen via Home Assistant Ingress.
 - Bewaar profielen atomisch onder `/data`, inclusief restart en App-backups.
 - Optionele token-beveiligde REST-API; de hostpoort staat standaard uit.

@@ -252,6 +252,15 @@ async def _run_satellite_prompt(session_id: str, satellite_entity_id: str) -> No
             "Geen audio ontvangen. Gebruik in deze Assist-pipeline de Speaker "
             "Recognition STT-proxy.",
         )
+    elif result.status == "complete":
+        try:
+            await asyncio.to_thread(
+                home_assistant.confirm_enrollment_sample, satellite_entity_id
+            )
+        except HomeAssistantApiError:
+            # The audio is already safely captured. A confirmation failure must
+            # not discard it, but is useful when diagnosing satellite firmware.
+            _LOGGER.warning("Could not reset Voice satellite after enrollment", exc_info=True)
 
 
 @app.post(

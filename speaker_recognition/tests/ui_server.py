@@ -41,6 +41,9 @@ class DemoHomeAssistant:
     def ask_for_enrollment_sample(self, _entity_id):
         return None
 
+    def confirm_enrollment_sample(self, _entity_id):
+        return None
+
     def persons(self):
         return [HomeAssistantPersonInfo(entity_id="person.tim", name="Tim")]
 

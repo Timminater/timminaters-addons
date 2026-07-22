@@ -40,6 +40,21 @@ eenmalig gebruikte match van dezelfde Voice-satelliet kan de gekoppelde `person.
 expliciet niet-vertrouwde personalisatiecontext toevoegen. De proxy mag nooit op basis van
 een stemmatch extra rechten verlenen.
 
+### Diagnose-entiteiten
+
+De hoofdentry maakt twee diagnostische sensoren aan op het apparaat **Speaker Recognition**:
+
+- **Laatste herkenning** toont de herkende speaker en bevat onder meer `matched`,
+  `confidence`, `person_entity_id`, `satellite_id`, alle scores en het tijdstip als attributen.
+- **Laatste gesprekscontext** toont de gekoppelde `person.*`-entiteit wanneer deze context
+  daadwerkelijk aan de gekozen vervolgagent is aangeboden. De attributen `forwarded`,
+  `reason`, `source_conversation_entity` en `minimum_confidence` maken de routering controleerbaar.
+
+`forwarded: true` bewijst dat de integratie de persoonscontext via Home Assistants
+conversation-contract aan de vervolgagent heeft aangeboden. Het kan niet garanderen dat een
+externe LLM de instructie inhoudelijk volgt. Beide sensoren bewaren alleen het laatste
+resultaat in het geheugen en bevatten geen audio.
+
 ## Enrollment
 
 Open de webinterface via Home Assistant Ingress en kies **Nieuwe speaker**. Je kunt meerdere bestanden tegelijk selecteren of samples opnemen met de microfoon. Gebruik bij voorkeur:

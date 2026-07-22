@@ -38,5 +38,11 @@
     },
     "error": {"cannot_connect": "Kan geen verbinding maken met de Speaker Recognition-backend", "recursive_proxy": "Een Speaker Recognition-proxy kan niet een andere Speaker Recognition-proxy als bron gebruiken", "source_in_use": "Deze bron wordt al gebruikt door een andere Speaker Recognition-proxy"},
     "abort": {"not_supported": "Dit type configuratie wordt niet ondersteund"}
+  },
+  "entity": {
+    "sensor": {
+      "last_recognition": {"name": "Laatste herkenning"},
+      "last_conversation_context": {"name": "Laatste gesprekscontext"}
+    }
   }
 }
