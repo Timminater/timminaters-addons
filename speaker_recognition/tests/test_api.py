@@ -94,3 +94,48 @@ def test_chunked_request_size_is_limited(tmp_path, monkeypatch):
             "/api/enroll", content=iter([b"1234567890", b"abcdefghij"]), headers=headers
         )
         assert response.status_code == 413
+
+
+def test_v2_analysis_filters_bulk_delete_and_public_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        enrolled = client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Alice",
+                "samples": [{"audio": audio(12000).model_dump()}],
+            },
+        ).json()["speaker"]
+        samples = client.get(f"/api/speakers/{enrolled['id']}/samples").json()
+        assert samples and "path" not in samples[0]
+
+        test_recording_id = None
+        for source in ("test", "pipeline"):
+            response = client.post(
+                "/api/analyze",
+                json={"audio": audio(11000).model_dump(), "source": source},
+            )
+            assert response.status_code == 200
+            assert "original_path" not in response.json()
+            assert response.json()["original_available"] is True
+            if source == "test":
+                test_recording_id = response.json()["recording_id"]
+
+        promoted = client.post(
+            f"/api/analysis/{test_recording_id}/promote",
+            json={"speaker_id": enrolled["id"], "start_seconds": 0, "end_seconds": 1},
+        )
+        assert promoted.status_code == 200
+        assert promoted.json()["speaker"]["sample_count"] == 2
+
+        assert client.get("/api/analysis?source=test").json()["total"] == 1
+        assert client.get("/api/analysis?since=2999-01-01T00:00:00Z").json()["total"] == 0
+        deleted = client.post(
+            "/api/analysis/delete",
+            json={"ids": None, "filters": {"source": "test"}, "all_filtered": True},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": 1}
+        assert client.get("/api/analysis").json()["total"] == 1

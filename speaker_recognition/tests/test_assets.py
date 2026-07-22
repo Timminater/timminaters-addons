@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from PIL import Image
@@ -48,3 +49,54 @@ def test_recognition_modal_supports_all_capture_sources():
     assert 'captureFromSatellite("test")' in script
     assert 'toggleRecording("test")' in script
     assert "renderTestSample()" in script
+
+
+def test_version_two_ui_exposes_analysis_calibration_and_safe_audio_management():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    for page in ("profiles-page", "analysis-page", "calibration-page"):
+        assert f'id="{page}"' in document
+    for control in (
+        "analysis-outcome",
+        "analysis-source",
+        "analysis-waveform",
+        "promote-dialog",
+        "profile-delete-dialog",
+        "calibration-chart",
+        "unknown-speaker-policy",
+        "extraction-mode",
+        "save-policy",
+    ):
+        assert f'id="{control}"' in document
+    assert 'request("api/analyze"' in script
+    assert 'source: "test"' in script
+    assert 'api/analysis/${encodeURIComponent(id)}/audio?variant=${variant}' in script
+    assert 'audio_action: "archive"' in script
+    assert 'audio_action: "delete"' in script
+    assert 'request("api/pipeline-policy"' in script
+    assert "URL.revokeObjectURL" in script
+
+
+def test_primary_navigation_lives_in_the_sticky_topbar():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")
+    topbar = document.split('<header class="topbar">', 1)[1].split("</header>", 1)[0]
+
+    assert '<nav class="app-nav" aria-label="Hoofdnavigatie">' in topbar
+    assert topbar.index('class="brand"') < topbar.index('class="app-nav"')
+    assert topbar.index('class="app-nav"') < topbar.index('class="header-meta"')
+    assert ".topbar .app-nav" in styles
+    assert "flex-wrap:wrap" in styles
+
+
+def test_every_cached_ui_element_exists_in_the_document():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
+    block = script.split("const elements = Object.fromEntries([", 1)[1].split(
+        "].join(\" \")", 1
+    )[0]
+    element_ids = " ".join(re.findall(r'"([a-z0-9 -]+)"', block)).split()
+
+    assert element_ids
+    assert not [element_id for element_id in element_ids if f'id="{element_id}"' not in document]

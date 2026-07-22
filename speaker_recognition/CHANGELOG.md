@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.0.0
+
+- Multi-window- en VAD-herkenning toegevoegd met confidence, minimale marge, segmenten en verwerkingstijden.
+- Globale pipeline-policy toegevoegd voor onbekende-speakerblokkering en optionele experimentele speaker-extractie.
+- Alle gewone pipeline- en handmatige testopnamen krijgen zeven dagen analysehistorie met transcript, scores, timings en afspeelbare WAV-audio.
+- Nieuwe Analyse-pagina met zoeken/filteren, bulkverwijdering, offline extractievergelijking en golfvormselectie voor promotie naar een profiel.
+- Enrollment-WAV's worden permanent bewaard en zijn per profiel afspeelbaar, downloadbaar, activeerbaar, deactiveerbaar en verwijderbaar.
+- Profielvervanging archiveert oude samples; profielverwijdering vraagt expliciet of audio wordt gewist of bewaard.
+- Kalibratiewizard toegevoegd met een conservatief advies en expliciete toepas/reset-stap.
+- Diagnose-sensoren uitgebreid met recording-id, marge, drempelbron, segment, timings, extractie/fallback en blokkering.
+- Tijdelijke analyse-audio is beperkt tot zeven dagen en 2 GiB, oudste eerst, en uitgesloten van App-backups.
+
 ## 1.3.5
 
 - **Test een fragment** opent voortaan een eigen modal met audio-upload, browsermicrofoon en Home Assistant Voice.

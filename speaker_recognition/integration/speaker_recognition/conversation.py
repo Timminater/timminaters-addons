@@ -18,7 +18,11 @@ from .const import (
     CONF_MIN_CONFIDENCE,
     DEFAULT_MIN_CONFIDENCE,
 )
-from .results import consume_result, remember_conversation_context
+from .results import (
+    claim_result_for_conversation,
+    consume_result,
+    remember_conversation_context,
+)
 
 
 async def async_setup_entry(
@@ -82,6 +86,9 @@ class SpeakerRecognitionConversation(ConversationEntity):
         recognition = consume_result(
             self.hass, user_input.satellite_id, self._min_confidence
         )
+        correlated = recognition or claim_result_for_conversation(
+            self.hass, user_input.satellite_id
+        )
         prompt = user_input.extra_system_prompt
         if recognition is not None:
             person_entity_id = recognition["person_entity_id"]
@@ -99,15 +106,17 @@ class SpeakerRecognitionConversation(ConversationEntity):
             agent_id=self._source_entity_id,
             extra_system_prompt=prompt,
         )
+        reason = (
+            "person_context_submitted"
+            if recognition is not None
+            else "no_eligible_fresh_satellite_match"
+        )
         remember_conversation_context(
             self.hass,
             {
+                "recording_id": correlated.get("recording_id") if correlated else None,
                 "forwarded": recognition is not None,
-                "reason": (
-                    "person_context_submitted"
-                    if recognition is not None
-                    else "no_eligible_fresh_satellite_match"
-                ),
+                "reason": reason,
                 "person_entity_id": (
                     recognition.get("person_entity_id") if recognition else None
                 ),
@@ -119,6 +128,27 @@ class SpeakerRecognitionConversation(ConversationEntity):
                 "observed_at": datetime.now(timezone.utc).isoformat(),
             },
         )
+        if correlated is not None and correlated.get("recording_id"):
+            from . import get_main_entry
+            from .api import SpeakerRecognitionApiError
+
+            main = get_main_entry(self.hass)
+            if main is not None:
+                try:
+                    await main.runtime_data.async_finalize_conversation(
+                        correlated["recording_id"],
+                        forwarded=recognition is not None,
+                        reason=reason,
+                        person_entity_id=(
+                            recognition.get("person_entity_id")
+                            if recognition is not None
+                            else None
+                        ),
+                    )
+                except SpeakerRecognitionApiError:
+                    # Conversation availability must not depend on optional
+                    # diagnostic finalization.
+                    pass
         # The original Context object is deliberately preserved. A voice match is
         # never allowed to become a Home Assistant user or authorization context.
         return await source.async_process(routed_input)

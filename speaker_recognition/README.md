@@ -1,46 +1,34 @@
 # Speaker Recognition
 
-Lokale speaker-herkenning voor Home Assistant met een ingebouwde Ingress-interface. De App gebruikt [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) om stem-embeddings te maken; ruwe audio wordt niet opgeslagen.
-
-De App levert ook de bijpassende custom integration mee. Bij elke start wordt deze onder
-`/homeassistant/custom_components/speaker_recognition` bijgewerkt en via Supervisor-discovery
-aangemeld. Herstart Home Assistant Core na de eerste installatie eenmaal; daarna verschijnt
-de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
+Lokale stemherkenning voor Home Assistant met een ingebouwde Ingress-interface. De App gebruikt [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) voor stem-embeddings en levert een companion-integratie met STT- en conversation-proxy's.
 
 ## Functies
 
-- Enroll speakers via audioupload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
-- Koppel een stemprofiel optioneel aan een Home Assistant `person.*`-entiteit.
-- Combineer meerdere samples tot één genormaliseerd stemprofiel.
-- Herken een speaker met een apart testfragment en een instelbare confidence-drempel.
-- Maak een STT-proxy én een selecteerbare conversation-proxy rond bestaande Home Assistant-entiteiten.
-- Gebruik persoonsherkenning veilig als personalisatiecontext, nooit als authenticatie of rechtenbron.
-- Controleer de laatste herkenning, confidence en doorgifte aan de vervolgagent via twee diagnostische sensoren.
-- Beheer en verwijder profielen via Home Assistant Ingress.
-- Bewaar profielen atomisch onder `/data`, inclusief restart en App-backups.
-- Optionele token-beveiligde REST-API; de hostpoort staat standaard uit.
+- Enrollment via upload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
+- Meerdere permanente WAV-samples per profiel, inclusief afspelen, downloaden, activeren, deactiveren en verwijderen.
+- Multi-window-herkenning met eenvoudige spraaksegmentdetectie, confidence, marge en kandidaat-scores.
+- Een globale pipeline-policy: onbekende stemmen toestaan of blokkeren en speaker-extractie uit, vergelijken of vóór STT toepassen.
+- Zeven dagen analysehistorie van gewone Assist-pipelines en handmatige tests, met transcript, timings, diagnose en originele/uitgefilterde audio.
+- Fragmentselectie uit een analyse-opname om een bestaand of nieuw profiel te verbeteren.
+- Een kalibratiewizard die op basis van de opgeslagen samples een conservatieve drempel adviseert.
+- Veilige persoonscontext voor een vervolgagent, zonder ooit Home Assistant-gebruikersrechten te wijzigen.
+- Twee tijdelijke diagnostische sensoren voor de laatste herkenning en de doorgifte aan de conversation-agent.
 
 ## Installatie
 
 1. Voeg `https://github.com/Timminater/timminaters-addons` toe onder **Instellingen → Apps → App store → Repositories**.
-2. Installeer **Speaker Recognition**.
-3. Start de App en kies **Open webinterface**.
-4. Voeg per speaker liefst 2–3 heldere fragmenten van 5–30 seconden toe.
+2. Installeer en start **Speaker Recognition**.
+3. Herstart Home Assistant Core na de eerste installatie, zodat de meegeleverde custom integration wordt geladen.
+4. Bevestig de gevonden Speaker Recognition App onder **Instellingen → Apparaten & diensten → Ontdekt**.
+5. Voeg daarna via dezelfde integratie een STT-proxy rond je normale STT-engine en, indien gewenst, een conversation-proxy rond je normale gespreksagent toe.
+6. Selecteer beide proxy-entiteiten in de Assist-pipeline van je Voice-apparaat.
 
-Voor enrollment en herkenning via een Voice-apparaat voeg je in de Speaker Recognition-
-integratie een STT-proxy toe rond je normale STT-engine. Gebruik daarna een Assist-pipeline
-met die proxy als STT-engine voor het Voice-apparaat. De GUI kan het apparaat vervolgens
-zelf laten luisteren.
+Open vervolgens de App-webinterface en leg per persoon liefst 2–3 heldere fragmenten van 5–30 seconden vast. Gebruik voor een eerlijke controle andere audio dan de enrollment-samples.
 
-Voeg de integratie nogmaals toe en kies **Conversation-proxy toevoegen** om een bestaande
-conversation-agent te koppelen. De ontstane `conversation.*`-entiteit kan vervolgens als
-agent in een Assist-pipeline worden gekozen. De backend-URL en companion-token staan onder
-**Configureren** bij de hoofdentry en worden vóór opslaan gecontroleerd.
+Alleen `amd64` wordt momenteel gepubliceerd. PyTorch en Resemblyzer maken het image relatief groot.
 
-Op dit moment wordt alleen `amd64` aangeboden. PyTorch/Resemblyzer is groot en de upstream ARM64-builds zijn niet betrouwbaar genoeg om als ondersteund te publiceren.
-
-Zie [DOCS.md](DOCS.md) voor instellingen, API en privacy-informatie.
+Zie [DOCS.md](DOCS.md) voor de werking, instellingen, opslag en privacy-informatie.
 
 ## Herkomst
 
-Deze implementatie is gebaseerd op het MIT-gelicentieerde project [EuleMitKeule/speaker-recognition](https://github.com/EuleMitKeule/speaker-recognition). De onderzochte forkverbeteringen en hun verwerking staan in [FORK_AUDIT.md](FORK_AUDIT.md).
+Deze implementatie is gebaseerd op het MIT-gelicentieerde project [EuleMitKeule/speaker-recognition](https://github.com/EuleMitKeule/speaker-recognition). De onderzochte forks en verwerking staan in [FORK_AUDIT.md](FORK_AUDIT.md).

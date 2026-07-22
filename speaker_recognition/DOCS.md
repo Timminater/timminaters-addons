@@ -2,132 +2,107 @@
 
 ## Companion-integratie
 
-Bij elke start installeert of actualiseert de App de meegeleverde `speaker_recognition`
-custom integration en meldt hij zich aan via Supervisor-discovery. Herstart Home Assistant
-Core na de eerste App-start eenmaal, omdat nieuwe custom components alleen tijdens een
-Core-start worden ingelezen. Bevestig daarna de gevonden Speaker Recognition App bij
-**Instellingen > Apparaten & diensten**.
+De App installeert of actualiseert bij het starten de meegeleverde `speaker_recognition` custom integration onder `/homeassistant/custom_components` en meldt de backend aan via Supervisor-discovery. Herstart Home Assistant Core na de eerste installatie. Daarna verschijnt de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
 
-Voor deze automatische installatie krijgt de App, zoals in het companion-integrationpatroon,
-schrijftoegang tot de Home Assistant-configuratiemap. Een bestaande, niet door de App beheerde
-integratie wordt eerst bewaard als
-`custom_components/speaker_recognition.pre-app-backup`; verwijdering van de App herstelt die
-backup niet automatisch.
+Een al aanwezige integratiemap die niet door deze App wordt beheerd, wordt eerst bewaard als `speaker_recognition.pre-app-backup`. Het verwijderen van de App herstelt die map niet automatisch.
 
-Voeg de integratie daarna nogmaals toe om een STT- of conversation-proxy te maken. Iedere herkenning vuurt
-het event `speaker_recognition_detected` af met profiel, confidence en scores. Herkenning
-wijzigt bewust nooit `Context.user_id` of gebruikersrechten: een stemmatch is metadata en
-geen authenticatiemiddel.
+Voeg de integratie daarna nogmaals toe voor:
 
-### Backend en conversation-agent
+1. een **STT-proxy** rond de STT-engine van de Assist-pipeline; en
+2. optioneel een **conversation-proxy** rond de bestaande conversation-agent.
 
-De originele upstreamintegratie noemt vier configuratiestappen. In deze versie zijn die als
-volgt beschikbaar:
+De STT-proxy laat dezelfde audiostream herkennen en stuurt hem volgens de globale policy door naar STT. De conversation-proxy kan een verse, exact aan dezelfde Voice-satelliet gekoppelde stemmatch als niet-vertrouwde personalisatiecontext aanbieden. Tekst, taal, conversation-id, device/satellite-id en vooral het oorspronkelijke Home Assistant `Context` blijven behouden. Een stemmatch verandert nooit `Context.user_id`, authenticatie of rechten.
 
-1. De herkenningsbackend wordt automatisch via de App ontdekt. Via **Configureren** op de
-   hoofdentry kun je desgewenst een andere compatibele interne URL en token instellen; de
-   verbinding wordt gecontroleerd voordat de wijziging wordt opgeslagen.
-2. Tijdens enrollment kan een profiel optioneel aan een Home Assistant `person.*`-entiteit
-   worden gekoppeld. Dit is uitsluitend metadata voor events en personalisatie.
-3. Via **Integratie toevoegen > Speaker Recognition > STT-proxy toevoegen** kies je een
-   bestaande `stt.*`-entiteit.
-4. Via **Conversation-proxy toevoegen** kies je een bestaande `conversation.*`-agent en een
-   minimale confidence. De nieuwe proxy verschijnt zelf als selecteerbare conversation-agent.
+## Profielen en enrollment
 
-De conversation-proxy bewaart tekst, taal, conversation-id, device/satellite-id en vooral
-de oorspronkelijke Home Assistant `Context` en gebruikersrechten. Alleen een verse,
-eenmalig gebruikte match van dezelfde Voice-satelliet kan de gekoppelde `person.*`-ID als
-expliciet niet-vertrouwde personalisatiecontext toevoegen. De proxy mag nooit op basis van
-een stemmatch extra rechten verlenen.
-
-### Diagnose-entiteiten
-
-De hoofdentry maakt twee diagnostische sensoren aan op het apparaat **Speaker Recognition**:
-
-- **Laatste herkenning** toont de herkende speaker en bevat onder meer `matched`,
-  `confidence`, `person_entity_id`, `satellite_id`, alle scores en het tijdstip als attributen.
-- **Laatste gesprekscontext** toont de gekoppelde `person.*`-entiteit wanneer deze context
-  daadwerkelijk aan de gekozen vervolgagent is aangeboden. De attributen `forwarded`,
-  `reason`, `source_conversation_entity` en `minimum_confidence` maken de routering controleerbaar.
-
-`forwarded: true` bewijst dat de integratie de persoonscontext via Home Assistants
-conversation-contract aan de vervolgagent heeft aangeboden. Het kan niet garanderen dat een
-externe LLM de instructie inhoudelijk volgt. Beide sensoren bewaren alleen het laatste
-resultaat in het geheugen en bevatten geen audio. Dertig seconden na hun eigen laatste
-update worden de status en attributen automatisch gewist, zodat oude herkenningen niet als
-actueel kunnen worden gelezen.
-
-## Enrollment
-
-Open de webinterface via Home Assistant Ingress en kies **Nieuwe speaker**. Je kunt meerdere bestanden tegelijk selecteren of samples opnemen met de microfoon. Gebruik bij voorkeur:
+Op de pagina **Profielen** kun je samples uploaden of opnemen met de browser of een Home Assistant Voice-apparaat. Gebruik bij voorkeur:
 
 - 2–3 samples per persoon;
-- 5–30 seconden duidelijke, natuurlijke spraak per sample;
-- verschillende zinnen en liefst verschillende opnamemomenten;
-- zo min mogelijk muziek, echo en andere stemmen.
+- 5–30 seconden duidelijke, natuurlijke spraak;
+- verschillende voorbeeldzinnen en opnamemomenten;
+- zo min mogelijk muziek, galm en andere stemmen.
 
-Kies eventueel een Home Assistant-persoon in het enrollmentvenster. Bestaande profielen
-zonder koppeling blijven volledig compatibel. De koppeling wordt samen met het lokale
-stemprofiel opgeslagen en wordt ook in herkenningsevents teruggegeven.
+De voorbeeldtekst is alleen een hulpmiddel. De App kiest willekeurig uit meerdere makkelijk leesbare zinnen; letterlijk voorlezen is niet verplicht.
 
-Upload werkt met audioformaten die de actieve browser kan decoderen. Microfoonopname is een progressive enhancement: `getUserMedia` vereist HTTPS, browsertoestemming en ondersteuning door de Home Assistant Ingress-iframe. Als dat niet beschikbaar is, blijft upload volledig werken.
+Elk enrollmentfragment wordt als WAV permanent onder `/data/enrollment` opgeslagen. Per profiel kun je samples afspelen, downloaden, activeren, deactiveren of definitief verwijderen. Bij het vervangen van een profiel worden oude samples inactief, niet verwijderd. Bij het verwijderen van een profiel vraagt de GUI altijd of de bijbehorende audio moet worden verwijderd of gearchiveerd.
 
-## Herkenning testen
+Een profiel kan aan een `person.*`-entiteit worden gekoppeld. Dit is uitsluitend metadata voor diagnose en ongevaarlijke personalisatie.
 
-Kies **Test een fragment** om een apart testvenster te openen. Daar kun je één bestand
-uploaden, de microfoon van de browser gebruiken of opnemen via een beschikbaar Home
-Assistant Voice-apparaat. Luister het fragment desgewenst terug en kies daarna **Fragment
-testen**. Het resultaat toont de herkende speaker en confidence, of meldt dat de speaker
-onbekend is. Gebruik voor een eerlijke test bij voorkeur andere audio dan voor enrollment.
+### Home Assistant Voice gebruiken
 
-### Opnemen via Home Assistant Voice
+Het Voice-apparaat moet een Assist-pipeline gebruiken waarvan de STT-engine de Speaker Recognition STT-proxy is. De GUI start een eenmalige `assist_satellite.ask_question`-opname en onderschept alleen de STT-stream. Enrollmentspraak bereikt de conversation- of intentlaag niet. Na de opname kun je het fragment eerst terugluisteren.
 
-De GUI toont online `assist_satellite`-apparaten die een gesprek op afstand kunnen starten.
-Om hun audiostream te kunnen onderscheppen:
+## Herkenning en pipeline-policy
 
-1. Voeg Speaker Recognition nogmaals toe onder **Instellingen > Apparaten & diensten** en kies **STT-proxy toevoegen**.
-2. Selecteer de STT-engine die je normale Assist-pipeline gebruikt.
-3. Kies de nieuw ontstane Speaker Recognition STT-entiteit als STT-engine in de Assist-pipeline van het Voice-apparaat.
-4. Kies in de enrollment-GUI het Voice-apparaat en druk op **Opnemen via Voice**.
+De herkenner beoordeelt de volledige uiting, spraakregio's en overlappende tijdvensters. De hoogste overeenkomst bepaalt de kandidaat. Een resultaat is alleen een match als zowel de confidence-drempel als de minimale marge ten opzichte van de tweede kandidaat wordt gehaald.
 
-De App gebruikt hiervoor `assist_satellite.ask_question`. Home Assistant beëindigt deze
-speciale pipeline na STT; de gesproken enrollment-zin gaat niet naar de conversation-agent
-of intent-laag en kan dus geen apparaat bedienen. De stream wordt alleen geaccepteerd als
-het gekozen Voice-apparaat de enige satelliet met status `listening` is. Gebruik tijdens de
-korte opname geen ander Voice-apparaat.
+De globale policy in de webinterface bevat:
 
-## Instellingen
+- **Onbekende speaker toestaan** (standaard): STT en conversation blijven werken wanneer niemand wordt herkend.
+- **Onbekende speaker blokkeren**: een onbekende of ambigue uiting stopt vóór de conversation-agent. Gebruik dit niet als beveiligingsmiddel voor sloten, alarmen of andere gevoelige acties.
+- **Extractie uit** (standaard): STT ontvangt de oorspronkelijke audio.
+- **Alleen vergelijken**: de App maakt en bewaart waar mogelijk ook audio met alleen regio's van de herkende speaker; STT ontvangt nog steeds het origineel.
+- **Vóór STT** (experimenteel): herkenning vindt eerst plaats en STT krijgt de geëxtraheerde audio. Als extractie mislukt, valt de proxy terug op het origineel.
 
-- `log_level`: logniveau van de service.
-- `recognition_threshold`: minimale cosine-similarity voor een bekende speaker. Onder deze waarde geeft de API “onbekend” terug. Begin met `0.65` en valideer met eigen positieve en negatieve testfragmenten.
-- `max_audio_seconds`: serverlimiet per sample.
-- `api_token`: bearer-token voor optionele rechtstreekse API-toegang. Zonder token accepteert de API alleen Supervisor Ingress-verzoeken.
+Wanneer de backend niet bereikbaar is, blijft de normale `allow`-policy fail-open. Een actief bekende `block`-policy faalt gesloten.
 
-Poort `8099/tcp` is standaard niet aan een hostpoort gekoppeld. Stel alleen een mapping in als een externe client de REST-API nodig heeft en configureer dan altijd een sterk `api_token`.
+## Analyse
 
-## REST-API
+De pagina **Analyse** bewaart gewone Assist-pipeline-opnamen en opnamen van **Test een fragment**. De generieke externe `/api/recognize`-route blijft vluchtig en wordt niet gelogd.
 
-Ingress verzorgt authenticatie voor de GUI. Bij rechtstreekse toegang stuur je `Authorization: Bearer <api_token>`.
+Per item zijn, voor zover beschikbaar, zichtbaar:
 
-- `GET /health` — readiness en aantal profielen.
-- `GET /api/speakers` — lijst met profielen.
-- `POST /api/enroll` — append of replace van één profiel.
-- `DELETE /api/speakers/{id}` — profiel verwijderen.
-- `POST /api/recognize` — speaker testen.
-- `GET /api/assist-satellites` — beschikbare Voice-apparaten.
-- `GET /api/home-assistant-persons` — beschikbare `person.*`-entiteiten voor enrollment.
-- `POST /api/satellite-enrollment` — een eenmalige Voice-opname starten.
+- origineel en geëxtraheerd WAV-fragment;
+- transcript en bron/satelliet;
+- match, confidence, drempel, marge en alle profiel-scores;
+- gebruikte segmenten en het beste tijdvenster;
+- herkennings-, extractie-, STT- en totale verwerkingstijd;
+- extractiemodus, fallback, blokkering en doorgifte aan de conversation-agent.
 
-Audio in de JSON-contracten is base64-gecodeerde, little-endian signed 16-bit mono PCM met een expliciete sample-rate. De webinterface converteert uploads en microfoonopnames automatisch naar 16 kHz.
+Je kunt op de golfvorm een begin- en eindpunt kiezen en dat deel toevoegen aan een bestaand profiel of als nieuw profiel opslaan. Analyse-items kunnen afzonderlijk, als selectie of gezamenlijk worden verwijderd.
+
+Analyse-audio wordt standaard zeven dagen bewaard, met daarnaast een globale limiet van 2 GiB. Bij overschrijding worden de oudste opnamen eerst verwijderd. Deze tijdelijke WAV's zijn uitgesloten van Home Assistant App-backups.
+
+## Kalibratie
+
+De pagina **Kalibratie** vergelijkt actieve enrollment-samples met samples van dezelfde en andere profielen. Er zijn meerdere samples en minstens twee verschillende speakers nodig. Het advies weegt een verkeerde persoonsmatch zwaarder dan een gemiste herkenning. De voorgestelde drempel en marge worden pas actief nadat je expliciet op **Toepassen** klikt; resetten herstelt de ingestelde basisdrempel.
+
+## Diagnostische entiteiten
+
+De hoofdentry maakt twee diagnose-sensoren:
+
+- `sensor.speaker_recognition_laatste_herkenning`
+- `sensor.speaker_recognition_laatste_gesprekscontext`
+
+Ze tonen onder andere recording-id, speaker/person, confidence, marge, drempel, scores, timings, extractiestatus, blokkering en of persoonscontext aan de vervolgagent is aangeboden. Elke sensor wist zijn toestand dertig seconden na de laatste eigen update. `forwarded: true` betekent dat de integratie de context aan de agent heeft aangeboden; het garandeert niet dat een externe LLM die inhoud gebruikt.
+
+## App-instellingen en API
+
+- `log_level`: detailniveau van het App-logboek.
+- `recognition_threshold`: basisdrempel voor een bekende speaker; standaard `0.65`.
+- `max_audio_seconds`: maximale audioduur per verzoek.
+- `api_token`: optionele bearer-token voor directe toegang buiten Ingress.
+
+Poort `8099/tcp` staat standaard niet open. Bij directe toegang stuur je `Authorization: Bearer <api_token>`. Audio in JSON is base64-gecodeerde little-endian signed 16-bit mono PCM met een expliciete sample-rate.
+
+Belangrijkste routes:
+
+- `GET /api/speakers`, `POST /api/enroll` en profiel/sample-routes;
+- `POST /api/recognize` voor een vluchtige compatibiliteitstest;
+- `POST /api/analyze` en `/api/analysis/*` voor opgeslagen diagnose;
+- `GET/PATCH /api/pipeline-policy`;
+- `GET/POST/DELETE /api/calibration`;
+- routes voor personen, Voice-satellieten en eenmalige Voice-opnamen.
 
 ## Privacy, backups en herstel
 
-Stem-embeddings zijn biometrische gegevens. Ze blijven lokaal in `/data/speakers`; ruwe audio wordt niet op schijf opgeslagen. Een Voice-enrollmentfragment blijft maximaal vijf minuten in het App-geheugen beschikbaar om het profiel vanuit de GUI op te slaan en wordt daarna gewist. Home Assistant neemt `/data` mee in een App-backup. Verwijderen in de GUI verwijdert het embeddingbestand en de metadata definitief.
+Stemprofielen, embeddings en enrollment-WAV's zijn biometrische gegevens en blijven lokaal in `/data`. Enrollment-WAV's en profielmetadata worden meegenomen in een koude App-backup. Tijdelijke analyse-WAV's onder `/data/analysis` niet. Na herstel verwijdert de App eventuele analyse-indexregels waarvoor geen audio meer bestaat.
+
+Iedere gebruiker met beheerrechten voor deze App kan opgeslagen stemopnamen beluisteren of verwijderen. Publiceer poort 8099 alleen wanneer dit noodzakelijk is en gebruik dan een sterk token. Gebruik speakerherkenning nooit als authenticatiefactor of als basis om Home Assistant-rechten te verhogen.
 
 ## Bekende beperkingen
 
 - Alleen `amd64` is ondersteund.
-- Browsermicrofoon kan per Home Assistant-/browserrelease verschillen; upload is de gegarandeerde route.
-- Een volledig eerlijke herkenningstest gebruikt andere audio dan de enrollment-samples.
-- Voice-enrollment vereist dat de Assist-pipeline de Speaker Recognition STT-proxy gebruikt; zonder die proxy kan de App de microfoonstream niet ontvangen.
-- Speakerherkenning is probabilistisch en mag niet worden gebruikt als authenticatiefactor voor sloten, alarmen, betalingen of andere gevoelige acties.
+- Browsermicrofoon vereist browsertoestemming en ondersteuning in het Ingress-frame; upload blijft beschikbaar.
+- Voice-enrollment vereist de Speaker Recognition STT-proxy in de pipeline van het Voice-apparaat.
+- Stemherkenning blijft probabilistisch en kan bij ruis, galm, ziekte of overlappende stemmen fouten maken.

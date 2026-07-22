@@ -93,6 +93,8 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
         if result is None:
             return {}
         return {
+            "recording_id": result.get("recording_id"),
+            "outcome": result.get("outcome"),
             "matched": bool(result.get("matched")),
             "confidence": float(result.get("confidence", 0.0)),
             "speaker_id": result.get("speaker_id"),
@@ -101,6 +103,19 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
             "satellite_id": result.get("satellite_id"),
             "stt_entity_id": result.get("entity_id"),
             "scores": result.get("scores", {}),
+            "margin": result.get("margin"),
+            "threshold": result.get("threshold"),
+            "threshold_source": result.get("threshold_source"),
+            "best_segment": result.get("best_segment"),
+            "candidate_count": result.get("candidate_count"),
+            "recognition_ms": result.get("recognition_ms"),
+            "extraction_ms": result.get("extraction_ms"),
+            "stt_ms": result.get("stt_ms"),
+            "total_ms": result.get("total_ms"),
+            "extraction_mode": result.get("extraction_mode"),
+            "audio_variant": result.get("audio_variant"),
+            "fallback": bool(result.get("fallback")),
+            "blocked": bool(result.get("blocked")),
             "observed_at": result.get("observed_at"),
             "consumed_for_conversation": bool(result.get("consumed")),
         }

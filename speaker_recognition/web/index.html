@@ -11,106 +11,52 @@
   </head>
   <body>
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32"><path d="M16 3a7 7 0 0 0-7 7v6a7 7 0 0 0 14 0v-6a7 7 0 0 0-7-7Zm-4 7a4 4 0 1 1 8 0v6a4 4 0 1 1-8 0v-6Zm-6 5a1.5 1.5 0 0 1 1.5 1.5 8.5 8.5 0 0 0 17 0 1.5 1.5 0 0 1 3 0A11.5 11.5 0 0 1 17.5 28v1h3a1.5 1.5 0 0 1 0 3h-9a1.5 1.5 0 0 1 0-3h3v-1A11.5 11.5 0 0 1 4.5 16.5 1.5 1.5 0 0 1 6 15Z"/></svg>
-        </span>
-        <div><strong>Speaker Recognition</strong><span>Lokaal stemprofielbeheer</span></div>
-      </div>
-      <div id="engine-status" class="status-pill"><i></i><span>Verbinden…</span></div>
+      <a class="brand" href="#profiles" aria-label="Speaker Recognition, naar profielen">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M16 3a7 7 0 0 0-7 7v6a7 7 0 0 0 14 0v-6a7 7 0 0 0-7-7Zm-4 7a4 4 0 1 1 8 0v6a4 4 0 1 1-8 0v-6Zm-6 5a1.5 1.5 0 0 1 1.5 1.5 8.5 8.5 0 0 0 17 0 1.5 1.5 0 0 1 3 0A11.5 11.5 0 0 1 17.5 28v1h3a1.5 1.5 0 0 1 0 3h-9a1.5 1.5 0 0 1 0-3h3v-1A11.5 11.5 0 0 1 4.5 16.5 1.5 1.5 0 0 1 6 15Z"/></svg></span>
+        <span><strong>Speaker Recognition</strong><small>Lokaal stemprofielbeheer</small></span>
+      </a>
+      <nav class="app-nav" aria-label="Hoofdnavigatie">
+        <a href="#profiles" data-route="profiles">Profielen</a>
+        <a href="#analysis" data-route="analysis">Analyse</a>
+        <a href="#calibration" data-route="calibration">Kalibratie</a>
+      </nav>
+      <div class="header-meta"><span id="storage-status" class="storage-status">Analyse-opslag laden…</span><div id="engine-status" class="status-pill"><i></i><span>Verbinden…</span></div></div>
     </header>
 
     <main>
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Voice enrollment</p>
-          <h1>Wie spreekt er?</h1>
-          <p>Maak veilige lokale stemprofielen met een bestaand fragment of rechtstreeks via je microfoon.</p>
-        </div>
-        <button id="open-enroll" class="primary-button" type="button">
-          <span aria-hidden="true">＋</span> Nieuwe speaker
-        </button>
+      <section id="profiles-page" class="page" data-page="profiles">
+        <div class="hero compact-hero"><div><p class="eyebrow">Voice enrollment</p><h1>Wie spreekt er?</h1><p>Maak lokale stemprofielen, beheer permanente samples en koppel een profiel optioneel aan een Home Assistant-persoon.</p></div><button id="open-enroll" class="primary-button" type="button">＋ Nieuwe speaker</button></div>
+        <section class="stats" aria-label="Overzicht"><article><span>Profielen</span><strong id="speaker-count">—</strong></article><article><span>Actieve samples</span><strong id="sample-count">—</strong></article><article><span>Analyse-retentie</span><strong id="retention-value">7 dagen</strong></article></section>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Stemprofielen</p><h2>Enrolled speakers</h2></div><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Zoeken" aria-label="Zoek speakers"></label></div><div id="speaker-grid" class="speaker-grid" aria-live="polite"></div><div id="empty-state" class="empty-state" hidden><div class="empty-icon" aria-hidden="true">◌</div><h3>Nog geen stemmen opgeslagen</h3><p>Voeg minimaal één duidelijk spraakfragment van 5–30 seconden toe.</p><button class="text-button" data-action="enroll" type="button">Eerste speaker enrollen →</button></div></section>
+        <section class="panel test-panel"><div><p class="eyebrow">Herkenningstest</p><h2>Test een fragment</h2><p>Gebruik een ander fragment dan waarmee je hebt enrolled voor een eerlijke test. Tests worden in Analyse bewaard.</p></div><button id="open-test" class="secondary-button" type="button">Test een fragment</button><div id="test-result" class="test-result" hidden></div></section>
       </section>
 
-      <section class="stats" aria-label="Overzicht">
-        <article><span>Profielen</span><strong id="speaker-count">—</strong></article>
-        <article><span>Samples</span><strong id="sample-count">—</strong></article>
-        <article><span>Opslag</span><strong>Lokaal</strong></article>
+      <section id="analysis-page" class="page" data-page="analysis" hidden>
+        <div class="page-heading"><div><p class="eyebrow">Audiobibliotheek</p><h1>Analyse</h1><p>Bekijk alle geanalyseerde opnamen. Analyse-audio wordt automatisch na de ingestelde retentie verwijderd; enrollment-samples blijven permanent bewaard.</p></div><button id="refresh-analysis" class="secondary-button" type="button">Vernieuwen</button></div>
+        <section class="panel analysis-toolbar"><div class="filters"><label class="field compact-field"><span>Periode</span><select id="analysis-period"><option value="all">Alle opnamen</option><option value="today">Vandaag</option><option value="7d">Afgelopen 7 dagen</option><option value="30d">Afgelopen 30 dagen</option></select></label><label class="field compact-field"><span>Uitkomst</span><select id="analysis-outcome"><option value="">Alle uitkomsten</option><option value="matched">Herkend</option><option value="unmatched">Niet herkend</option><option value="ambiguous">Twijfelachtig</option><option value="error">Fout</option><option value="blocked">Geblokkeerd</option></select></label><label class="field compact-field"><span>Bron</span><select id="analysis-source"><option value="">Alle bronnen</option><option value="pipeline">Pipeline</option><option value="test">Test</option></select></label><label class="field compact-field"><span>Speaker</span><select id="analysis-speaker"><option value="">Alle speakers</option></select></label><label class="search analysis-search"><span aria-hidden="true">⌕</span><input id="analysis-query" type="search" placeholder="Zoek transcript of apparaat" aria-label="Zoek in analyse"></label></div><div class="selection-actions"><span id="analysis-selection-count">Geen selectie</span><button id="delete-selected" class="danger-button" type="button" disabled>Selectie verwijderen</button><button id="delete-filtered" class="text-button danger-text" type="button">Alles gefilterd verwijderen</button></div></section>
+        <section id="analysis-loading" class="loading-state" hidden>Opnamen laden…</section><section id="analysis-grid" class="analysis-grid" aria-live="polite"></section><section id="analysis-empty" class="empty-state panel" hidden><div class="empty-icon" aria-hidden="true">◌</div><h3>Geen opnamen gevonden</h3><p>Pas de filters aan of gebruik Assist om nieuwe audio te analyseren.</p></section><nav id="analysis-pagination" class="pagination" aria-label="Paginering" hidden><button id="analysis-previous" class="secondary-button" type="button">Vorige</button><span id="analysis-page-label"></span><button id="analysis-next" class="secondary-button" type="button">Volgende</button></nav>
       </section>
 
-      <section class="panel">
-        <div class="panel-heading">
-          <div><p class="eyebrow">Stemprofielen</p><h2>Enrolled speakers</h2></div>
-          <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Zoeken" aria-label="Zoek speakers"></label>
-        </div>
-        <div id="speaker-grid" class="speaker-grid" aria-live="polite"></div>
-        <div id="empty-state" class="empty-state" hidden>
-          <div class="empty-icon" aria-hidden="true">⌁</div>
-          <h3>Nog geen stemmen opgeslagen</h3>
-          <p>Voeg minimaal één duidelijk spraakfragment van 5–30 seconden toe.</p>
-          <button class="text-button" data-action="enroll" type="button">Eerste speaker enrollen →</button>
-        </div>
-      </section>
-
-      <section class="panel test-panel">
-        <div><p class="eyebrow">Herkenningstest</p><h2>Test een fragment</h2><p>Gebruik een ander fragment dan waarmee je hebt enrolled voor een eerlijke test.</p></div>
-        <button id="open-test" class="secondary-button" type="button">Test een fragment</button>
-        <div id="test-result" class="test-result" hidden></div>
+      <section id="calibration-page" class="page" data-page="calibration" hidden>
+        <div class="page-heading"><div><p class="eyebrow">Kwaliteitscontrole</p><h1>Kalibratie</h1><p>Gebruik actieve enrollment-samples om de drempel en scoremarge aan jouw stemmen aan te passen.</p></div><button id="refresh-calibration" class="secondary-button" type="button">Opnieuw berekenen</button></div>
+        <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Pipelinebeleid</p><h2>Herkenning en extractie</h2><p class="field-help">Blokkeren is een gebruiksfilter, nooit autorisatie. Extractie is experimenteel; de originele audio blijft in Analyse beschikbaar.</p></div></div><div class="policy-controls"><label class="field compact-field"><span>Onbekende speaker</span><select id="unknown-speaker-policy"><option value="allow">Toestaan</option><option value="block">Blokkeren vóór gesprek</option></select></label><label class="field compact-field"><span>Speaker-extractie</span><select id="extraction-mode"><option value="off">Uit</option><option value="compare">Alleen vergelijken (experimenteel)</option><option value="before_stt">Vóór STT (experimenteel)</option></select></label><label class="field compact-field"><span>Minimale scoremarge</span><input id="policy-min-margin" type="number" min="0" max="1" step="0.01" inputmode="decimal"></label><button id="save-policy" class="primary-button" type="button">Beleid opslaan</button></div></section>
+        <section id="calibration-loading" class="loading-state">Kalibratiegegevens laden…</section><div id="calibration-content" hidden><section class="stats calibration-stats"><article><span>Genuine samples</span><strong id="genuine-count">—</strong></article><article><span>Impostor samples</span><strong id="impostor-count">—</strong></article><article><span>Huidige instelling</span><strong id="current-threshold">—</strong></article></section><section id="calibration-warning" class="notice warning" hidden></section><div class="two-columns"><section class="panel"><div class="panel-heading"><div><p class="eyebrow">Scoreverdeling</p><h2>Genuine versus impostor</h2></div></div><canvas id="calibration-chart" height="220" aria-label="Scoreverdeling" role="img"></canvas><div class="chart-legend"><span><i class="legend-genuine"></i>Eigen stem</span><span><i class="legend-impostor"></i>Andere stem</span></div></section><section class="panel"><p class="eyebrow">Aanbevolen instelling</p><h2 id="recommended-title">Nog berekenen</h2><dl class="metrics"><div><dt>Aanbevolen threshold</dt><dd id="recommended-threshold">—</dd></div><div><dt>Aanbevolen marge</dt><dd id="recommended-margin">—</dd></div><div><dt>False accepts</dt><dd id="false-accepts">—</dd></div><div><dt>False rejects</dt><dd id="false-rejects">—</dd></div></dl><p id="calibration-detail" class="field-help"></p><div class="dialog-actions"><button id="reset-calibration" class="secondary-button" type="button">Reset naar standaard</button><button id="apply-calibration" class="primary-button" type="button">Aanbeveling toepassen</button></div></section></div></div>
       </section>
     </main>
 
-    <dialog id="enroll-dialog">
-      <form id="enroll-form" method="dialog">
-        <div class="dialog-heading"><div><p class="eyebrow">Nieuw stemprofiel</p><h2>Speaker enrollen</h2></div><button class="icon-button" data-action="close-enroll" aria-label="Sluiten" type="button">×</button></div>
-        <label class="field"><span>Naam</span><input id="speaker-name" maxlength="80" required autocomplete="off" placeholder="Bijvoorbeeld Tim"></label>
-        <label class="field"><span>Home Assistant-persoon (optioneel)</span><select id="speaker-person"><option value="">Niet gekoppeld</option></select><small class="field-help">Deze koppeling is alleen voor personalisatie en verandert nooit gebruikersrechten.</small></label>
-        <fieldset>
-          <legend>Stemfragmenten</legend>
-          <p class="field-help">Gebruik liefst 2–3 heldere samples van elk 5–30 seconden, zonder muziek.</p>
-          <aside class="speech-example" aria-labelledby="speech-example-title">
-            <div class="speech-example-heading">
-              <strong id="speech-example-title">Voorbeeldtekst (niet verplicht)</strong>
-              <button id="new-speech-example" type="button">Andere tekst</button>
-            </div>
-            <p id="speech-example-text">Vandaag loop ik rustig naar buiten. De zon schijnt op het groene gras en een kleine vogel zingt vrolijk bij het open raam.</p>
-          </aside>
-          <div class="capture-actions">
-            <button id="record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button>
-            <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="audio-files" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" multiple hidden></label>
-          </div>
-          <p id="mic-help" class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p>
-          <div class="voice-capture">
-            <label class="field"><span>Home Assistant Voice-apparaat</span><select id="voice-satellite"><option value="">Voice-apparaten laden…</option></select></label>
-            <button id="voice-record-button" class="secondary-button" type="button" disabled>Opnemen via Voice</button>
-          </div>
-          <p class="field-help">Het gekozen apparaat vraagt om een fragment. De tekst wordt niet als Assist-commando uitgevoerd.</p>
-          <div id="samples" class="samples"></div>
-        </fieldset>
-        <label class="check-row"><input id="replace-profile" type="checkbox"><span>Bestaand profiel met dezelfde naam vervangen</span></label>
-        <div id="form-error" class="error-box" hidden></div>
-        <div class="dialog-actions"><button class="secondary-button" data-action="close-enroll" type="button">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div>
-      </form>
-    </dialog>
+    <dialog id="enroll-dialog"><form id="enroll-form" method="dialog"><div class="dialog-heading"><div><p class="eyebrow">Nieuw stemprofiel</p><h2>Speaker enrollen</h2></div><button class="icon-button" data-action="close-enroll" aria-label="Sluiten" type="button">×</button></div><label class="field"><span>Naam</span><input id="speaker-name" maxlength="80" required autocomplete="off" placeholder="Bijvoorbeeld Tim"></label><label class="field"><span>Home Assistant-persoon (optioneel)</span><select id="speaker-person"><option value="">Niet gekoppeld</option></select><small class="field-help">Deze koppeling is alleen voor personalisatie en verandert nooit gebruikersrechten.</small></label><fieldset><legend>Stemfragmenten</legend><p class="field-help">Gebruik liefst 2–3 heldere samples van elk 5–30 seconden, zonder muziek.</p><aside class="speech-example" aria-labelledby="speech-example-title"><div class="speech-example-heading"><strong id="speech-example-title">Voorbeeldtekst (niet verplicht)</strong><button id="new-speech-example" type="button">Andere tekst</button></div><p id="speech-example-text">Vandaag loop ik rustig naar buiten. De zon schijnt op het groene gras en een kleine vogel zingt vrolijk bij het open raam.</p></aside><div class="capture-actions"><button id="record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button><label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="audio-files" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" multiple hidden></label></div><p id="mic-help" class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p><div class="voice-capture"><label class="field"><span>Home Assistant Voice-apparaat</span><select id="voice-satellite"><option value="">Voice-apparaten laden…</option></select></label><button id="voice-record-button" class="secondary-button" type="button" disabled>Opnemen via Voice</button></div><p class="field-help">Het gekozen apparaat vraagt om een fragment. De tekst wordt niet als Assist-commando uitgevoerd.</p><div id="samples" class="samples"></div></fieldset><label class="check-row"><input id="replace-profile" type="checkbox"><span>Bestaand profiel met dezelfde naam vervangen (oude permanente samples blijven als inactief archief bestaan).</span></label><div id="form-error" class="error-box" hidden></div><div class="dialog-actions"><button class="secondary-button" data-action="close-enroll" type="button">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div></form></dialog>
 
-    <dialog id="test-dialog">
-      <form id="test-form" method="dialog">
-        <div class="dialog-heading"><div><p class="eyebrow">Herkenningstest</p><h2>Wie spreekt er?</h2></div><button class="icon-button" data-action="close-test" aria-label="Sluiten" type="button">×</button></div>
-        <p class="field-help">Neem een nieuw fragment op of upload audio. Je kunt het fragment eerst terugluisteren voordat je de herkenning start.</p>
-        <div class="capture-actions">
-          <button id="test-record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button>
-          <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="test-audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" hidden></label>
-        </div>
-        <p class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p>
-        <div class="voice-capture">
-          <label class="field"><span>Home Assistant Voice-apparaat</span><select id="test-voice-satellite"><option value="">Voice-apparaten laden…</option></select></label>
-          <button id="test-voice-record-button" class="secondary-button" type="button" disabled>Opnemen via Voice</button>
-        </div>
-        <p class="field-help">Het gekozen apparaat vraagt om één testfragment. De tekst wordt niet als Assist-commando uitgevoerd.</p>
-        <div id="test-sample" class="samples"></div>
-        <div id="test-form-error" class="error-box" hidden></div>
-        <div class="dialog-actions"><button class="secondary-button" data-action="close-test" type="button">Annuleren</button><button id="recognize-sample" class="primary-button" type="button" disabled>Fragment testen</button></div>
-      </form>
-    </dialog>
+    <dialog id="test-dialog"><form id="test-form" method="dialog"><div class="dialog-heading"><div><p class="eyebrow">Herkenningstest</p><h2>Wie spreekt er?</h2></div><button class="icon-button" data-action="close-test" aria-label="Sluiten" type="button">×</button></div><p class="field-help">Neem een nieuw fragment op of upload audio. Je kunt het fragment eerst terugluisteren voordat je de herkenning start.</p><div class="capture-actions"><button id="test-record-button" class="capture-button record-button" type="button"><i></i><span>Opnemen</span></button><label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="test-audio-file" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" hidden></label></div><p class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p><div class="voice-capture"><label class="field"><span>Home Assistant Voice-apparaat</span><select id="test-voice-satellite"><option value="">Voice-apparaten laden…</option></select></label><button id="test-voice-record-button" class="secondary-button" type="button" disabled>Opnemen via Voice</button></div><p class="field-help">Het gekozen apparaat vraagt om één testfragment. De tekst wordt niet als Assist-commando uitgevoerd.</p><div id="test-sample" class="samples"></div><div id="test-form-error" class="error-box" hidden></div><div class="dialog-actions"><button class="secondary-button" data-action="close-test" type="button">Annuleren</button><button id="recognize-sample" class="primary-button" type="button" disabled>Fragment testen</button></div></form></dialog>
+
+    <dialog id="profile-dialog"><div class="dialog-body"><div class="dialog-heading"><div><p class="eyebrow">Permanent enrollment-archief</p><h2 id="profile-dialog-title">Stemprofiel</h2></div><button class="icon-button" data-action="close-profile" aria-label="Sluiten" type="button">×</button></div><p id="profile-dialog-description" class="field-help"></p><div id="profile-samples" class="profile-samples"></div><div class="dialog-actions"><button id="profile-delete" class="danger-button" type="button">Profiel verwijderen…</button><button class="secondary-button" data-action="close-profile" type="button">Sluiten</button></div></div></dialog>
+
+    <dialog id="profile-delete-dialog"><form method="dialog"><div class="dialog-heading"><div><p class="eyebrow">Profiel verwijderen</p><h2 id="profile-delete-title">Profiel verwijderen</h2></div><button class="icon-button" data-action="close-profile-delete" aria-label="Sluiten" type="button">×</button></div><p class="confirm-message">Kies wat er met de permanente enrollment-WAV’s gebeurt. Deze keuze is niet automatisch herstelbaar.</p><div class="delete-choices"><button id="archive-profile-audio" class="secondary-button" type="button"><strong>Audio archiveren</strong><small>Profiel verwijderen; WAV’s blijven als niet-gekoppeld archief bewaard.</small></button><button id="delete-profile-audio" class="danger-button" type="button"><strong>Profiel en audio verwijderen</strong><small>Profiel én alle permanente enrollment-WAV’s definitief wissen.</small></button></div><div class="dialog-actions"><button class="secondary-button" data-action="close-profile-delete" type="button">Annuleren</button></div></form></dialog>
+
+    <dialog id="analysis-dialog" class="wide-dialog"><div class="dialog-body"><div class="dialog-heading"><div><p class="eyebrow">Opnamedetail</p><h2 id="analysis-dialog-title">Analyse</h2></div><button class="icon-button" data-action="close-analysis" aria-label="Sluiten" type="button">×</button></div><div id="analysis-detail-loading" class="loading-state">Opname laden…</div><div id="analysis-detail" hidden><div class="audio-comparison"><section><h3>Originele audio</h3><audio id="analysis-original-audio" controls preload="metadata"></audio></section><section><h3>Geëxtraheerde audio</h3><audio id="analysis-extracted-audio" controls preload="metadata"></audio><p id="extracted-unavailable" class="field-help" hidden>Nog niet beschikbaar.</p></section></div><section class="waveform-section"><div class="waveform-heading"><div><h3>Selectie voor enrollment</h3><p class="field-help">Sleep de markeringen om een bruikbaar stuk spraak te selecteren.</p></div><output id="waveform-range">—</output></div><canvas id="analysis-waveform" height="120" role="img" aria-label="Audiogolfvorm met selecteerbare start en eind"></canvas><div class="waveform-controls"><label class="field compact-field"><span>Start (sec)</span><input id="trim-start" type="number" min="0" step="0.1"></label><label class="field compact-field"><span>Einde (sec)</span><input id="trim-end" type="number" min="0" step="0.1"></label></div></section><div class="detail-grid"><section><h3>Herkenning</h3><dl id="recognition-metadata" class="metadata-list"></dl></section><section><h3>Pipeline</h3><dl id="pipeline-metadata" class="metadata-list"></dl></section></div><section class="panel nested-panel"><div class="panel-heading"><div><p class="eyebrow">Acties</p><h3>Audio gebruiken</h3></div></div><div class="action-grid"><label class="field compact-field"><span>Doelprofiel</span><select id="extract-speaker"><option value="">Kies een profiel</option></select></label><button id="extract-audio" class="secondary-button" type="button">Nu extraheren</button><a id="download-original" class="secondary-button button-link" download>Origineel downloaden</a><button id="promote-audio" class="primary-button" type="button">Aan profiel toevoegen…</button><button id="delete-analysis" class="danger-button" type="button">Opname verwijderen</button></div></section></div></div></dialog>
+
+    <dialog id="promote-dialog"><form id="promote-form" method="dialog"><div class="dialog-heading"><div><p class="eyebrow">Enrollment uit analyse</p><h2>Audio toevoegen</h2></div><button class="icon-button" data-action="close-promote" aria-label="Sluiten" type="button">×</button></div><p class="field-help">De geselecteerde tijdsrange wordt permanent als WAV opgeslagen en het profiel wordt opnieuw getraind.</p><fieldset class="choice-group"><legend>Bestemming</legend><label><input type="radio" name="promote-target" value="existing" checked> Bestaand profiel</label><label><input type="radio" name="promote-target" value="new"> Nieuw profiel</label></fieldset><label id="promote-existing-field" class="field"><span>Profiel</span><select id="promote-speaker"></select></label><div id="promote-new-fields" hidden><label class="field"><span>Naam</span><input id="promote-name" maxlength="80" autocomplete="off"></label><label class="field"><span>Home Assistant-persoon (optioneel)</span><select id="promote-person"><option value="">Niet gekoppeld</option></select></label></div><div id="promote-error" class="error-box" hidden></div><div class="dialog-actions"><button class="secondary-button" data-action="close-promote" type="button">Annuleren</button><button id="confirm-promote" class="primary-button" type="button">Permanent toevoegen</button></div></form></dialog>
+
+    <dialog id="confirm-dialog"><form method="dialog"><div class="dialog-heading"><div><p class="eyebrow">Bevestiging vereist</p><h2 id="confirm-title">Verwijderen?</h2></div><button class="icon-button" data-action="close-confirm" aria-label="Sluiten" type="button">×</button></div><p id="confirm-message" class="confirm-message"></p><label id="confirm-checkbox-row" class="check-row" hidden><input id="confirm-checkbox" type="checkbox"><span id="confirm-checkbox-label">Ik begrijp dit</span></label><div class="dialog-actions"><button class="secondary-button" data-action="close-confirm" type="button">Annuleren</button><button id="confirm-action" class="danger-button" type="button" disabled>Verwijderen</button></div></form></dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </body>

@@ -123,5 +123,30 @@ def consume_result(
     if hass.states.get(selected["person_entity_id"]) is None:
         return None
     selected["consumed"] = True
+    selected["conversation_claimed"] = True
     async_dispatcher_send(hass, SIGNAL_RESULT_UPDATED)
+    return selected.copy()
+
+
+def claim_result_for_conversation(
+    hass: HomeAssistant, satellite_id: str | None
+) -> dict[str, Any] | None:
+    """Claim fresh exact-source diagnostics when no person context was eligible."""
+    if not satellite_id:
+        return None
+    results = hass.data.setdefault(DOMAIN, {}).setdefault(
+        "recognition_results", deque(maxlen=MAX_RESULTS)
+    )
+    now = hass.loop.time()
+    candidates = [
+        item
+        for item in results
+        if now - item["timestamp"] <= RESULT_TTL_SECONDS
+        and item.get("satellite_id") == satellite_id
+        and not item.get("conversation_claimed")
+    ]
+    if not candidates:
+        return None
+    selected = max(candidates, key=lambda item: item["timestamp"])
+    selected["conversation_claimed"] = True
     return selected.copy()

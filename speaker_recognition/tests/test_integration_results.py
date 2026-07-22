@@ -89,6 +89,10 @@ sys.modules.setdefault("homeassistant.helpers.dispatcher", dispatcher)
 sys.modules.setdefault("homeassistant.helpers.entity", entity)
 sys.modules.setdefault("homeassistant.helpers.entity_platform", entity_platform)
 sys.modules.setdefault("homeassistant.helpers.event", event)
+aiohttp = types.ModuleType("aiohttp")
+aiohttp.ClientError = OSError
+aiohttp.ClientSession = object
+sys.modules.setdefault("aiohttp", aiohttp)
 integration_package = Path(__file__).parents[1] / "integration" / "speaker_recognition"
 speaker_recognition_package = types.ModuleType("speaker_recognition")
 speaker_recognition_package.__path__ = [str(integration_package)]
@@ -199,11 +203,26 @@ def test_diagnostic_records_reset_after_30_seconds_and_new_values_win():
 def test_diagnostic_sensors_expose_recognition_and_forwarding_details():
     hass = fake_hass()
     recognized = result(
+        recording_id="recording-1",
         speaker_id="voice-1",
         speaker_name="Alice",
         scores={"Alice": 0.91, "Bob": 0.12},
         entity_id="stt.speaker_recognition",
         observed_at="2026-07-22T19:00:00+00:00",
+        outcome="matched",
+        margin=0.33,
+        threshold=0.7,
+        threshold_source="global",
+        best_segment={"start": 0.2, "end": 2.7},
+        candidate_count=5,
+        recognition_ms=31.0,
+        extraction_ms=4.0,
+        stt_ms=120.0,
+        total_ms=155.0,
+        extraction_mode="compare",
+        audio_variant="original",
+        fallback=False,
+        blocked=False,
     )
     remember_result(hass, recognized)
     consume_result(hass, "assist_satellite.kitchen", 0.8)
@@ -226,6 +245,12 @@ def test_diagnostic_sensors_expose_recognition_and_forwarding_details():
     assert recognition_sensor.extra_state_attributes["confidence"] == 0.91
     assert recognition_sensor.extra_state_attributes["consumed_for_conversation"] is True
     assert recognition_sensor.extra_state_attributes["scores"]["Bob"] == 0.12
+    assert recognition_sensor.extra_state_attributes["recording_id"] == "recording-1"
+    assert recognition_sensor.extra_state_attributes["margin"] == 0.33
+    assert recognition_sensor.extra_state_attributes["candidate_count"] == 5
+    assert recognition_sensor.extra_state_attributes["total_ms"] == 155.0
+    assert "transcript" not in recognition_sensor.extra_state_attributes
+    assert "audio_url" not in recognition_sensor.extra_state_attributes
     assert context_sensor.native_value == "person.alice"
     assert context_sensor.extra_state_attributes["forwarded"] is True
     assert (
@@ -310,3 +335,58 @@ def test_conversation_personalization_preserves_original_context_and_fields():
     assert forwarding["person_entity_id"] == "person.alice"
     assert forwarding["source_conversation_entity"] == "conversation.source"
     assert forwarding["satellite_id"] == "assist_satellite.kitchen"
+
+
+def test_conversation_finalizes_correlated_recording_without_changing_context():
+    class Source:
+        supported_languages = "*"
+
+        async def async_process(self, user_input):
+            self.received = user_input
+            return ConversationResult()
+
+    class Api:
+        def __init__(self):
+            self.calls = []
+
+        async def async_finalize_conversation(self, recording_id, **details):
+            self.calls.append((recording_id, details))
+
+    hass = fake_hass()
+    hass.agent = Source()
+    api = Api()
+    hass.main = SimpleNamespace(runtime_data=api)
+    previous = getattr(speaker_recognition_package, "get_main_entry", None)
+    speaker_recognition_package.get_main_entry = lambda value: value.main
+    remember_result(hass, result(recording_id="recording-1"))
+    proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
+    proxy.hass = hass
+    original_context = object()
+    original = ConversationInput(
+        text="Hello",
+        context=original_context,
+        conversation_id="conversation-2",
+        device_id="device-1",
+        satellite_id="assist_satellite.kitchen",
+        language="nl",
+        agent_id="conversation.proxy",
+    )
+    try:
+        asyncio.run(proxy.async_process(original))
+    finally:
+        if previous is None:
+            delattr(speaker_recognition_package, "get_main_entry")
+        else:
+            speaker_recognition_package.get_main_entry = previous
+
+    assert hass.agent.received.context is original_context
+    assert api.calls == [
+        (
+            "recording-1",
+            {
+                "forwarded": True,
+                "reason": "person_context_submitted",
+                "person_entity_id": "person.alice",
+            },
+        )
+    ]

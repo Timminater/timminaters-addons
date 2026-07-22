@@ -101,3 +101,77 @@ class HealthResponse(BaseModel):
     status: str
     ready: bool
     speakers: int
+
+
+# v2 analysis contracts.  They intentionally use the same PCM input as the
+# companion integration, avoiding WAV parsing ambiguity between add-on and HA.
+class PipelinePolicy(BaseModel):
+    unknown_speaker_policy: Literal["allow", "block"] = "allow"
+    extraction_mode: Literal["off", "compare", "before_stt"] = "off"
+    recognition_threshold: float = Field(ge=0, le=1)
+    min_margin: float = Field(default=0.0, ge=0, le=2)
+    retention_days: int = Field(default=7, ge=1, le=365)
+    max_storage_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
+    calibration: dict | None = None
+
+
+class PipelinePolicyPatch(BaseModel):
+    unknown_speaker_policy: Literal["allow", "block"] | None = None
+    extraction_mode: Literal["off", "compare", "before_stt"] | None = None
+    min_margin: float | None = Field(default=None, ge=0, le=2)
+
+
+class AnalyzeRequest(BaseModel):
+    audio: AudioInput
+    source: Literal["pipeline", "test", "home_assistant_stt"] = "pipeline"
+    satellite_id: str | None = Field(default=None, max_length=255)
+    stt_entity_id: str | None = Field(default=None, max_length=255)
+    extraction_mode: Literal["off", "compare", "before_stt"] | None = None
+
+
+class FinalizeRecordingRequest(BaseModel):
+    transcript: str | None = Field(default=None, max_length=10000)
+    outcome: Literal["matched", "unmatched", "ambiguous", "error", "blocked"] | None = None
+    stt_entity_id: str | None = Field(default=None, max_length=255)
+    timings: dict[str, float] | None = None
+    conversation_forwarded: bool | None = None
+    audio_variant: Literal["original", "extracted"] | None = None
+    fallback: bool | None = None
+
+
+class ConversationRecordingRequest(BaseModel):
+    conversation_forwarded: bool
+    person_entity_id: str | None = Field(default=None, pattern=r"^person\.[a-z0-9_]+$")
+    conversation_reason: str | None = Field(default=None, max_length=300)
+    timings: dict[str, float] | None = None
+
+
+class ExtractRequest(BaseModel):
+    speaker_id: str = Field(min_length=1, max_length=64)
+
+
+class PromoteRecordingRequest(BaseModel):
+    speaker_id: str | None = Field(default=None, min_length=1, max_length=64)
+    new_speaker_name: str | None = Field(default=None, min_length=1, max_length=80)
+    person_entity_id: str | None = Field(default=None, pattern=r"^person\.[a-z0-9_]+$")
+    start_seconds: float = Field(default=0, ge=0)
+    end_seconds: float | None = Field(default=None, gt=0)
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list[str] | None = Field(default_factory=list, max_length=500)
+    filters: dict[str, str] | None = None
+    all_filtered: bool = False
+
+
+class SampleActiveRequest(BaseModel):
+    active: bool
+
+
+class DeleteSpeakerRequest(BaseModel):
+    audio_action: Literal["delete", "archive"] = "delete"
+
+
+class CalibrationApplyRequest(BaseModel):
+    threshold: float = Field(ge=0, le=1)
+    margin: float = Field(default=0.0, ge=0, le=2)

@@ -9,6 +9,9 @@ import logging
 import os
 import threading
 import uuid
+import time
+import wave
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -17,12 +20,31 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.models import AudioInput, SpeakerInfo
+from app.storage import AudioCatalog
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class Encoder(Protocol):
     def embed_utterance(self, wav: NDArray[np.float32]) -> NDArray[np.float32]: ...
+
+
+@dataclass(frozen=True)
+class RecognitionAnalysis:
+    """Rich recognition result. ``recognize`` keeps its historic tuple API."""
+    speaker: SpeakerInfo | None
+    confidence: float
+    scores: dict[str, float]
+    threshold: float
+    margin: float
+    outcome: str
+    best_segment: dict[str, float] | None
+    candidates: list[dict[str, object]]
+    timings: dict[str, float]
+    canonical_pcm: bytes
+    sample_rate: int = 16000
+    extracted_pcm: bytes | None = None
+    extraction_status: str | None = None
 
 
 def _default_encoder() -> Encoder:
@@ -45,10 +67,12 @@ class SpeakerRecognizer:
         max_audio_seconds: int,
         encoder_factory: Callable[[], Encoder] = _default_encoder,
         preprocess: Callable[[NDArray[np.float32], int], NDArray[np.float32]] = _default_preprocess,
+        min_margin: float = 0.0,
     ) -> None:
         self._profiles_dir = data_dir / "speakers"
         self._registry_path = self._profiles_dir / "registry.json"
         self._threshold = threshold
+        self._min_margin = min_margin
         self._max_audio_seconds = max_audio_seconds
         self._encoder_factory = encoder_factory
         self._preprocess = preprocess
@@ -56,6 +80,7 @@ class SpeakerRecognizer:
         self._profiles: dict[str, SpeakerInfo] = {}
         self._embeddings: dict[str, NDArray[np.float32]] = {}
         self._lock = threading.RLock()
+        self.catalog = AudioCatalog(data_dir)
 
     @property
     def ready(self) -> bool:
@@ -64,6 +89,7 @@ class SpeakerRecognizer:
     def initialize(self) -> None:
         with self._lock:
             self._profiles_dir.mkdir(parents=True, exist_ok=True)
+            self.catalog.initialize()
             self._load_profiles()
             self._encoder = self._encoder_factory()
             _LOGGER.info("Recognition engine ready with %d speaker(s)", len(self._profiles))
@@ -136,9 +162,17 @@ class SpeakerRecognizer:
                     self._profiles[speaker_id] = previous_profile
                     self._embeddings[speaker_id] = previous_embedding
                 raise
+            # Raw samples are intentionally permanent.  Old profiles from
+            # 1.x stay valid even though they have no reconstructable WAV.
+            if replace:
+                for sample in self.catalog.list_samples(speaker_id, active_only=True):
+                    self.catalog.set_sample_active(sample["id"], False)
+            for audio in audio_inputs:
+                pcm = self._decode_pcm_bytes(audio)
+                self.catalog.add_sample(speaker_id, pcm, audio.sample_rate, metadata={"source": "enroll"})
             return profile
 
-    def delete(self, speaker_id: str) -> bool:
+    def delete(self, speaker_id: str, delete_audio: bool = True) -> bool:
         with self._lock:
             if speaker_id not in self._profiles:
                 return False
@@ -154,34 +188,271 @@ class SpeakerRecognizer:
                 (self._profiles_dir / f"{speaker_id}.npy").unlink(missing_ok=True)
             except OSError as error:
                 _LOGGER.warning("Could not remove obsolete embedding %s: %s", speaker_id, error)
+            self.catalog.archive_or_delete_speaker_samples(speaker_id, delete_audio)
             return True
 
+    def retrain_from_samples(self, speaker_id: str) -> SpeakerInfo:
+        """Rebuild an embedding solely from active permanent enrollment WAVs."""
+        with self._lock:
+            profile = self._profiles.get(speaker_id)
+            if not profile: raise KeyError(speaker_id)
+            samples = self.catalog.list_samples(speaker_id, active_only=True)
+            if not samples: raise ValueError("At least one active enrollment sample is required")
+            inputs: list[AudioInput] = []
+            for sample in samples:
+                try:
+                    with wave.open(str(self.catalog.sample_path(sample["id"])), "rb") as handle:
+                        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+                            continue
+                        inputs.append(AudioInput(audio_data=base64.b64encode(handle.readframes(handle.getnframes())).decode(), sample_rate=handle.getframerate()))
+                except (OSError, wave.Error):
+                    _LOGGER.warning("Skipping unreadable enrollment sample %s", sample["id"])
+            if not inputs: raise ValueError("No readable active enrollment samples")
+            embedding = self._normalized_mean([self._embed(self._require_encoder(), item) for item in inputs])
+            updated = SpeakerInfo(id=profile.id, name=profile.name, sample_count=len(inputs), created_at=profile.created_at, updated_at=datetime.now(timezone.utc), person_entity_id=profile.person_entity_id)
+            self._write_embedding(speaker_id, embedding)
+            self._profiles[speaker_id] = updated; self._embeddings[speaker_id] = embedding
+            self._write_registry()
+            return updated
+
+    def calibration_preview(self) -> dict[str, object]:
+        """Estimate a conservative threshold from permanent labeled samples.
+
+        Leave-one-out references avoid rewarding a sample for matching itself.
+        False accepts are four times as expensive as misses, matching the UI's
+        promise that a wrong person is worse than no person.
+        """
+        with self._lock:
+            vectors: dict[str, list[NDArray[np.float32]]] = {}
+            encoder = self._require_encoder()
+            for profile in self._profiles.values():
+                items: list[NDArray[np.float32]] = []
+                for sample in self.catalog.list_samples(profile.id, active_only=True):
+                    path = self.catalog.sample_path(sample["id"])
+                    if not path: continue
+                    try:
+                        with wave.open(str(path), "rb") as handle:
+                            if handle.getnchannels() != 1 or handle.getsampwidth() != 2: continue
+                            pcm = handle.readframes(handle.getnframes())
+                            input_ = AudioInput(audio_data=base64.b64encode(pcm).decode(), sample_rate=handle.getframerate())
+                            items.append(self._embed(encoder, input_))
+                    except (OSError, wave.Error, ValueError):
+                        continue
+                if items: vectors[profile.id] = items
+            genuine: list[float] = []; impostor: list[float] = []
+            genuine_margins: list[float] = []; impostor_margins: list[float] = []
+            for speaker_id, items in vectors.items():
+                for index, vector in enumerate(items):
+                    same = [item for position, item in enumerate(items) if position != index]
+                    if not same: continue
+                    reference = self._normalized_mean(same)
+                    score = float(np.dot(vector, reference)); genuine.append(score)
+                    rivals = [float(np.dot(vector, self._normalized_mean(other))) for other_id, other in vectors.items() if other_id != speaker_id and other]
+                    if rivals:
+                        best_rival = max(rivals)
+                        impostor.append(best_rival)
+                        genuine_margins.append(score - best_rival)
+                        impostor_margins.append(best_rival - score)
+            if len(genuine) < 3 or len(impostor) < 3:
+                return {"ready": False, "genuine_count": len(genuine), "impostor_count": len(impostor), "reason": "At least three genuine and three impostor observations are required"}
+            candidates = sorted(set(genuine + impostor + [self._threshold]))
+            threshold = min(candidates, key=lambda value: (4 * sum(item >= value for item in impostor) + sum(item < value for item in genuine), -value))
+            margin_candidates = sorted(
+                set([0.0] + [max(0.0, item) for item in genuine_margins + impostor_margins])
+            )
+            def margin_cost(value: float) -> tuple[int, int, float]:
+                false_accepts = sum(
+                    score >= threshold and margin_value >= value
+                    for score, margin_value in zip(impostor, impostor_margins)
+                )
+                false_rejects = sum(
+                    score < threshold or margin_value < value
+                    for score, margin_value in zip(genuine, genuine_margins)
+                )
+                return 4 * false_accepts + false_rejects, false_accepts, -value
+            margin = min(margin_candidates, key=margin_cost)
+            false_accepts = sum(
+                score >= threshold and margin_value >= margin
+                for score, margin_value in zip(impostor, impostor_margins)
+            )
+            false_rejects = sum(
+                score < threshold or margin_value < margin
+                for score, margin_value in zip(genuine, genuine_margins)
+            )
+            return {
+                "ready": True, "threshold": round(float(threshold), 4), "margin": round(float(max(0.0, margin)), 4),
+                "genuine_count": len(genuine), "impostor_count": len(impostor),
+                "false_accepts": false_accepts, "false_rejects": false_rejects,
+                "genuine_scores": genuine, "impostor_scores": impostor, "margins": genuine_margins,
+            }
+
     def recognize(self, audio_input: AudioInput) -> tuple[SpeakerInfo | None, float, dict[str, float]]:
+        detailed = self.recognize_detailed(audio_input)
+        return detailed.speaker, detailed.confidence, detailed.scores
+
+    def recognize_detailed(
+        self,
+        audio_input: AudioInput,
+        *,
+        threshold: float | None = None,
+        min_margin: float | None = None,
+        extract_for_speaker_id: str | None = None,
+    ) -> RecognitionAnalysis:
+        """Score a complete utterance and its likely speech regions.
+
+        Energy VAD is deliberately dependency-free so this add-on keeps working
+        on all supported Home Assistant architectures.  A full utterance is
+        always a candidate, protecting short speech and VAD edge cases.
+        """
         with self._lock:
             if not self._profiles:
                 raise RuntimeError("No speakers have been enrolled")
-            embedding = self._embed(self._require_encoder(), audio_input)
-            scores_by_id = {
-                speaker_id: float(np.dot(reference, embedding))
-                for speaker_id, reference in self._embeddings.items()
-            }
-            best_id = max(scores_by_id, key=scores_by_id.__getitem__)
-            best_score = scores_by_id[best_id]
-            named_scores = {self._profiles[item].name: score for item, score in scores_by_id.items()}
-            match = self._profiles[best_id] if best_score >= self._threshold else None
-            return match, best_score, named_scores
+            started = time.perf_counter()
+            encoder = self._require_encoder()
+            raw = self._decode_audio(audio_input)
+            canonical = self._canonicalize(raw, audio_input.sample_rate)
+            candidates = self._candidate_regions(canonical)
+            scored: list[dict[str, object]] = []
+            score_by_id: dict[str, float] = {speaker_id: -1.0 for speaker_id in self._profiles}
+            best_by_id: dict[str, dict[str, object]] = {}
+            for start, end, kind in candidates:
+                segment = canonical[start:end]
+                try:
+                    embedding = self._embed_wav(encoder, segment, 16000)
+                except ValueError:
+                    continue
+                item_scores = {speaker_id: float(np.dot(reference, embedding)) for speaker_id, reference in self._embeddings.items()}
+                item: dict[str, object] = {
+                    "start_seconds": round(start / 16000, 3), "end_seconds": round(end / 16000, 3),
+                    "kind": kind, "scores": {self._profiles[key].name: value for key, value in item_scores.items()},
+                }
+                scored.append(item)
+                for speaker_id, value in item_scores.items():
+                    if value > score_by_id[speaker_id]:
+                        score_by_id[speaker_id] = value
+                        best_by_id[speaker_id] = item
+            if not scored:
+                raise ValueError("Audio sample is too short; provide at least 0.1 seconds of speech")
+            best_id = max(score_by_id, key=score_by_id.__getitem__)
+            best_score = score_by_id[best_id]
+            sorted_scores = sorted(score_by_id.values(), reverse=True)
+            margin = best_score - (sorted_scores[1] if len(sorted_scores) > 1 else -1.0)
+            effective_threshold = self._threshold if threshold is None else threshold
+            effective_margin = self._min_margin if min_margin is None else min_margin
+            if best_score < effective_threshold:
+                outcome = "unmatched"; match = None
+            elif margin < effective_margin:
+                outcome = "ambiguous"; match = None
+            else:
+                outcome = "matched"; match = self._profiles[best_id]
+            recognition_finished = time.perf_counter()
+            extracted: bytes | None = None
+            extraction_status: str | None = None
+            extraction_ms = 0.0
+            if extract_for_speaker_id:
+                extraction_started = time.perf_counter()
+                extracted, extraction_status = self._extract_from_candidates(canonical, scored, extract_for_speaker_id, effective_threshold)
+                extraction_ms = (time.perf_counter() - extraction_started) * 1000
+            named_scores = {self._profiles[item].name: score for item, score in score_by_id.items()}
+            return RecognitionAnalysis(
+                speaker=match, confidence=best_score, scores=named_scores, threshold=effective_threshold,
+                margin=margin, outcome=outcome, best_segment=self._public_segment(best_by_id.get(best_id)),
+                candidates=scored, timings={
+                    "recognition_ms": round((recognition_finished - started) * 1000, 2),
+                    "extraction_ms": round(extraction_ms, 2),
+                },
+                canonical_pcm=np.asarray(np.clip(canonical, -1, 0.9999695)*32768, dtype="<i2").tobytes(),
+                extracted_pcm=extracted, extraction_status=extraction_status,
+            )
 
     def _embed(self, encoder: Encoder, audio_input: AudioInput) -> NDArray[np.float32]:
         wav = self._decode_audio(audio_input)
-        processed = self._preprocess(wav, audio_input.sample_rate)
-        if processed.size < max(1600, audio_input.sample_rate // 10):
+        return self._embed_wav(encoder, wav, audio_input.sample_rate)
+
+    def _embed_wav(self, encoder: Encoder, wav: NDArray[np.float32], sample_rate: int) -> NDArray[np.float32]:
+        processed = self._preprocess(wav, sample_rate)
+        if processed.size < max(1600, sample_rate // 10):
             raise ValueError("Audio sample is too short; provide at least 0.1 seconds of speech")
         embedding = np.asarray(encoder.embed_utterance(processed), dtype=np.float32)
         if embedding.ndim != 1 or not np.all(np.isfinite(embedding)):
             raise ValueError("Could not create a valid voice embedding")
         return self._normalize(embedding)
 
+    @staticmethod
+    def _canonicalize(wav: NDArray[np.float32], sample_rate: int) -> NDArray[np.float32]:
+        if sample_rate == 16000:
+            return np.asarray(wav, dtype=np.float32)
+        count = max(1, round(wav.size * 16000 / sample_rate))
+        positions = np.linspace(0, max(0, wav.size - 1), count)
+        return np.asarray(np.interp(positions, np.arange(wav.size), wav), dtype=np.float32)
+
+    @staticmethod
+    def _candidate_regions(wav: NDArray[np.float32]) -> list[tuple[int, int, str]]:
+        length = len(wav); candidates: list[tuple[int, int, str]] = [(0, length, "utterance")]
+        frame = 320  # 20 ms at canonical 16 kHz
+        energies = np.array([np.sqrt(np.mean(wav[index:index+frame] ** 2)) for index in range(0, length, frame)])
+        if energies.size:
+            floor = float(np.quantile(energies, 0.2))
+            # A deliberately spoken test clip can have very even energy.  It
+            # is speech, not silence; preserve it as one VAD region instead of
+            # requiring a peak above its own noise floor.
+            if float(np.max(energies)) >= 0.008 and float(np.ptp(energies)) < 0.005:
+                speaking = np.ones_like(energies, dtype=bool)
+            else:
+                speaking = energies >= max(0.008, floor * 2.2)
+            start: int | None = None
+            for index, active in enumerate(np.append(speaking, False)):
+                if active and start is None: start = index
+                elif not active and start is not None:
+                    end = index
+                    if (end - start) * frame >= 1600:
+                        candidates.append((start * frame, min(length, end * frame), "vad"))
+                    start = None
+        # The first window catches short commands; remaining overlapping windows
+        # make a clean later phrase available when the beginning is noisy.
+        window = 40000; step = 16000
+        if length > window:
+            for start in range(0, length - 1600, step):
+                candidates.append((start, min(length, start + window), "window"))
+        unique: list[tuple[int, int, str]] = []
+        for candidate in candidates:
+            if candidate[1] - candidate[0] < 1600 or candidate in unique: continue
+            unique.append(candidate)
+            if len(unique) == 12: break
+        return unique
+
+    @staticmethod
+    def _public_segment(item: dict[str, object] | None) -> dict[str, float] | None:
+        if not item: return None
+        return {"start_seconds": float(item["start_seconds"]), "end_seconds": float(item["end_seconds"])}
+
+    def _extract_from_candidates(self, wav: NDArray[np.float32], candidates: list[dict[str, object]], speaker_id: str, threshold: float) -> tuple[bytes | None, str]:
+        if speaker_id not in self._profiles: return None, "invalid_speaker"
+        name = self._profiles[speaker_id].name
+        regions: list[tuple[int, int]] = []
+        for item in candidates:
+            if item["kind"] != "vad": continue
+            score = float(dict(item["scores"]).get(name, -1.0))
+            if score >= threshold:
+                regions.append((max(0, int(float(item["start_seconds"])*16000)-3200), min(len(wav), int(float(item["end_seconds"])*16000)+3200)))
+        if not regions: return None, "no_matching_speech"
+        regions.sort(); merged: list[list[int]] = []
+        for start, end in regions:
+            if merged and start - merged[-1][1] < 5600: merged[-1][1] = max(merged[-1][1], end)
+            else: merged.append([start, end])
+        pieces = [wav[start:end] for start, end in merged]
+        extracted = np.concatenate([piece if index == 0 else np.concatenate((np.zeros(1600, dtype=np.float32), piece)) for index, piece in enumerate(pieces)])
+        if extracted.size < 16000: return None, "too_short"
+        return np.asarray(np.clip(extracted, -1, 0.9999695)*32768, dtype="<i2").tobytes(), "ready"
+
     def _decode_audio(self, audio_input: AudioInput) -> NDArray[np.float32]:
+        raw = self._decode_pcm_bytes(audio_input)
+        pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32)
+        if not np.any(pcm):
+            raise ValueError("Audio is silent")
+        return pcm / 32768.0
+
+    def _decode_pcm_bytes(self, audio_input: AudioInput) -> bytes:
         try:
             raw = base64.b64decode(audio_input.audio_data, validate=True)
         except (binascii.Error, ValueError) as error:
@@ -191,10 +462,7 @@ class SpeakerRecognizer:
         max_bytes = audio_input.sample_rate * self._max_audio_seconds * 2
         if len(raw) > max_bytes:
             raise ValueError(f"Audio exceeds the {self._max_audio_seconds} second limit")
-        pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32)
-        if not np.any(pcm):
-            raise ValueError("Audio is silent")
-        return pcm / 32768.0
+        return raw
 
     @staticmethod
     def _normalize(value: NDArray[np.float32]) -> NDArray[np.float32]:

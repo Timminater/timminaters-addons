@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import time
 from typing import Any
 
 from aiohttp import ClientError, ClientSession
@@ -19,6 +20,39 @@ class SpeakerRecognitionApi:
         self._session = session
         self._url = url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {token}"}
+        self._policy: dict[str, Any] | None = None
+        self._policy_cached_at = 0.0
+
+    @property
+    def cached_pipeline_policy(self) -> dict[str, Any]:
+        """Return the last authenticated policy, or safe compatibility defaults."""
+        return dict(
+            self._policy
+            or {
+                "extraction_mode": "off",
+                "unknown_speaker_policy": "allow",
+            }
+        )
+
+    async def async_pipeline_policy(self, *, max_age: float = 5.0) -> dict[str, Any]:
+        """Fetch and briefly cache the global audio-pipeline policy."""
+        now = time.monotonic()
+        if self._policy is not None and now - self._policy_cached_at < max_age:
+            return dict(self._policy)
+        policy = await self._request("GET", "/api/pipeline-policy", timeout=3)
+        extraction_mode = str(policy.get("extraction_mode", "off"))
+        unknown_policy = str(policy.get("unknown_speaker_policy", "allow"))
+        if extraction_mode not in {"off", "compare", "before_stt"}:
+            extraction_mode = "off"
+        if unknown_policy not in {"allow", "block"}:
+            unknown_policy = "allow"
+        self._policy = {
+            **policy,
+            "extraction_mode": extraction_mode,
+            "unknown_speaker_policy": unknown_policy,
+        }
+        self._policy_cached_at = now
+        return dict(self._policy)
 
     async def async_health(self) -> dict[str, Any]:
         return await self._request("GET", "/health", authenticated=False)
@@ -36,6 +70,65 @@ class SpeakerRecognitionApi:
                     "sample_rate": sample_rate,
                 }
             },
+        )
+
+    async def async_analyze(
+        self,
+        pcm: bytes,
+        sample_rate: int,
+        *,
+        source_entity_id: str,
+        satellite_id: str | None,
+        extraction_mode: str,
+    ) -> dict[str, Any]:
+        """Persist and analyse one normal Assist utterance."""
+        return await self._request(
+            "POST",
+            "/api/analyze",
+            json={
+                "audio": {
+                    "audio_data": base64.b64encode(pcm).decode(),
+                    "sample_rate": sample_rate,
+                },
+                "source": "pipeline",
+                "stt_entity_id": source_entity_id,
+                "satellite_id": satellite_id,
+                "extraction_mode": extraction_mode,
+            },
+            timeout=45,
+        )
+
+    async def async_finalize_analysis(
+        self, recording_id: str, details: dict[str, Any]
+    ) -> None:
+        """Attach STT/pipeline outcome metadata to a stored recording."""
+        await self._request(
+            "POST",
+            f"/api/recordings/{recording_id}/finalize",
+            json=details,
+            expect_json=False,
+            timeout=5,
+        )
+
+    async def async_finalize_conversation(
+        self,
+        recording_id: str,
+        *,
+        forwarded: bool,
+        reason: str,
+        person_entity_id: str | None = None,
+    ) -> None:
+        """Record whether mapped person context reached the conversation agent."""
+        await self._request(
+            "POST",
+            f"/api/recordings/{recording_id}/conversation",
+            json={
+                "conversation_forwarded": forwarded,
+                "conversation_reason": reason,
+                "person_entity_id": person_entity_id,
+            },
+            expect_json=False,
+            timeout=5,
         )
 
     async def async_claim_satellite_enrollment(self) -> dict[str, Any] | None:
