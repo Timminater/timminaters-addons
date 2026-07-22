@@ -26,8 +26,30 @@ jobs:
           - homeassistant-samsung-frametv-artchanger
           - llm_proxy
           - esphome_mcp
+          - speaker_recognition
     uses: ./.github/workflows/build-app.yml
     with:
       app: ${{ matrix.app }}
       publish: false
     secrets: inherit
+
+  speaker-recognition-tests:
+    name: Speaker Recognition unit and API tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: speaker_recognition/requirements-test.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r speaker_recognition/requirements-test.txt
+
+      - name: Run tests
+        working-directory: speaker_recognition
+        run: pytest -q

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#111827">
+    <meta name="ingress-base" content="__BASE_PATH__">
+    <title>Speaker Recognition</title>
+    <link rel="stylesheet" href="__BASE_PATH__assets/styles.css">
+    <script defer src="__BASE_PATH__assets/app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><path d="M16 3a7 7 0 0 0-7 7v6a7 7 0 0 0 14 0v-6a7 7 0 0 0-7-7Zm-4 7a4 4 0 1 1 8 0v6a4 4 0 1 1-8 0v-6Zm-6 5a1.5 1.5 0 0 1 1.5 1.5 8.5 8.5 0 0 0 17 0 1.5 1.5 0 0 1 3 0A11.5 11.5 0 0 1 17.5 28v1h3a1.5 1.5 0 0 1 0 3h-9a1.5 1.5 0 0 1 0-3h3v-1A11.5 11.5 0 0 1 4.5 16.5 1.5 1.5 0 0 1 6 15Z"/></svg>
+        </span>
+        <div><strong>Speaker Recognition</strong><span>Lokaal stemprofielbeheer</span></div>
+      </div>
+      <div id="engine-status" class="status-pill"><i></i><span>Verbinden…</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Voice enrollment</p>
+          <h1>Wie spreekt er?</h1>
+          <p>Maak veilige lokale stemprofielen met een bestaand fragment of rechtstreeks via je microfoon.</p>
+        </div>
+        <button id="open-enroll" class="primary-button" type="button">
+          <span aria-hidden="true">＋</span> Nieuwe speaker
+        </button>
+      </section>
+
+      <section class="stats" aria-label="Overzicht">
+        <article><span>Profielen</span><strong id="speaker-count">—</strong></article>
+        <article><span>Samples</span><strong id="sample-count">—</strong></article>
+        <article><span>Opslag</span><strong>Lokaal</strong></article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Stemprofielen</p><h2>Enrolled speakers</h2></div>
+          <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Zoeken" aria-label="Zoek speakers"></label>
+        </div>
+        <div id="speaker-grid" class="speaker-grid" aria-live="polite"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-icon" aria-hidden="true">⌁</div>
+          <h3>Nog geen stemmen opgeslagen</h3>
+          <p>Voeg minimaal één duidelijk spraakfragment van 5–30 seconden toe.</p>
+          <button class="text-button" data-action="enroll" type="button">Eerste speaker enrollen →</button>
+        </div>
+      </section>
+
+      <section class="panel test-panel">
+        <div><p class="eyebrow">Herkenningstest</p><h2>Test een fragment</h2><p>Gebruik een ander fragment dan waarmee je hebt enrolled voor een eerlijke test.</p></div>
+        <label class="secondary-button file-button">Kies audio<input id="test-file" type="file" accept="audio/*" hidden></label>
+        <div id="test-result" class="test-result" hidden></div>
+      </section>
+    </main>
+
+    <dialog id="enroll-dialog">
+      <form id="enroll-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">Nieuw stemprofiel</p><h2>Speaker enrollen</h2></div><button class="icon-button" value="cancel" aria-label="Sluiten" type="submit">×</button></div>
+        <label class="field"><span>Naam</span><input id="speaker-name" maxlength="80" required autocomplete="off" placeholder="Bijvoorbeeld Tim"></label>
+        <fieldset>
+          <legend>Stemfragmenten</legend>
+          <p class="field-help">Gebruik liefst 2–3 heldere samples van elk 5–30 seconden, zonder muziek.</p>
+          <div class="capture-actions">
+            <button id="record-button" class="capture-button" type="button"><i></i><span>Opnemen</span></button>
+            <label class="capture-button upload-button"><span aria-hidden="true">⇧</span><span>Audio uploaden</span><input id="audio-files" type="file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac" multiple hidden></label>
+          </div>
+          <p id="mic-help" class="field-help">Microfoon vereist een beveiligde Home Assistant-verbinding en browsertoestemming.</p>
+          <div id="samples" class="samples"></div>
+        </fieldset>
+        <label class="check-row"><input id="replace-profile" type="checkbox"><span>Bestaand profiel met dezelfde naam vervangen</span></label>
+        <div id="form-error" class="error-box" hidden></div>
+        <div class="dialog-actions"><button class="secondary-button" value="cancel" type="submit">Annuleren</button><button id="save-speaker" class="primary-button" type="button" disabled>Profiel opslaan</button></div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

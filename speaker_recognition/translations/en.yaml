@@ -1,0 +1,15 @@
+configuration:
+  log_level:
+    name: Log level
+    description: Amount of detail written to the App log.
+  recognition_threshold:
+    name: Recognition threshold
+    description: Minimum similarity required to return a known speaker.
+  max_audio_seconds:
+    name: Maximum audio duration
+    description: Maximum allowed duration per sample in seconds.
+  api_token:
+    name: Direct API token
+    description: Optional bearer token for direct access outside Ingress.
+network:
+  8099/tcp: Direct REST API port (disabled by default)

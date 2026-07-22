@@ -1,0 +1,15 @@
+configuration:
+  log_level:
+    name: Logniveau
+    description: Hoeveel detail naar het App-logboek wordt geschreven.
+  recognition_threshold:
+    name: Herkenningsdrempel
+    description: Minimale overeenkomst om een bekende speaker terug te geven.
+  max_audio_seconds:
+    name: Maximale audioduur
+    description: Maximale toegestane duur per sample in seconden.
+  api_token:
+    name: Token voor directe API
+    description: Optionele bearer-token voor toegang buiten Ingress.
+network:
+  8099/tcp: Directe REST-API-poort (standaard uitgeschakeld)
