@@ -1,0 +1,13 @@
+{
+  "title": "Speakerherkenning",
+  "config": {
+    "step": {
+      "confirm": {"title": "Speaker Recognition App ontdekt", "description": "Home Assistant verbinden met de actieve Speaker Recognition App?"},
+      "user": {"title": "Speakerherkenning instellen", "description": "De App wordt normaal automatisch ontdekt. Voor handmatige configuratie zijn de interne URL en companion-token nodig.", "data": {"url": "App-URL", "token": "Companion-token"}, "menu_options": {"add_stt": "STT-proxy toevoegen"}},
+      "add_stt": {"title": "STT-proxy toevoegen", "description": "Koppel een bestaande spraak-naar-tekst-entiteit om tijdens transcriptie de spreker te herkennen.", "data": {"stt_entity": "Spraak-naar-tekst-entiteit"}}
+    },
+    "error": {"cannot_connect": "Kan geen verbinding maken met de Speaker Recognition App"},
+    "abort": {"already_configured": "Deze Speaker Recognition App is al geconfigureerd", "discovery_error": "De ontdekkingsinformatie is niet compleet", "reconfigured": "De bestaande Speaker Recognition-integratie gebruikt nu de bevestigde App"}
+  },
+  "options": {"step": {"init": {"title": "Opties voor speakerherkenning", "data": {"url": "App-URL", "token": "Companion-token", "stt_entity": "Spraak-naar-tekst-entiteit"}}}, "abort": {"not_supported": "Deze oude conversatieproxy wordt niet meer ondersteund omdat stemherkenning geen gebruikersrechten mag verlenen"}}
+}

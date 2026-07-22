@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+import secrets
+import socket
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -26,6 +29,7 @@ from app.recognizer import SpeakerRecognizer
 
 _LOGGER = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent.parent / "web"
+MAX_REQUEST_BYTES = 64 * 1024 * 1024
 settings = Settings.load()
 recognizer = SpeakerRecognizer(
     data_dir=settings.data_dir,
@@ -54,11 +58,32 @@ async def limit_request_size(request: Request, call_next):
     content_length = request.headers.get("content-length")
     if content_length:
         try:
-            if int(content_length) > 64 * 1024 * 1024:
+            if int(content_length) > MAX_REQUEST_BYTES:
                 return Response(content="Request body is too large", status_code=413)
         except ValueError:
             return Response(content="Invalid Content-Length", status_code=400)
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > MAX_REQUEST_BYTES:
+            return Response(content="Request body is too large", status_code=413)
+    request._body = bytes(body)  # Starlette's downstream parser reuses this bounded body.
     return await call_next(request)
+
+
+@lru_cache(maxsize=1)
+def _supervisor_addresses() -> frozenset[str]:
+    """Resolve the trusted Supervisor proxy addresses on the internal network."""
+    try:
+        return frozenset(
+            item[4][0] for item in socket.getaddrinfo("supervisor", None, type=socket.SOCK_STREAM)
+        )
+    except socket.gaierror:
+        return frozenset()
+
+
+def _is_supervisor_request(request: Request) -> bool:
+    return bool(request.client and request.client.host in _supervisor_addresses())
 
 
 def authorize_api(
@@ -66,15 +91,20 @@ def authorize_api(
     authorization: str | None = Header(default=None),
 ) -> None:
     """Trust Supervisor ingress, otherwise require the configured API token."""
-    via_ingress = bool(
+    via_ingress = _is_supervisor_request(request) and bool(
         request.headers.get("x-ingress-path")
         or request.headers.get("x-remote-user-id")
         or request.headers.get("x-hass-user-id")
     )
     if via_ingress:
         return
-    if settings.api_token and authorization == f"Bearer {settings.api_token}":
-        return
+    accepted_tokens = {settings.companion_token}
+    if settings.api_token:
+        accepted_tokens.add(settings.api_token)
+    if authorization and authorization.startswith("Bearer "):
+        supplied_token = authorization[len("Bearer ") :]
+        if any(secrets.compare_digest(supplied_token, token) for token in accepted_tokens):
+            return
     if not settings.api_token:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

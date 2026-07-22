@@ -1,5 +1,24 @@
 # Speaker Recognition-documentatie
 
+## Companion-integratie
+
+Bij elke start installeert of actualiseert de App de meegeleverde `speaker_recognition`
+custom integration en meldt hij zich aan via Supervisor-discovery. Herstart Home Assistant
+Core na de eerste App-start eenmaal, omdat nieuwe custom components alleen tijdens een
+Core-start worden ingelezen. Bevestig daarna de gevonden Speaker Recognition App bij
+**Instellingen > Apparaten & diensten**.
+
+Voor deze automatische installatie krijgt de App, zoals in het companion-integrationpatroon,
+schrijftoegang tot de Home Assistant-configuratiemap. Een bestaande, niet door de App beheerde
+integratie wordt eerst bewaard als
+`custom_components/speaker_recognition.pre-app-backup`; verwijdering van de App herstelt die
+backup niet automatisch.
+
+Voeg de integratie daarna nogmaals toe om een STT-proxy te maken. Iedere herkenning vuurt
+het event `speaker_recognition_detected` af met profiel, confidence en scores. Herkenning
+wijzigt bewust nooit `Context.user_id` of gebruikersrechten: een stemmatch is metadata en
+geen authenticatiemiddel.
+
 ## Enrollment
 
 Open de webinterface via Home Assistant Ingress en kies **Nieuwe speaker**. Je kunt meerdere bestanden tegelijk selecteren of samples opnemen met de microfoon. Gebruik bij voorkeur:

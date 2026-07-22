@@ -65,3 +65,28 @@ def test_name_does_not_become_filename(tmp_path, fake_factory, identity_preproce
     profile = recognizer.enroll("../../Tim <script>", [audio(1000)])
     files = list((tmp_path / "speakers").glob("*.npy"))
     assert len(files) == 1 and files[0].stem == profile.id
+
+
+def test_registry_failure_rolls_back_enrollment(tmp_path, fake_factory, identity_preprocess, monkeypatch):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    alice = recognizer.enroll("Alice", [audio(12000)])
+    original_embedding = recognizer._embeddings[alice.id].copy()
+
+    monkeypatch.setattr(
+        recognizer, "_write_registry", lambda: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError, match="disk full"):
+        recognizer.enroll("Alice", [audio(-12000)], replace=True)
+
+    assert recognizer.list_speakers()[0].sample_count == 1
+    np.testing.assert_array_equal(recognizer._embeddings[alice.id], original_embedding)
+
+
+def test_corrupt_profile_does_not_hide_other_profiles(tmp_path, fake_factory, identity_preprocess):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    alice = recognizer.enroll("Alice", [audio(12000)])
+    bob = recognizer.enroll("Bob", [audio(-12000)])
+    (tmp_path / "speakers" / f"{bob.id}.npy").write_bytes(b"corrupt")
+
+    restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    assert [profile.id for profile in restarted.list_speakers()] == [alice.id]

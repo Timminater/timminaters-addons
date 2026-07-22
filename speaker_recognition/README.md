@@ -2,6 +2,11 @@
 
 Lokale speaker-herkenning voor Home Assistant met een ingebouwde Ingress-interface. De App gebruikt [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) om stem-embeddings te maken; ruwe audio wordt niet opgeslagen.
 
+De App levert ook de bijpassende custom integration mee. Bij elke start wordt deze onder
+`/homeassistant/custom_components/speaker_recognition` bijgewerkt en via Supervisor-discovery
+aangemeld. Herstart Home Assistant Core na de eerste installatie eenmaal; daarna verschijnt
+de App onder **Instellingen > Apparaten & diensten > Ontdekt**.
+
 ## Functies
 
 - Enroll speakers via audioupload of browsermicrofoon.

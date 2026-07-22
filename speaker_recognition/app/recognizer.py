@@ -108,20 +108,41 @@ class SpeakerRecognizer:
                     updated_at=now,
                 )
 
+            previous_profile = self._profiles.get(speaker_id)
+            previous_embedding = self._embeddings.get(speaker_id)
             self._write_embedding(speaker_id, new_embedding)
             self._profiles[speaker_id] = profile
             self._embeddings[speaker_id] = new_embedding
-            self._write_registry()
+            try:
+                self._write_registry()
+            except OSError:
+                if previous_profile is None or previous_embedding is None:
+                    (self._profiles_dir / f"{speaker_id}.npy").unlink(missing_ok=True)
+                    self._profiles.pop(speaker_id, None)
+                    self._embeddings.pop(speaker_id, None)
+                else:
+                    self._write_embedding(speaker_id, previous_embedding)
+                    self._profiles[speaker_id] = previous_profile
+                    self._embeddings[speaker_id] = previous_embedding
+                raise
             return profile
 
     def delete(self, speaker_id: str) -> bool:
         with self._lock:
             if speaker_id not in self._profiles:
                 return False
-            (self._profiles_dir / f"{speaker_id}.npy").unlink(missing_ok=True)
-            del self._profiles[speaker_id]
-            self._embeddings.pop(speaker_id, None)
-            self._write_registry()
+            profile = self._profiles.pop(speaker_id)
+            embedding = self._embeddings.pop(speaker_id)
+            try:
+                self._write_registry()
+            except OSError:
+                self._profiles[speaker_id] = profile
+                self._embeddings[speaker_id] = embedding
+                raise
+            try:
+                (self._profiles_dir / f"{speaker_id}.npy").unlink(missing_ok=True)
+            except OSError as error:
+                _LOGGER.warning("Could not remove obsolete embedding %s: %s", speaker_id, error)
             return True
 
     def recognize(self, audio_input: AudioInput) -> tuple[SpeakerInfo | None, float, dict[str, float]]:
@@ -186,16 +207,19 @@ class SpeakerRecognizer:
             return
         try:
             entries = json.loads(self._registry_path.read_text(encoding="utf-8"))
-            for entry in entries:
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            _LOGGER.error("Could not load speaker registry: %s", error)
+            return
+        for entry in entries:
+            try:
                 profile = SpeakerInfo.model_validate(entry)
                 embedding_path = self._profiles_dir / f"{profile.id}.npy"
                 embedding = np.asarray(np.load(embedding_path, allow_pickle=False), dtype=np.float32)
+                embedding = self._normalize(embedding)
                 self._profiles[profile.id] = profile
-                self._embeddings[profile.id] = self._normalize(embedding)
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            _LOGGER.error("Could not load speaker profiles: %s", error)
-            self._profiles.clear()
-            self._embeddings.clear()
+                self._embeddings[profile.id] = embedding
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                _LOGGER.error("Skipping invalid speaker profile: %s", error)
 
     def _write_embedding(self, speaker_id: str, embedding: NDArray[np.float32]) -> None:
         destination = self._profiles_dir / f"{speaker_id}.npy"
