@@ -1,7 +1,11 @@
-FROM python:3.11.13-slim-bookworm
+FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
 
 ARG BUILD_VERSION=1.0.0
 ARG BUILD_ARCH=amd64
+ARG DEEPFILTERNET2_REVISION=d375b2d8309e0935d165700c91da9de862a99c31
+ARG DEEPFILTERNET2_SHA256=850e695d1c27f2a7b4dcd89b16bc8d49367effc680b1369e995e31d46376cba7
+ARG SPEX_REVISION=2b99a144297ac4d074bb9dcc4ce9734a7e8924fd
+ARG SPEX_SHA256=5ffcf87a45f46ece3fa43db5b4d7f9779a73392933fed0b563f0ead9bd9b492f
 
 LABEL \
     io.hass.name="Speaker Recognition" \
@@ -20,13 +24,28 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt ./
-RUN pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 \
-    && pip install -r requirements.txt
+
+# Both checkpoints are embedded and checksum-verified so inference never
+# downloads executable model data at runtime. Build-only packages are removed
+# in this same layer, keeping compilers and download tools out of the image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl libsndfile1 unzip \
+    && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 torchaudio==2.5.1 \
+    && pip install -r requirements.txt \
+    && curl -fsSL \
+      "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/${DEEPFILTERNET2_REVISION}/models/DeepFilterNet2.zip" \
+      -o /tmp/deepfilternet2.zip \
+    && echo "${DEEPFILTERNET2_SHA256}  /tmp/deepfilternet2.zip" | sha256sum -c - \
+    && unzip -q /tmp/deepfilternet2.zip -d /opt/models \
+    && mkdir -p /opt/models/spex \
+    && curl -fsSL \
+      "https://huggingface.co/alibabasglab/log_wsj0-2mix_speech_SpEx-plus_2spk/resolve/${SPEX_REVISION}/checkpoints/log_wsj0-2mix_speech_SpEx-plus_2spk/last_best_checkpoint.pt?download=true" \
+      -o /opt/models/spex/last_best_checkpoint.pt \
+    && echo "${SPEX_SHA256}  /opt/models/spex/last_best_checkpoint.pt" | sha256sum -c - \
+    && rm -f /tmp/deepfilternet2.zip \
+    && apt-get purge -y --auto-remove build-essential curl unzip \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY app ./app
 COPY web ./web

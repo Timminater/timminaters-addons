@@ -144,8 +144,11 @@ class FinalizeRecordingRequest(BaseModel):
     stt_entity_id: str | None = Field(default=None, max_length=255)
     timings: dict[str, float] | None = None
     conversation_forwarded: bool | None = None
-    audio_variant: Literal["original", "extracted"] | None = None
+    # ``extracted`` remains accepted for a 2.0 integration during upgrade.
+    audio_variant: Literal["original", "denoised", "isolated", "extracted"] | None = None
     fallback: bool | None = None
+    fallback_reason: str | None = Field(default=None, max_length=300)
+    quality: dict[str, object] | None = None
 
 
 class ConversationRecordingRequest(BaseModel):
@@ -156,6 +159,12 @@ class ConversationRecordingRequest(BaseModel):
 
 
 class ExtractRequest(BaseModel):
+    speaker_id: str = Field(min_length=1, max_length=64)
+
+
+class ProcessTargetAudioRequest(BaseModel):
+    """Queue real target-speaker processing for a persisted recording."""
+
     speaker_id: str = Field(min_length=1, max_length=64)
 
 

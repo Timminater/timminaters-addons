@@ -7,8 +7,9 @@ Lokale stemherkenning voor Home Assistant met een ingebouwde Ingress-interface. 
 - Enrollment via upload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
 - Meerdere permanente WAV-samples per profiel, inclusief afspelen, downloaden, activeren, deactiveren en verwijderen.
 - Multi-window-herkenning met eenvoudige spraaksegmentdetectie, confidence, marge en kandidaat-scores.
-- Een globale pipeline-policy: onbekende stemmen toestaan of blokkeren en speaker-extractie uit, vergelijken of vóór STT toepassen.
-- Zeven dagen analysehistorie van gewone Assist-pipelines en handmatige tests, met transcript, timings, diagnose en originele/uitgefilterde audio.
+- Een globale pipeline-policy: onbekende stemmen toestaan of blokkeren en doelstemisolatie uit, vergelijken of vóór STT toepassen.
+- Lokale ruisonderdrukking met DeepFilterNet2 en enrollment-gestuurde doelstemisolatie met SpEx+.
+- Zeven dagen analysehistorie van gewone Assist-pipelines en handmatige tests, met transcript, timings, diagnose en originele, ruisonderdrukte en geïsoleerde audio.
 - Fragmentselectie uit een analyse-opname om een bestaand of nieuw profiel te verbeteren.
 - Een kalibratiewizard die op basis van de opgeslagen samples een conservatieve drempel adviseert.
 - Veilige persoonscontext voor een vervolgagent, zonder ooit Home Assistant-gebruikersrechten te wijzigen.
@@ -25,7 +26,7 @@ Lokale stemherkenning voor Home Assistant met een ingebouwde Ingress-interface. 
 
 Open vervolgens de App-webinterface en leg per persoon liefst 2–3 heldere fragmenten van 5–30 seconden vast. Gebruik voor een eerlijke controle andere audio dan de enrollment-samples.
 
-Alleen `amd64` wordt momenteel gepubliceerd. PyTorch en Resemblyzer maken het image relatief groot.
+Alleen `amd64` wordt momenteel gepubliceerd. De modellen zitten offline in de image en downloaden tijdens gebruik niets. Geef de Home Assistant-VM voor 2.1.0 bij voorkeur 6 GB RAM; de modelworker wordt na vijf minuten inactiviteit ontladen en heeft in de containersmoketest minder dan 500 MiB gebruikt.
 
 Zie [DOCS.md](DOCS.md) voor de werking, instellingen, opslag en privacy-informatie.
 

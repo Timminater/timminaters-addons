@@ -5,6 +5,7 @@ import base64
 import numpy as np
 import pytest
 
+from app.models import AudioInput
 from app.recognizer import SpeakerRecognizer
 from conftest import audio
 
@@ -13,6 +14,15 @@ def make_recognizer(tmp_path, fake_factory, identity_preprocess):
     recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, fake_factory, identity_preprocess)
     recognizer.initialize()
     return recognizer
+
+
+def speech_tone(frequency: float, seconds: float = 10) -> AudioInput:
+    timeline = np.arange(int(16_000 * seconds), dtype=np.float32) / 16_000
+    pcm = np.asarray(10_000 * np.sin(2 * np.pi * frequency * timeline), dtype="<i2")
+    return AudioInput(
+        audio_data=base64.b64encode(pcm.tobytes()).decode(),
+        sample_rate=16_000,
+    )
 
 
 def test_enroll_append_recognize_delete_and_reload(tmp_path, fake_factory, identity_preprocess):
@@ -118,3 +128,23 @@ def test_corrupt_profile_does_not_hide_other_profiles(tmp_path, fake_factory, id
 
     restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
     assert [profile.id for profile in restarted.list_speakers()] == [alice.id]
+
+
+def test_reference_uses_active_samples_and_is_capped_at_30_seconds(
+    tmp_path, fake_factory, identity_preprocess
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    profile = recognizer.enroll(
+        "Alice",
+        [speech_tone(150), speech_tone(170), speech_tone(190), speech_tone(210)],
+    )
+
+    reference = recognizer._reference_audio(profile.id)
+    assert 1 * 16_000 <= reference.size <= 30 * 16_000
+    assert float(np.max(np.abs(reference))) <= 0.851
+
+    latest = recognizer.catalog.list_samples(profile.id, active_only=True)[-1]
+    recognizer.catalog.set_sample_active(latest["id"], False)
+    rebuilt = recognizer._reference_audio(profile.id)
+
+    assert not np.array_equal(reference, rebuilt)

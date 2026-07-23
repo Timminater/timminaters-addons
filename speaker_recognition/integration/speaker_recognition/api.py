@@ -102,11 +102,51 @@ class SpeakerRecognitionApi:
         self, recording_id: str, details: dict[str, Any]
     ) -> None:
         """Attach STT/pipeline outcome metadata to a stored recording."""
-        await self._request(
+        try:
+            await self._request(
+                "POST",
+                f"/api/recordings/{recording_id}/finalize",
+                json=details,
+                expect_json=False,
+                timeout=5,
+            )
+        except SpeakerRecognitionApiError as error:
+            # A 2.0 App validates the old ``original|extracted`` enum. Retry
+            # only that schema mismatch with its closest legacy terminology;
+            # other API failures still reach the caller unchanged.
+            if "HTTP 422" not in str(error):
+                raise
+            compatibility_details = dict(details)
+            if compatibility_details.get("audio_variant") in {
+                "isolated",
+                "denoised",
+            }:
+                compatibility_details["audio_variant"] = "extracted"
+            compatibility_details.pop("fallback_reason", None)
+            compatibility_details.pop("quality", None)
+            if compatibility_details == details:
+                raise
+            await self._request(
+                "POST",
+                f"/api/recordings/{recording_id}/finalize",
+                json=compatibility_details,
+                expect_json=False,
+                timeout=5,
+            )
+
+    async def async_process_analysis(
+        self, recording_id: str, speaker_id: str
+    ) -> dict[str, Any]:
+        """Start asynchronous target-speaker processing for a stored analysis.
+
+        This is intentionally separate from ``async_analyze``: 2.0 backends do
+        not expose the endpoint, while 2.1 backends can return a 202 job
+        document without making the live STT path wait for UI processing.
+        """
+        return await self._request(
             "POST",
-            f"/api/recordings/{recording_id}/finalize",
-            json=details,
-            expect_json=False,
+            f"/api/analysis/{recording_id}/process",
+            json={"speaker_id": speaker_id},
             timeout=5,
         )
 

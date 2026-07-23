@@ -59,7 +59,11 @@ class AudioCatalog:
                       timings_json TEXT NOT NULL DEFAULT '{}', extraction_mode TEXT NOT NULL DEFAULT 'off',
                       extraction_status TEXT, conversation_forwarded INTEGER,
                       original_path TEXT NOT NULL, extracted_path TEXT, duration_seconds REAL NOT NULL DEFAULT 0,
-                      bytes INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '{}'
+                      bytes INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '{}',
+                      denoised_path TEXT, isolated_path TEXT,
+                      processing_status TEXT NOT NULL DEFAULT 'idle', processing_speaker_id TEXT,
+                      processing_stages_json TEXT NOT NULL DEFAULT '{}', processing_quality_json TEXT NOT NULL DEFAULT '{}',
+                      processing_fallback_reason TEXT
                     );
                     CREATE INDEX IF NOT EXISTS recordings_created ON recordings(created_at DESC);
                     CREATE INDEX IF NOT EXISTS recordings_outcome ON recordings(outcome);
@@ -79,6 +83,20 @@ class AudioCatalog:
                     );
                     """
                 )
+                # The old extracted_path is a VAD splice. Preserve it as
+                # legacy data; migrations only append nullable columns.
+                existing = {row["name"] for row in db.execute("PRAGMA table_info(recordings)")}
+                migrations = {
+                    "denoised_path": "TEXT", "isolated_path": "TEXT",
+                    "processing_status": "TEXT NOT NULL DEFAULT 'idle'",
+                    "processing_speaker_id": "TEXT",
+                    "processing_stages_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "processing_quality_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "processing_fallback_reason": "TEXT",
+                }
+                for column, definition in migrations.items():
+                    if column not in existing:
+                        db.execute(f"ALTER TABLE recordings ADD COLUMN {column} {definition}")
             self._initialized = True
             self.cleanup()
 
@@ -145,8 +163,9 @@ class AudioCatalog:
         columns = {
             "source", "satellite_id", "stt_entity_id", "transcript", "outcome", "speaker_id", "speaker_name",
             "confidence", "threshold", "margin", "extraction_mode", "extraction_status", "conversation_forwarded",
+            "processing_status", "processing_speaker_id", "processing_fallback_reason",
         }
-        json_columns = {"scores": "scores_json", "segments": "segments_json", "timings": "timings_json", "labels": "labels_json"}
+        json_columns = {"scores": "scores_json", "segments": "segments_json", "timings": "timings_json", "labels": "labels_json", "processing_stages": "processing_stages_json", "processing_quality": "processing_quality_json"}
         values: list[Any] = []
         clauses: list[str] = []
         for key, value in changes.items():
@@ -171,10 +190,31 @@ class AudioCatalog:
             db.execute("UPDATE recordings SET extracted_path=?, extraction_status=?, updated_at=? WHERE id=?", (str(target), status, _iso(), recording_id))
         return self.get_recording(recording_id)
 
+    def save_audio_variant(self, recording_id: str, variant: str, pcm: bytes, sample_rate: int) -> dict[str, Any] | None:
+        """Save a generated 2.1 variant without relabelling legacy extraction."""
+        self._safe_id(recording_id)
+        if variant not in {"denoised", "isolated"}:
+            raise ValueError("Unsupported generated audio variant")
+        target = self.analysis_dir / recording_id / f"{variant}.wav"
+        self._write_wav(target, pcm, sample_rate)
+        with self._lock, self._connect() as db:
+            cursor = db.execute(
+                f"UPDATE recordings SET {variant}_path=?, updated_at=? WHERE id=?",
+                (str(target), _iso(), recording_id),
+            )
+            if cursor.rowcount == 0:
+                target.unlink(missing_ok=True)
+                try:
+                    target.parent.rmdir()
+                except OSError:
+                    pass
+                return None
+        return self.get_recording(recording_id)
+
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
-        for source, destination in (("scores_json", "scores"), ("segments_json", "segments"), ("timings_json", "timings"), ("labels_json", "labels")):
+        for source, destination in (("scores_json", "scores"), ("segments_json", "segments"), ("timings_json", "timings"), ("labels_json", "labels"), ("processing_stages_json", "processing_stages"), ("processing_quality_json", "processing_quality")):
             result[destination] = json.loads(result.pop(source) or "{}")
         result["conversation_forwarded"] = bool(result["conversation_forwarded"]) if result["conversation_forwarded"] is not None else None
         return result
@@ -213,12 +253,12 @@ class AudioCatalog:
         return [str(row["id"]) for row in rows]
 
     def audio_path(self, recording_id: str, variant: str) -> Path | None:
-        if variant not in {"original", "extracted"}:
+        if variant not in {"original", "denoised", "isolated", "extracted"}:
             return None
         row = self.get_recording(recording_id)
         if not row:
             return None
-        raw = row[f"{variant}_path"]
+        raw = (row.get("isolated_path") or row.get("extracted_path")) if variant == "extracted" else row.get(f"{variant}_path")
         if not raw:
             return None
         path = Path(raw).resolve()
@@ -231,7 +271,7 @@ class AudioCatalog:
         row = self.get_recording(recording_id)
         if not row: return False
         with self._lock, self._connect() as db: db.execute("DELETE FROM recordings WHERE id=?", (recording_id,))
-        for raw in (row.get("original_path"), row.get("extracted_path")):
+        for raw in (row.get("original_path"), row.get("denoised_path"), row.get("isolated_path"), row.get("extracted_path")):
             if raw:
                 path = Path(raw)
                 if path.is_file(): path.unlink(missing_ok=True)
@@ -291,22 +331,37 @@ class AudioCatalog:
         else:
             with self._lock, self._connect() as db: db.execute("UPDATE enrollment_samples SET speaker_id=NULL, active=0 WHERE speaker_id=?", (speaker_id,))
 
-    def cleanup(self, now: datetime | None = None) -> int:
+    def cleanup(
+        self,
+        now: datetime | None = None,
+        protected_ids: set[str] | None = None,
+    ) -> int:
         now = now or utcnow(); cutoff = now - timedelta(days=self.retention_days); removed = 0
+        protected_ids = protected_ids or set()
         with self._lock, self._connect() as db:
-            rows = db.execute("SELECT id,original_path,extracted_path FROM recordings ORDER BY created_at ASC").fetchall()
+            rows = db.execute("SELECT id,created_at,original_path,denoised_path,isolated_path,extracted_path FROM recordings ORDER BY created_at ASC").fetchall()
             # Analysis WAVs are deliberately excluded from Home Assistant
             # backups.  After restoring a backup, discard orphan metadata too.
-            expired = [row for row in rows if not Path(row["original_path"]).is_file() or datetime.fromisoformat(db.execute("SELECT created_at FROM recordings WHERE id=?", (row['id'],)).fetchone()[0]) < cutoff]
+            expired = [row for row in rows if row["id"] not in protected_ids and (not Path(row["original_path"]).is_file() or datetime.fromisoformat(row["created_at"]) < cutoff)]
             retained = [row for row in rows if row not in expired]
-            total = sum(sum(Path(value).stat().st_size for value in (row['original_path'], row['extracted_path']) if value and Path(value).is_file()) for row in retained)
-            while total > self.max_storage_bytes and retained:
-                expired.append(retained.pop(0)); row = expired[-1]
-                total -= sum(Path(value).stat().st_size for value in (row['original_path'], row['extracted_path']) if value and Path(value).is_file())
+            total = sum(sum(Path(value).stat().st_size for value in (row['original_path'], row['denoised_path'], row['isolated_path'], row['extracted_path']) if value and Path(value).is_file()) for row in retained)
+            while total > self.max_storage_bytes:
+                position = next(
+                    (
+                        index
+                        for index, candidate in enumerate(retained)
+                        if candidate["id"] not in protected_ids
+                    ),
+                    None,
+                )
+                if position is None:
+                    break
+                expired.append(retained.pop(position)); row = expired[-1]
+                total -= sum(Path(value).stat().st_size for value in (row['original_path'], row['denoised_path'], row['isolated_path'], row['extracted_path']) if value and Path(value).is_file())
             for row in expired:
                 db.execute("DELETE FROM recordings WHERE id=?", (row['id'],))
                 directory = self.analysis_dir / row['id']
-                for path in (Path(row['original_path']), Path(row['extracted_path']) if row['extracted_path'] else None):
+                for path in (Path(row['original_path']), *(Path(value) for value in (row['denoised_path'], row['isolated_path'], row['extracted_path']) if value)):
                     if path and path.is_file(): path.unlink(missing_ok=True)
                 try: directory.rmdir()
                 except OSError: pass

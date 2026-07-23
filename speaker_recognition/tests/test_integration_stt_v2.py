@@ -112,7 +112,7 @@ aiohttp.ClientSession = object
 sys.modules.setdefault("aiohttp", aiohttp)
 
 from speaker_recognition.api import SpeakerRecognitionApiError
-from speaker_recognition.stt import SpeakerRecognitionSTT, _pcm16_mono
+from speaker_recognition.stt import SpeakerRecognitionSTT, _pcm16_mono, _processed_audio
 
 
 class Clock:
@@ -308,7 +308,7 @@ def test_voice_enrollment_claim_uses_pre_round_trip_satellite_snapshot():
     )
 
 
-def test_before_stt_uses_valid_extracted_wav_and_metadata():
+def test_before_stt_uses_valid_legacy_extracted_wav_as_isolated_audio():
     processed_pcm = b"\x02\x00" * 100
     import base64
 
@@ -332,8 +332,140 @@ def test_before_stt_uses_valid_extracted_wav_and_metadata():
     assert pcm == processed_pcm
     assert rate == 16000
     result = hass.data["speaker_recognition"]["last_result"]
-    assert result["audio_variant"] == "extracted"
+    assert result["audio_variant"] == "isolated"
     assert result["fallback"] is False
+
+
+def test_before_stt_prefers_isolated_then_denoised_before_original():
+    import base64
+
+    isolated = b"\x03\x00" * 10
+    denoised = b"\x04\x00" * 10
+    api = Api(
+        mode="before_stt",
+        result=matched_result(
+            processing_status="complete",
+            audio_variants={
+                "isolated": {
+                    "audio_data": base64.b64encode(isolated).decode(),
+                    "sample_rate": 16000,
+                },
+                "denoised": {
+                    "audio_data": base64.b64encode(denoised).decode(),
+                    "sample_rate": 16000,
+                },
+            },
+            timings={
+                "recognition_ms": 25.0,
+            },
+            processing_stages={"denoise": {"ms": 10}, "isolation": {"ms": 20}},
+            processing_quality={"passed": True},
+        ),
+    )
+    proxy, hass, source = make_proxy(api)
+    asyncio.run(proxy.async_process_audio_stream(SpeechMetadata(), chunks(wav())))
+
+    pcm, _rate = _pcm16_mono(source.calls[0][1], source.calls[0][0])
+    result = hass.data["speaker_recognition"]["last_result"]
+    assert pcm == isolated
+    assert result["audio_variant"] == "isolated"
+    assert result["denoise_ms"] == 10.0
+    assert result["isolation_ms"] == 20.0
+    assert result["quality"] == {"passed": True}
+
+
+def test_before_stt_uses_denoised_when_isolated_is_unavailable():
+    import base64
+
+    denoised = b"\x04\x00" * 10
+    api = Api(
+        mode="before_stt",
+        result=matched_result(
+            audio_variants={
+                "isolated": {"audio_data": "not-base64", "sample_rate": 16000},
+                "denoised": {
+                    "audio_data": base64.b64encode(denoised).decode(),
+                    "sample_rate": 16000,
+                },
+            },
+            fallback_reason="isolation_quality_rejected",
+        ),
+    )
+    proxy, hass, source = make_proxy(api)
+    asyncio.run(proxy.async_process_audio_stream(SpeechMetadata(), chunks(wav())))
+
+    pcm, _rate = _pcm16_mono(source.calls[0][1], source.calls[0][0])
+    result = hass.data["speaker_recognition"]["last_result"]
+    assert pcm == denoised
+    assert result["audio_variant"] == "denoised"
+    assert result["fallback"] is True
+    assert result["fallback_reason"] == "isolation_quality_rejected"
+
+
+def test_processed_audio_keeps_v20_extracted_payload_compatible():
+    import base64
+
+    pcm = b"\x05\x00" * 10
+    assert _processed_audio(
+        {
+            "processed_audio": {
+                "audio_data": base64.b64encode(pcm).decode(),
+                "sample_rate": 16000,
+            }
+        }
+    ) == ("isolated", (pcm, 16000))
+
+
+def test_processed_audio_ignores_boolean_availability_flags():
+    import base64
+
+    pcm = b"\x06\x00" * 10
+    assert _processed_audio(
+        {
+            "audio_variants": {"isolated": True, "denoised": True},
+            "isolated_audio": {
+                "audio_data": base64.b64encode(pcm).decode(),
+                "sample_rate": 16000,
+            },
+        }
+    ) == ("isolated", (pcm, 16000))
+
+
+def test_processed_audio_rejects_conflicting_denoised_variant():
+    import base64
+
+    pcm = b"\x07\x00" * 10
+    assert (
+        _processed_audio(
+            {
+                "denoised_audio": {
+                    "audio_data": base64.b64encode(pcm).decode(),
+                    "sample_rate": 16000,
+                },
+                "processing_quality": {"denoised_safe_for_stt": False},
+            }
+        )
+        is None
+    )
+
+
+def test_processed_audio_rejects_failed_denoised_quality():
+    import base64
+
+    pcm = b"\x08\x00" * 10
+    for quality in ({"denoised_passed": False}, {"passed": False}):
+        assert (
+            _processed_audio(
+                {
+                    "denoised_audio": {
+                        "audio_data": base64.b64encode(pcm).decode(),
+                        "sample_rate": 16000,
+                    },
+                    "processing_quality": quality,
+                }
+            )
+            is None
+        )
 
 
 def test_before_stt_extraction_failure_falls_back_to_original():

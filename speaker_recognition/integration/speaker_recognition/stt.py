@@ -36,6 +36,21 @@ from .results import listening_satellite, remember_result
 _LOGGER = logging.getLogger(__name__)
 MAX_CAPTURE_BYTES = 4 * 1024 * 1024
 MAX_ANALYSIS_BYTES = 16 * 1024 * 1024
+PRE_STT_ANALYSIS_TIMEOUT_SECONDS = 12
+
+
+def _decode_audio(value: object) -> tuple[bytes, int] | None:
+    """Decode one App audio document without accepting malformed PCM."""
+    if not isinstance(value, dict) or not value.get("audio_data"):
+        return None
+    try:
+        pcm = base64.b64decode(value["audio_data"], validate=True)
+        sample_rate = int(value["sample_rate"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not pcm or len(pcm) % 2 or sample_rate <= 0:
+        return None
+    return pcm, sample_rate
 
 
 async def async_setup_entry(
@@ -83,17 +98,67 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
     return output.getvalue()
 
 
-def _processed_audio(result: dict) -> tuple[bytes, int] | None:
-    """Decode optional extracted PCM returned by old and new App contracts."""
-    value = result.get("processed_audio") or result.get("extracted_audio")
-    if not isinstance(value, dict) or not value.get("audio_data"):
-        return None
-    try:
-        return base64.b64decode(value["audio_data"], validate=True), int(
-            value["sample_rate"]
+def _processed_audio(result: dict) -> tuple[str, tuple[bytes, int]] | None:
+    """Choose target audio in the 2.1 fallback order.
+
+    New App responses expose ``audio_variants``.  Some development builds
+    expose the same documents as ``isolated_audio``/``denoised_audio``.  The
+    final branch retains the 2.0 ``processed_audio`` and ``extracted_audio``
+    contract, treating it as the best available isolated result.  Keeping this
+    compatibility here also means a partially upgraded add-on can never block
+    Assist solely because its companion integration was updated first.
+    """
+    payload = (
+        result.get("result") if isinstance(result.get("result"), dict) else result
+    )
+    variants = payload.get("audio_variants") or result.get("audio_variants") or {}
+    if not isinstance(variants, dict):
+        variants = {}
+    isolated_candidates = (
+        variants.get("isolated"),
+        payload.get("isolated_audio"),
+        result.get("isolated_audio"),
+    )
+    for value in isolated_candidates:
+        if (decoded := _decode_audio(value)) is not None:
+            return "isolated", decoded
+
+    quality = (
+        payload.get("processing_quality")
+        or payload.get("quality")
+        or result.get("processing_quality")
+        or result.get("quality")
+        or {}
+    )
+    denoised_safe = not (
+        isinstance(quality, dict)
+        and (
+            quality.get("denoised_safe_for_stt") is False
+            or quality.get("denoised_passed") is False
+            or (
+                "denoised_passed" not in quality
+                and quality.get("passed") is False
+            )
         )
-    except (KeyError, TypeError, ValueError):
-        return None
+    )
+    if denoised_safe:
+        for value in (
+            variants.get("denoised"),
+            payload.get("denoised_audio"),
+            result.get("denoised_audio"),
+        ):
+            if (decoded := _decode_audio(value)) is not None:
+                return "denoised", decoded
+
+    for value in (
+        payload.get("processed_audio"),
+        payload.get("extracted_audio"),
+        result.get("processed_audio"),
+        result.get("extracted_audio"),
+    ):
+        if (decoded := _decode_audio(value)) is not None:
+            return "isolated", decoded
+    return None
 
 
 async def _one_chunk(data: bytes):
@@ -382,14 +447,22 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         recognition_started = self.hass.loop.time()
         if api is not None:
             try:
-                result = await api.async_analyze(
-                    pcm,
-                    sample_rate,
-                    source_entity_id=self._source_entity_id,
-                    satellite_id=(None if stream_token["ambiguous"] else satellite_id),
-                    extraction_mode="before_stt",
+                # This mode sits directly in the Assist request path.  A
+                # processing job that is still queued or a busy model worker
+                # must never hold that path indefinitely.
+                result = await asyncio.wait_for(
+                    api.async_analyze(
+                        pcm,
+                        sample_rate,
+                        source_entity_id=self._source_entity_id,
+                        satellite_id=(
+                            None if stream_token["ambiguous"] else satellite_id
+                        ),
+                        extraction_mode="before_stt",
+                    ),
+                    timeout=PRE_STT_ANALYSIS_TIMEOUT_SECONDS,
                 )
-            except SpeakerRecognitionApiError as error:
+            except (SpeakerRecognitionApiError, TimeoutError) as error:
                 _LOGGER.warning("Pre-STT speaker analysis failed: %s", error)
         recognition_ms = (self.hass.loop.time() - recognition_started) * 1000
         blocked = self._is_blocked(result, unknown_policy)
@@ -398,18 +471,22 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
 
         audio_variant = "original"
         fallback = False
+        fallback_reason = None
         source_audio = bytes(audio)
         source_metadata = metadata
-        processed = (
-            _processed_audio(result or {})
-            if (result or {}).get("extraction_status") == "ready"
-            else None
-        )
+        processed = _processed_audio(result or {})
         if not blocked and processed is not None:
-            processed_pcm, processed_rate = processed
+            audio_variant, (processed_pcm, processed_rate) = processed
             if processed_pcm:
                 source_audio = _wav_bytes(processed_pcm, processed_rate)
-                audio_variant = "extracted"
+                # Denoising is a safe, deliberate fallback when target-speaker
+                # isolation is unavailable.  Surface that fact explicitly in
+                # the diagnostic sensor and recording finalization.
+                fallback = audio_variant != "isolated"
+                if fallback:
+                    fallback_reason = self._fallback_reason(
+                        result, "isolated_unavailable"
+                    )
                 try:
                     source_metadata = replace(
                         metadata, sample_rate=processed_rate, channel=1
@@ -422,10 +499,15 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                         source_audio = bytes(audio)
                         audio_variant = "original"
                         fallback = True
+                        fallback_reason = "processed_audio_metadata_incompatible"
             else:
                 fallback = True
+                fallback_reason = "processed_audio_empty"
         elif not blocked:
             fallback = True
+            fallback_reason = self._fallback_reason(
+                result, "isolated_and_denoised_unavailable"
+            )
 
         recognized = None
         if result is not None:
@@ -440,6 +522,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                 0.0,
                 started,
                 fallback=fallback,
+                fallback_reason=fallback_reason,
                 publish=blocked,
             )
         if blocked:
@@ -455,6 +538,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                     0.0,
                     started,
                     fallback=True,
+                    fallback_reason="backend_unavailable",
                 )
             if recognized is not None:
                 await self._finalize_stt(
@@ -505,6 +589,43 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "blocked",
         }
 
+    @staticmethod
+    def _fallback_reason(result: dict | None, default: str) -> str:
+        """Read a 2.1 fallback reason while retaining a useful 2.0 default."""
+        if not isinstance(result, dict):
+            return default
+        payload = (
+            result.get("result") if isinstance(result.get("result"), dict) else result
+        )
+        processing = payload.get("processing") or result.get("processing") or {}
+        for value in (
+            payload.get("fallback_reason"),
+            payload.get("processing_fallback_reason"),
+            result.get("fallback_reason"),
+            result.get("processing_fallback_reason"),
+            processing.get("fallback_reason") if isinstance(processing, dict) else None,
+        ):
+            if isinstance(value, str) and value:
+                return value
+        return default
+
+    @staticmethod
+    def _stage_timing(timings: dict, *names: str) -> float | None:
+        """Read flat or nested 2.1 stage timings without requiring one shape."""
+        stages = timings.get("stages") or timings.get("stage_timings") or {}
+        for name in names:
+            value = timings.get(name)
+            if value is None and isinstance(stages, dict):
+                value = stages.get(name)
+                if isinstance(value, dict):
+                    value = value.get("ms") or value.get("duration_ms")
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
     def _remember_analysis(
         self,
         result: dict,
@@ -518,12 +639,40 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         started: float,
         *,
         fallback: bool = False,
+        fallback_reason: str | None = None,
         publish: bool = True,
     ) -> dict:
         """Publish bounded diagnostics and consume-once person context."""
-        payload = result.get("result") if isinstance(result.get("result"), dict) else result
+        payload = (
+            result.get("result") if isinstance(result.get("result"), dict) else result
+        )
         speaker = payload.get("speaker") or {}
         timings = payload.get("timings") or result.get("timings") or {}
+        if not isinstance(timings, dict):
+            timings = {}
+        processing = payload.get("processing") or result.get("processing") or {}
+        if not isinstance(processing, dict):
+            processing = {}
+        processing_stages = (
+            payload.get("processing_stages")
+            or result.get("processing_stages")
+            or processing.get("stages")
+            or {}
+        )
+        if not isinstance(processing_stages, dict):
+            processing_stages = {}
+        timing_values = {**timings}
+        if "stages" not in timing_values and "stage_timings" not in timing_values:
+            timing_values["stages"] = processing_stages
+        quality = (
+            payload.get("quality")
+            or payload.get("quality_result")
+            or payload.get("processing_quality")
+            or result.get("quality")
+            or result.get("quality_result")
+            or result.get("processing_quality")
+            or processing.get("quality")
+        )
         recognized = {
             "recording_id": result.get("recording_id") or payload.get("recording_id"),
             "speaker_id": speaker.get("id"),
@@ -540,6 +689,27 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "candidate_count": payload.get("candidate_count"),
             "recognition_ms": timings.get("recognition_ms", recognition_ms),
             "extraction_ms": timings.get("extraction_ms"),
+            "denoise_ms": self._stage_timing(
+                timing_values, "denoise_ms", "denoising_ms", "denoise"
+            ),
+            "isolation_ms": self._stage_timing(
+                timing_values,
+                "isolation_ms",
+                "isolated_ms",
+                "isolation",
+                "extract_ms",
+            )
+            or timings.get("extraction_ms"),
+            "stage_timings": timing_values.get("stages") or timing_values.get("stage_timings"),
+            "processing_status": (
+                payload.get("processing_status")
+                or result.get("processing_status")
+                or processing.get("status")
+            ),
+            "quality": quality,
+            "fallback_reason": (
+                fallback_reason or self._fallback_reason(result, "") or None
+            ),
             "stt_ms": stt_ms,
             "total_ms": (self.hass.loop.time() - started) * 1000,
             "extraction_mode": mode,
@@ -553,6 +723,8 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "source_entity_id": self._source_entity_id,
             "satellite_id": None if stream_token["ambiguous"] else satellite_id,
         }
+        if fallback and not recognized["fallback_reason"]:
+            recognized["fallback_reason"] = "processed_audio_unavailable"
         if publish:
             remember_result(self.hass, recognized)
             self.hass.bus.async_fire(EVENT_DETECTED, recognized.copy())
@@ -582,6 +754,13 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         }
         if recognized.get("fallback"):
             details["fallback"] = True
+            details["fallback_reason"] = recognized.get("fallback_reason")
+        if recognized.get("denoise_ms") is not None:
+            details.setdefault("timings", {})["denoise_ms"] = recognized["denoise_ms"]
+        if recognized.get("isolation_ms") is not None:
+            details.setdefault("timings", {})["isolation_ms"] = recognized["isolation_ms"]
+        if recognized.get("quality") is not None:
+            details["quality"] = recognized["quality"]
         if recognized.get("blocked"):
             details["outcome"] = "blocked"
         elif getattr(state, "value", state) == "error":

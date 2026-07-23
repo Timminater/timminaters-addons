@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.0
+
+- Echte lokale ruisonderdrukking met DeepFilterNet2 en enrollment-gestuurde doelstemisolatie met SpEx+.
+- Analyse bewaart en vergelijkt originele, ruisonderdrukte en geïsoleerde audio met kwaliteitsmetingen, fasestatussen en fallbacks.
+- De experimentele modus vóór STT kiest veilig `isolated → denoised → original` binnen een harde tijdslimiet.
+- Audiomodellen en gewichten zijn vastgepind, checksum-gecontroleerd en volledig offline in de add-onimage opgenomen.
+- De oude VAD-knipactie blijft alleen als legacy-audio beschikbaar; nieuwe verwerking behoudt de volledige tijdlijn.
+- Live STT heeft voorrang op Analyse-taken, gebruikt één totale tijdsgrens en valt veilig terug bij geheugen-, kwaliteits- of modelproblemen.
+- Clips tot 120 seconden worden ondersteund; boven dertig seconden gebruikt SpEx+ overlappende blokken met crossfade.
+- De CI bouwt de echte image en voert de volledige modelketen zonder netwerk onder een 2 GB-geheugenlimiet uit.
+
 ## 2.0.2
 
 - Voice-enrollment start nu zonder vooraankondigingsgong. Dit voorkomt dat Home Assistant Voice na “Spreek nu” terugkeert naar `idle` zonder de microfoon te openen.

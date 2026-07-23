@@ -44,6 +44,13 @@ class Response:
         return ""
 
 
+class ErrorResponse(Response):
+    status = 422
+
+    async def text(self):
+        return "unsupported audio variant"
+
+
 class Session:
     def __init__(self):
         self.calls = []
@@ -51,7 +58,8 @@ class Session:
 
     def request(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
-        return Response(self.responses.pop(0) if self.responses else {})
+        response = self.responses.pop(0) if self.responses else {}
+        return response if isinstance(response, Response) else Response(response)
 
 
 def test_policy_is_authenticated_validated_and_cached():
@@ -143,3 +151,38 @@ def test_enrollment_claim_sends_the_locally_observed_satellite():
     assert session.calls[0][2]["json"] == {
         "satellite_entity_id": "assist_satellite.voice"
     }
+
+
+def test_process_analysis_uses_the_v21_async_processing_endpoint():
+    session = Session()
+    session.responses.append({"job_id": "job-1", "status": "queued"})
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+
+    result = asyncio.run(api.async_process_analysis("rec-1", "alice"))
+
+    assert result == {"job_id": "job-1", "status": "queued"}
+    assert session.calls[0][0:2] == (
+        "POST",
+        "http://app/api/analysis/rec-1/process",
+    )
+    assert session.calls[0][2]["json"] == {"speaker_id": "alice"}
+
+
+def test_finalize_retries_v21_variants_with_the_v20_schema():
+    session = Session()
+    session.responses.extend([ErrorResponse(), {}])
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+
+    asyncio.run(
+        api.async_finalize_analysis(
+            "rec-1",
+            {
+                "audio_variant": "isolated",
+                "fallback_reason": "none",
+                "quality": {"passed": True},
+            },
+        )
+    )
+
+    assert len(session.calls) == 2
+    assert session.calls[1][2]["json"] == {"audio_variant": "extracted"}

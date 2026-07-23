@@ -53,3 +53,22 @@ jobs:
       - name: Run tests
         working-directory: speaker_recognition
         run: pytest -q
+
+  speaker-recognition-model-smoke:
+    name: Speaker Recognition offline model smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Build the offline model image
+        run: docker build --tag speaker-recognition-model-smoke speaker_recognition
+
+      - name: Run real inference under the 2 GB ceiling
+        run: >-
+          docker run --rm --network none --memory 2g --cpus 4
+          --env PYTHONPATH=/app
+          --volume "$PWD/speaker_recognition/tests:/tests:ro"
+          --entrypoint python
+          speaker-recognition-model-smoke
+          /tests/model_pipeline_smoke.py
