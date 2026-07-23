@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.2
+
+- Voice-enrollment start nu zonder vooraankondigingsgong. Dit voorkomt dat Home Assistant Voice na “Spreek nu” terugkeert naar `idle` zonder de microfoon te openen.
+- De enrollment-API ondersteunt daarnaast een fysieke-knopfallback voor satellieten die remote start niet ondersteunen.
+- De automatische reset van diagnostische sensoren blijft op de Home Assistant-eventloop en voldoet daarmee aan de strengere thread-safetycontrole.
+
 ## 2.0.1
 
 - Voice-enrollment claimt de STT-stream nu atomisch met de satelliet-ID die Home Assistant lokaal vastlegt zodra de stream start. Hierdoor kan de korte overgang van `listening` naar `processing` of `idle` de opname niet meer voortijdig afbreken.

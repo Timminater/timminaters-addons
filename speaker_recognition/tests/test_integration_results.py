@@ -11,6 +11,14 @@ from types import SimpleNamespace
 homeassistant = types.ModuleType("homeassistant")
 homeassistant_core = types.ModuleType("homeassistant.core")
 homeassistant_core.HomeAssistant = object
+
+
+def callback(function):
+    function._hass_callback = True
+    return function
+
+
+homeassistant_core.callback = callback
 homeassistant.core = homeassistant_core
 components = types.ModuleType("homeassistant.components")
 conversation_component = types.ModuleType("homeassistant.components.conversation")
@@ -185,6 +193,7 @@ def test_diagnostic_records_reset_after_30_seconds_and_new_values_win():
 
     assert hass.timers[0].cancelled is True
     assert hass.timers[1].delay == 30
+    assert hass.timers[1].callback._hass_callback is True
     hass.timers[0].callback(None)
     assert hass.data["speaker_recognition"]["last_result"] is second
     assert "last_result_reset_timer" in hass.data["speaker_recognition"]

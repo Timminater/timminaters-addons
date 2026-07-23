@@ -114,7 +114,7 @@ def test_home_assistant_client_filters_and_uses_stt_only_question(monkeypatch):
     question = json.loads(body)
     assert question["entity_id"] == "assist_satellite.voice_a"
     assert question["question"] == "Spreek nu."
-    assert question["preannounce"] is True
+    assert question["preannounce"] is False
     client.confirm_enrollment_sample("assist_satellite.voice_a")
     url, method, body, timeout = calls[-1]
     assert url.endswith("/services/assist_satellite/announce")
@@ -188,11 +188,15 @@ def test_satellite_api_claims_only_matching_local_satellite_snapshot(monkeypatch
     with TestClient(api.app, headers=headers) as client:
         started = client.post(
             "/api/satellite-enrollment",
-            json={"satellite_entity_id": "assist_satellite.voice"},
+            json={
+                "satellite_entity_id": "assist_satellite.voice",
+                "start_mode": "button",
+            },
         )
         assert started.status_code == 200
         assert started.json()["status"] == "armed"
         armed_id = started.json()["id"]
+        assert fake.asked == []
 
         # The App must not re-query HA here: by the time the authenticated
         # round-trip arrives, the selected satellite may already be processing

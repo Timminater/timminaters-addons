@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 
@@ -35,6 +35,7 @@ def _schedule_diagnostic_reset(
 
     reset_cancel = None
 
+    @callback
     def reset(_now) -> None:
         if domain_data.get(timer_key) is not reset_cancel:
             return

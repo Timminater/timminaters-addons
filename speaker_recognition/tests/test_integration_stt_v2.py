@@ -16,6 +16,7 @@ from types import SimpleNamespace
 homeassistant = types.ModuleType("homeassistant")
 core = types.ModuleType("homeassistant.core")
 core.HomeAssistant = object
+core.callback = lambda function: function
 homeassistant.core = core
 components = types.ModuleType("homeassistant.components")
 stt_component = types.ModuleType("homeassistant.components.stt")

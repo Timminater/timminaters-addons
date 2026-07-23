@@ -397,12 +397,13 @@ async def start_satellite_enrollment(
                 detail=f"Voice-apparaat is niet beschikbaar (status: {satellite.state})",
             )
         session = await satellite_enrollment.arm(request.satellite_entity_id)
-        task = asyncio.create_task(
-            _run_satellite_prompt(session.id, request.satellite_entity_id),
-            name=f"speaker-recognition-enrollment-{session.id}",
-        )
-        satellite_tasks.add(task)
-        task.add_done_callback(satellite_tasks.discard)
+        if request.start_mode == "remote":
+            task = asyncio.create_task(
+                _run_satellite_prompt(session.id, request.satellite_entity_id),
+                name=f"speaker-recognition-enrollment-{session.id}",
+            )
+            satellite_tasks.add(task)
+            task.add_done_callback(satellite_tasks.discard)
         return session
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

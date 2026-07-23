@@ -96,7 +96,10 @@ class HomeAssistantClient:
             payload={
                 "entity_id": satellite_entity_id,
                 "question": "Spreek nu.",
-                "preannounce": True,
+                # Home Assistant Voice may finish the preannounce chime by
+                # returning to idle instead of opening the microphone. Starting
+                # the question directly reliably transitions to listening.
+                "preannounce": False,
             },
         )
 

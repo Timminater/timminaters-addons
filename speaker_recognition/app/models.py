@@ -65,6 +65,7 @@ class AssistSatelliteInfo(BaseModel):
 
 class SatelliteEnrollmentStartRequest(BaseModel):
     satellite_entity_id: str = Field(pattern=r"^assist_satellite\.[a-z0-9_]+$")
+    start_mode: Literal["button", "remote"] = "remote"
 
 
 class SatelliteEnrollmentClaimRequest(BaseModel):
