@@ -26,7 +26,7 @@ Lokale stemherkenning voor Home Assistant met een ingebouwde Ingress-interface. 
 
 Leg per persoon liefst 2–3 heldere fragmenten van 5–30 seconden vast. Gebruik voor een eerlijke controle andere audio dan de enrollment-samples.
 
-Alleen `amd64` wordt gepubliceerd. De modellen zitten offline in de image en downloaden tijdens gebruik niets. Geef de Home Assistant-VM bij voorkeur 6 GB RAM. De DeepFilterNet2-worker wordt na vijf minuten inactiviteit ontladen; koude modelstarts worden apart gemeten en tellen niet mee als vergelijkbare denoise-tijd.
+Alleen `amd64` wordt gepubliceerd. De modellen zitten offline in de image en downloaden tijdens gebruik niets. Geef de Home Assistant-VM bij voorkeur 6 GB RAM. DeepFilterNet2 wordt tijdens het starten van de add-on opgewarmd en blijft resident (in de validatietest circa 323 MiB), ook wanneer audiobewerking uitstaat. Er wordt dan geen audio verwerkt, maar een latere aanvraag heeft geen koude modelstart.
 
 Zie [DOCS.md](DOCS.md) voor de werking, instellingen, opslag en privacy-informatie.
 

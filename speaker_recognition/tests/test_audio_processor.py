@@ -4,7 +4,6 @@ import numpy as np
 
 from app.audio_processor import (
     CANONICAL_RATE,
-    WORKER_IDLE_SECONDS,
     TargetAudioProcessor,
     _quality,
     _worker_main,
@@ -35,40 +34,29 @@ def test_invalid_denoised_quality_is_rejected():
 
 class FakeConnection:
     def __init__(self):
-        self.polls = iter((True, False))
-        self.payload = None
-
-    def poll(self, _timeout):
-        return next(self.polls)
+        self.requests = iter(
+            (
+                {"audio": np.full(CANONICAL_RATE, 0.1, dtype=np.float32)},
+                None,
+            )
+        )
+        self.payloads = []
 
     def recv(self):
-        return {"audio": np.full(CANONICAL_RATE, 0.1, dtype=np.float32)}
+        return next(self.requests)
 
     def send(self, payload):
-        self.payload = payload
+        self.payloads.append(payload)
 
     def close(self):
         return None
 
 
-def test_cold_worker_run_is_marked_and_excluded_from_comparable_timing(monkeypatch):
+def test_worker_preloads_model_and_first_run_is_comparable(monkeypatch):
     monkeypatch.setattr(
-        "app.audio_processor._Models.denoise",
-        lambda _self, audio: (audio.copy(), False, 125.0),
+        "app.audio_processor._Models.load",
+        lambda _self: 125.0,
     )
-    connection = FakeConnection()
-
-    _worker_main(connection, "unused")
-
-    assert connection.payload["stages"]["model"] == "loaded_cold"
-    assert connection.payload["quality"]["model_was_loaded"] is False
-    assert connection.payload["quality"]["timing_comparable"] is False
-    assert connection.payload["timings"]["model_load_ms"] == 125.0
-    assert "cold_start_ms" in connection.payload["timings"]
-    assert "denoise_ms" not in connection.payload["timings"]
-
-
-def test_warm_worker_run_has_comparable_denoise_timing(monkeypatch):
     monkeypatch.setattr(
         "app.audio_processor._Models.denoise",
         lambda _self, audio: (audio.copy(), True, None),
@@ -77,14 +65,43 @@ def test_warm_worker_run_has_comparable_denoise_timing(monkeypatch):
 
     _worker_main(connection, "unused")
 
-    assert connection.payload["stages"]["model"] == "warm"
-    assert connection.payload["quality"]["model_was_loaded"] is True
-    assert connection.payload["quality"]["timing_comparable"] is True
-    assert "denoise_ms" in connection.payload["timings"]
-    assert "model_load_ms" not in connection.payload["timings"]
+    assert connection.payloads[0] == {
+        "type": "ready",
+        "model_load_ms": 125.0,
+    }
+    result = connection.payloads[1]
+    assert result["stages"]["model"] == "warm"
+    assert result["quality"]["model_was_loaded"] is True
+    assert result["quality"]["timing_comparable"] is True
+    assert "denoise_ms" in result["timings"]
+
+
+def test_warm_worker_run_has_comparable_denoise_timing(monkeypatch):
+    monkeypatch.setattr(
+        "app.audio_processor._Models.load",
+        lambda _self: 125.0,
+    )
+    monkeypatch.setattr(
+        "app.audio_processor._Models.denoise",
+        lambda _self, audio: (audio.copy(), True, None),
+    )
+    connection = FakeConnection()
+
+    _worker_main(connection, "unused")
+
+    result = connection.payloads[1]
+    assert result["stages"]["model"] == "warm"
+    assert result["quality"]["model_was_loaded"] is True
+    assert result["quality"]["timing_comparable"] is True
+    assert "denoise_ms" in result["timings"]
+    assert "model_load_ms" not in result["timings"]
 
 
 def test_worker_does_not_return_rejected_denoised_audio(monkeypatch):
+    monkeypatch.setattr(
+        "app.audio_processor._Models.load",
+        lambda _self: 125.0,
+    )
     monkeypatch.setattr(
         "app.audio_processor._Models.denoise",
         lambda _self, audio: (np.ones_like(audio), True, None),
@@ -93,9 +110,10 @@ def test_worker_does_not_return_rejected_denoised_audio(monkeypatch):
 
     _worker_main(connection, "unused")
 
-    assert connection.payload["denoised_pcm"] is None
-    assert connection.payload["stages"]["denoise"] == "rejected_quality"
-    assert connection.payload["quality"]["denoised_passed"] is False
+    result = connection.payloads[1]
+    assert result["denoised_pcm"] is None
+    assert result["stages"]["denoise"] == "rejected_quality"
+    assert result["quality"]["denoised_passed"] is False
 
 
 def test_analysis_yields_before_starting_when_live_audio_is_waiting():
@@ -133,5 +151,7 @@ def test_processing_timeout_closes_the_worker(monkeypatch):
     assert closed == [True]
 
 
-def test_worker_idle_unload_is_five_minutes():
-    assert WORKER_IDLE_SECONDS == 300
+def test_start_skips_missing_model_directory(tmp_path):
+    processor = TargetAudioProcessor(deepfilter_path=str(tmp_path / "missing"))
+
+    assert processor.start() is False

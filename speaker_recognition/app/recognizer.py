@@ -109,6 +109,10 @@ class SpeakerRecognizer:
         """Release the optional model worker without affecting profile storage."""
         self._audio_processor.close()
 
+    def warm_audio_processor(self) -> bool:
+        """Load the optional denoiser once and keep it resident."""
+        return self._audio_processor.start()
+
     def enroll(
         self,
         speaker_name: str,

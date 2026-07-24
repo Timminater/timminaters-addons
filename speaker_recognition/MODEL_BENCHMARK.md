@@ -1,4 +1,4 @@
-# DeepFilterNet2 validation for 2.1.1
+# DeepFilterNet2 validation for 2.1.2
 
 Validation is performed on amd64 with four CPU cores and a hard 2 GiB
 container memory limit. The image contains DeepFilterNet2 only; SpEx+ and all
@@ -20,7 +20,8 @@ presented as a comparable denoise result.
 
 Every accepted output must be mono PCM, retain the original duration within
 50 ms, remain below one percent clipping and complete with the whole container
-limited to 2 GiB. The worker is unloaded after five minutes of inactivity.
+limited to 2 GiB. Version 2.1.2 preloads the worker at add-on startup and keeps
+it resident until shutdown, so user-triggered runs use the comparable warm path.
 
 ## Denoise-only container result
 

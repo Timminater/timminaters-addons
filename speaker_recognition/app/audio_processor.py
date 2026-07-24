@@ -19,8 +19,8 @@ _LOGGER = logging.getLogger(__name__)
 CANONICAL_RATE = 16_000
 DENOISE_RATE = 48_000
 MAX_CLIP_SECONDS = 120
-WORKER_IDLE_SECONDS = 300
 DEFAULT_LIVE_TIMEOUT_SECONDS = 12.0
+MODEL_STARTUP_TIMEOUT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -110,33 +110,38 @@ class _Models:
         self.deepfilter_path = deepfilter_path
         self._deepfilter: tuple[Any, Any, Any] | None = None
 
+    def load(self) -> float:
+        """Load DeepFilterNet once and return its startup duration."""
+        if self._deepfilter is not None:
+            return 0.0
+        import torch
+        import df.logger
+        from df.enhance import init_df
+
+        load_started = time.perf_counter()
+        # DeepFilterNet's logger queries the source checkout's Git metadata.
+        # Production images contain the pinned model, not Git or a checkout.
+        df.logger.get_commit_hash = lambda: None
+        loaded = init_df(
+            model_base_dir=self.deepfilter_path,
+            log_level="ERROR",
+            log_file=None,
+            default_model="DeepFilterNet2",
+        )
+        model, state = loaded[0], loaded[1]
+        self._deepfilter = model, state, torch
+        return round((time.perf_counter() - load_started) * 1000, 2)
+
     def denoise(
         self,
         audio: NDArray[np.float32],
     ) -> tuple[NDArray[np.float32], bool, float | None]:
-        import torch
-        import df.logger
-        from df.enhance import enhance, init_df
+        from df.enhance import enhance
 
         model_was_loaded = self._deepfilter is not None
         model_load_ms: float | None = None
-        if self._deepfilter is None:
-            load_started = time.perf_counter()
-            # DeepFilterNet's logger queries the source checkout's Git metadata.
-            # Production images contain the pinned model, not Git or a checkout.
-            df.logger.get_commit_hash = lambda: None
-            loaded = init_df(
-                model_base_dir=self.deepfilter_path,
-                log_level="ERROR",
-                log_file=None,
-                default_model="DeepFilterNet2",
-            )
-            model, state = loaded[0], loaded[1]
-            self._deepfilter = model, state, torch
-            model_load_ms = round(
-                (time.perf_counter() - load_started) * 1000,
-                2,
-            )
+        if not model_was_loaded:
+            model_load_ms = self.load()
         model, state, torch_module = self._deepfilter
         enhanced = enhance(
             model,
@@ -153,7 +158,29 @@ class _Models:
 
 def _worker_main(connection: Connection, deepfilter_path: str) -> None:
     models = _Models(deepfilter_path)
-    while connection.poll(WORKER_IDLE_SECONDS):
+    try:
+        model_load_ms = models.load()
+        connection.send(
+            {
+                "type": "ready",
+                "model_load_ms": model_load_ms,
+            }
+        )
+    except Exception as error:
+        _LOGGER.warning("Could not preload DeepFilterNet2: %s", error)
+        try:
+            connection.send(
+                {
+                    "type": "startup_failed",
+                    "error": str(error),
+                }
+            )
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+        connection.close()
+        return
+
+    while True:
         try:
             request = connection.recv()
         except EOFError:
@@ -222,7 +249,7 @@ def _worker_main(connection: Connection, deepfilter_path: str) -> None:
 
 
 class TargetAudioProcessor:
-    """Own one lazy denoise worker and terminate it after inactivity."""
+    """Own one preloaded denoise worker for the add-on lifetime."""
 
     def __init__(self, *, deepfilter_path: str | None = None) -> None:
         self.deepfilter_path = deepfilter_path or os.environ.get(
@@ -234,6 +261,7 @@ class TargetAudioProcessor:
         self._lock = threading.Lock()
         self._priority_lock = threading.Lock()
         self._waiting_live = 0
+        self._model_load_ms: float | None = None
 
     def _live_waiting(self) -> bool:
         with self._priority_lock:
@@ -258,7 +286,37 @@ class TargetAudioProcessor:
         child.close()
         self._process = process
         self._connection = parent
+        if not parent.poll(MODEL_STARTUP_TIMEOUT_SECONDS):
+            self.close()
+            raise TimeoutError("DeepFilterNet2 preload timed out")
+        startup = parent.recv()
+        if startup.get("type") != "ready":
+            self.close()
+            raise RuntimeError(
+                f"DeepFilterNet2 preload failed: {startup.get('error', 'unknown error')}"
+            )
+        self._model_load_ms = float(startup["model_load_ms"])
+        _LOGGER.info(
+            "DeepFilterNet2 preloaded and kept resident (%.2f ms)",
+            self._model_load_ms,
+        )
         return parent
+
+    def start(self) -> bool:
+        """Preload the model worker during add-on startup."""
+        if not os.path.isdir(self.deepfilter_path):
+            _LOGGER.warning(
+                "DeepFilterNet2 model directory is unavailable: %s",
+                self.deepfilter_path,
+            )
+            return False
+        with self._lock:
+            try:
+                self._ensure_worker()
+            except (EOFError, OSError, RuntimeError, TimeoutError) as error:
+                _LOGGER.warning("Could not start audio model worker: %s", error)
+                return False
+        return True
 
     def process(
         self,
@@ -365,6 +423,7 @@ class TargetAudioProcessor:
         connection, process = self._connection, self._process
         self._connection = None
         self._process = None
+        self._model_load_ms = None
         if connection is not None:
             try:
                 connection.close()

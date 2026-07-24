@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.2
+
+- DeepFilterNet2 wordt bij het starten van de add-on opgewarmd en blijft daarna resident, zodat de eerste aanvraag na inactiviteit geen koude modelstart meer krijgt.
+- Denoise-metingen worden daardoor vanaf de eerste gebruikersaanvraag als warme, onderling vergelijkbare verwerking geregistreerd.
+
 ## 2.1.1
 
 - SpEx+ en doelstemisolatie zijn volledig uit de runtime en image verwijderd; optionele audiobewerking bestaat voortaan alleen uit DeepFilterNet2-ruisonderdrukking.

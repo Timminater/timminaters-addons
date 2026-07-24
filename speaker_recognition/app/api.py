@@ -82,6 +82,10 @@ _policy: dict[str, object] = {
 async def lifespan(_: FastAPI):
     global maintenance_task
     await asyncio.to_thread(recognizer.initialize)
+    # Start the multiprocessing worker from the main server thread before the
+    # app accepts traffic. Forking it from asyncio's thread pool is unsafe on
+    # Linux once other worker threads exist.
+    recognizer.warm_audio_processor()
     saved_policy = recognizer.catalog.get_setting("pipeline_policy", {})
     if isinstance(saved_policy, dict):
         _policy.update({key: value for key, value in saved_policy.items() if key in _policy})

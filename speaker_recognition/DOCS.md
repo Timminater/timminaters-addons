@@ -44,7 +44,7 @@ De globale policy in de webinterface bevat:
 - **Alleen vergelijken**: de App maakt DeepFilterNet2-ruisonderdrukking op de achtergrond; STT ontvangt nog steeds het origineel.
 - **Vóór STT** (experimenteel): de App probeert binnen maximaal twaalf seconden de ruisonderdrukte audio aan STT te geven. Bij tijdsoverschrijding, kwaliteitsafkeur of een modelfout ontvangt STT het origineel.
 
-DeepFilterNet2 werkt intern op 48 kHz en levert 16 kHz mono-PCM met dezelfde tijdlijn terug. Clips tot maximaal 120 seconden worden ondersteund. Live STT heeft voorrang op handmatige Analyse-taken; de modelworker wordt na vijf minuten inactiviteit ontladen. Een koude start toont `model_load_ms` en `cold_request_ms`, maar krijgt bewust geen `denoise_ms` of vergelijkbare `audio_processing_ms`. Alleen een run waarbij het model al geladen was telt mee als vergelijkbare prestatiemeting.
+DeepFilterNet2 werkt intern op 48 kHz en levert 16 kHz mono-PCM met dezelfde tijdlijn terug. Clips tot maximaal 120 seconden worden ondersteund. Live STT heeft voorrang op handmatige Analyse-taken. De modelworker wordt tijdens het starten van de add-on opgewarmd en blijft resident tot de add-on stopt. Daardoor zijn gebruikersaanvragen vanaf de eerste opname warm en onderling vergelijkbaar. Het resident houden activeert de audiobewerking niet: in modus `off` blijft de worker alleen gereed in het geheugen.
 
 Wanneer de backend niet bereikbaar is, blijft de normale `allow`-policy fail-open. Een actief bekende `block`-policy faalt gesloten.
 
