@@ -221,6 +221,154 @@ def test_v2_analysis_filters_bulk_delete_and_public_paths(tmp_path, monkeypatch)
         assert client.get("/api/analysis").json()["total"] == 1
 
 
+def test_reanalyze_uses_current_profiles_and_preserves_pipeline_history(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "unknown_speaker_policy", "allow")
+    monkeypatch.setitem(api._policy, "min_margin", 0.0)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    sample = audio(12000)
+    with TestClient(api.app, headers=headers) as client:
+        recording = api.recognizer.catalog.create_recording(
+            api.recognizer._decode_pcm_bytes(sample),
+            sample.sample_rate,
+            source="test",
+            transcript="Bewaard transcript",
+            outcome="unmatched",
+            conversation_forwarded=True,
+            timings={"stt_ms": 12.0, "total_ms": 30.0},
+            labels={
+                "person_entity_id": "person.historisch",
+                "conversation_reason": "oude context",
+            },
+        )
+        api.recognizer.catalog.save_audio_variant(
+            recording["id"],
+            "denoised",
+            api.recognizer._decode_pcm_bytes(sample),
+            sample.sample_rate,
+        )
+        enrolled = client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Alice",
+                "person_entity_id": "person.alice",
+                "samples": [{"audio": sample.model_dump()}],
+            },
+        ).json()["speaker"]
+        api.recognizer.catalog.set_calibration(
+            0.7, 0.1, {"source": "test"}
+        )
+
+        response = client.post(
+            f"/api/analysis/{recording['id']}/reanalyze"
+        )
+
+        assert response.status_code == 200
+        detail = response.json()
+        assert detail["outcome"] == "matched"
+        assert detail["speaker_id"] == enrolled["id"]
+        assert detail["speaker_name"] == "Alice"
+        assert detail["recognized_person_entity_id"] == "person.alice"
+        assert detail["conversation_person_entity_id"] == "person.historisch"
+        assert detail["person_entity_id"] == "person.historisch"
+        assert detail["threshold"] == 0.7
+        assert detail["margin"] >= 0.1
+        assert detail["threshold_source"] == "calibration"
+        assert detail["transcript"] == "Bewaard transcript"
+        assert detail["conversation_forwarded"] is True
+        assert detail["denoised_available"] is True
+        assert detail["timings"]["stt_ms"] == 12.0
+        assert detail["timings"]["total_ms"] == 30.0
+        assert detail["timings"]["recognition_ms"] >= 0
+        assert detail["labels"]["conversation_reason"] == "oude context"
+        assert client.post(
+            f"/api/recordings/{recording['id']}/reanalyze"
+        ).status_code == 200
+
+
+def test_reanalyze_applies_block_policy_without_changing_other_metadata(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "unknown_speaker_policy", "block")
+    monkeypatch.setitem(api._policy, "min_margin", 0.0)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Alice",
+                "samples": [{"audio": audio(12000).model_dump()}],
+            },
+        )
+        opposite = audio(-12000)
+        recording = api.recognizer.catalog.create_recording(
+            api.recognizer._decode_pcm_bytes(opposite),
+            opposite.sample_rate,
+            source="pipeline",
+            transcript="Niet wijzigen",
+            outcome="matched",
+        )
+
+        response = client.post(
+            f"/api/analysis/{recording['id']}/reanalyze"
+        )
+
+        assert response.status_code == 200
+        detail = response.json()
+        assert detail["outcome"] == "blocked"
+        assert detail["blocked"] is True
+        assert detail["speaker_id"] is None
+        assert detail["speaker_name"] is None
+        assert detail["transcript"] == "Niet wijzigen"
+
+
+def test_reanalyze_errors_leave_existing_result_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    sample = audio(12000)
+    with TestClient(api.app, headers=headers) as client:
+        recording = api.recognizer.catalog.create_recording(
+            api.recognizer._decode_pcm_bytes(sample),
+            sample.sample_rate,
+            source="test",
+            transcript="Blijft staan",
+            outcome="error",
+            confidence=0.25,
+        )
+        response = client.post(
+            f"/api/analysis/{recording['id']}/reanalyze"
+        )
+        assert response.status_code == 409
+        unchanged = api.recognizer.catalog.get_recording(recording["id"])
+        assert unchanged["outcome"] == "error"
+        assert unchanged["confidence"] == 0.25
+        assert unchanged["transcript"] == "Blijft staan"
+
+        assert client.post(
+            "/api/analysis/0" + "/reanalyze"
+        ).status_code == 404
+        original = api.recognizer.catalog.audio_path(
+            recording["id"], "original"
+        )
+        assert original is not None
+        original.unlink()
+        assert client.post(
+            f"/api/analysis/{recording['id']}/reanalyze"
+        ).status_code == 404
+
+
 def test_target_audio_process_is_queued_and_exposes_new_variants(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
     api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)

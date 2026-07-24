@@ -34,7 +34,7 @@ Het Voice-apparaat moet een Assist-pipeline gebruiken waarvan de STT-engine de S
 
 ## Herkenning en pipeline-policy
 
-De herkenner beoordeelt de volledige uiting, spraakregio's en overlappende tijdvensters. De hoogste overeenkomst bepaalt de kandidaat. Een resultaat is alleen een match als zowel de confidence-drempel als de minimale marge ten opzichte van de tweede kandidaat wordt gehaald.
+De herkenner beoordeelt de volledige uiting, spraakregio's en overlappende tijdvensters. De hoogste overeenkomst bepaalt de kandidaat. Een resultaat is alleen een match als zowel de confidence-drempel als de minimale marge ten opzichte van de tweede kandidaat wordt gehaald. Die scoremarge is `beste score - tweede score`: bij `0` is deze extra ambiguïteitscontrole uitgeschakeld; een hogere waarde vermindert persoonsverwisselingen maar kan vaker een ambigu of onbekend resultaat geven. Een toegepaste kalibratie gebruikt haar berekende marge in plaats van de basiswaarde uit **Instellingen**.
 
 De globale policy in de webinterface bevat:
 
@@ -72,6 +72,13 @@ Per item zijn, voor zover beschikbaar, zichtbaar:
 - herkennings-, warme denoise-, model-laad-, STT- en totale verwerkingstijd;
 - modelstappen, kwaliteitsmetingen, gebruikte audiovariant, fallbackreden, blokkering en doorgifte aan de conversation-agent.
 
+Met **Opnieuw analyseren** wordt de originele WAV opnieuw beoordeeld met de
+actuele stemprofielen, herkenningsdrempel, scoremarge en toegepaste kalibratie.
+Alleen het herkenningsresultaat wordt vervangen; transcript, audiovarianten,
+STT-metingen en historische conversation-context blijven behouden. De actuele
+`person.*`-koppeling van de herkende speaker wordt daarom apart getoond van de
+persoon die eventueel tijdens het oorspronkelijke gesprek is gebruikt.
+
 Met **Ruis onderdrukken** start je een asynchrone verwerking zonder een profiel
 te kiezen. Per uitvoering kun je DF2 batch of DF3 stateful streaming selecteren;
 DF3 leest de bestaande WAV in begrensde blokken en gebruikt dezelfde drainroute
@@ -79,8 +86,9 @@ als live audio. Met **Ruisonderdrukking wissen** verwijder je alleen de afgeleid
 WAV en verwerkingsmetingen, zodat je opnieuw kunt verwerken. Origineel,
 transcript en herkenningsresultaat blijven behouden. De golfvormselectie blijft
 uitsluitend bedoeld om een handmatig gekozen deel aan een bestaand of nieuw
-enrollmentprofiel toe te voegen. Analyse-items kunnen afzonderlijk, als selectie
-of gezamenlijk worden verwijderd.
+enrollmentprofiel toe te voegen. Met **Selectie afspelen** kun je dat exacte
+tijdsbereik eerst in de originele audio beluisteren. Analyse-items kunnen
+afzonderlijk, als selectie of gezamenlijk worden verwijderd.
 
 Analyse-audio wordt standaard zeven dagen bewaard, met daarnaast een globale
 limiet van 2 GiB. Beide waarden zijn via **Instellingen** aanpasbaar en worden

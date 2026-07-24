@@ -106,6 +106,39 @@ def test_analysis_ui_exposes_denoised_variant_and_async_action():
     assert "Koude start; timing uitgesloten" in script
 
 
+def test_analysis_ui_can_reanalyze_and_preview_enrollment_selection():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="reanalyze-recording"' in document
+    assert 'id="play-selection"' in document
+    assert "Opnieuw analyseren" in document
+    assert "Selectie afspelen" in document
+    assert "/reanalyze`" in script
+    assert 'method: "POST"' in script
+    assert "toggleSelectionPreview" in script
+    assert "stopSelectionPreview" in script
+    assert "requestAnimationFrame(monitorSelectionPreview)" in script
+    assert "player.currentTime = state.analysis.trim.start" in script
+    assert "player.currentTime >= state.analysis.trim.end" in script
+    assert "function setTrim(start, end) { stopSelectionPreview();" in script
+    assert "function closeAnalysis() { stopSelectionPreview();" in script
+    assert "recognized_person_entity_id" in script
+    assert "conversation_person_entity_id" in script
+    assert "Conversation-persoon" in script
+
+
+def test_settings_explain_the_minimum_speaker_score_margin():
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert "Minimale scoremarge (beste − tweede)" in document
+    assert 'aria-describedby="policy-min-margin-help"' in document
+    assert 'id="policy-min-margin-help"' in document
+    assert "nadat de herkenningsdrempel al is gehaald" in document
+    assert "Bij <strong>0</strong> staat deze extra controle uit" in document
+    assert "Kalibratie" in document
+
+
 def test_primary_navigation_lives_in_the_sticky_topbar():
     document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     styles = (ROOT / "web" / "assets" / "styles.css").read_text(encoding="utf-8")

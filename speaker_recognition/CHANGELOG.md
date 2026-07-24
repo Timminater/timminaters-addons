@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.0
+
+- Bestaande analyse-opnamen kunnen opnieuw worden herkend met de actuele stemprofielen, drempel, scoremarge en kalibratie zonder transcript, audioverwerking of conversation-historie te wijzigen.
+- De actuele persoonkoppeling van een opnieuw herkende speaker wordt apart getoond van de historische conversation-context.
+- De geselecteerde tijdsrange voor enrollment kan vóór het toevoegen aan een profiel exact worden afgespeeld en gestopt.
+
 ## 2.2.0
 
 - Experimentele true-stateful Pipecat/DeepFilterNet3-verwerking toegevoegd achter de expliciete `audio_processing_backend: df3_streaming`-optie; `df2_batch` blijft standaard.

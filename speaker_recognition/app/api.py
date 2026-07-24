@@ -299,6 +299,7 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
     for key in ("audio_variant", "fallback", "conversation_reason", "person_entity_id"):
         if key in labels:
             result[key] = labels[key]
+    result["conversation_person_entity_id"] = labels.get("person_entity_id")
     result["blocked"] = result.get("outcome") == "blocked"
     result["matched"] = result.get("outcome") == "matched"
     result["threshold_source"] = (
@@ -321,13 +322,16 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
                 "start_seconds": best.get("start_seconds"),
                 "end_seconds": best.get("end_seconds"),
             }
-    if result.get("speaker_id") and not result.get("person_entity_id"):
+    result["recognized_person_entity_id"] = None
+    if result.get("speaker_id"):
         profile = next(
             (item for item in recognizer.list_speakers() if item.id == result["speaker_id"]),
             None,
         )
         if profile is not None:
-            result["person_entity_id"] = profile.person_entity_id
+            result["recognized_person_entity_id"] = profile.person_entity_id
+            if not result.get("person_entity_id"):
+                result["person_entity_id"] = profile.person_entity_id
     if detailed is not None:
         result.update({
             "matched": detailed.speaker is not None, "speaker": detailed.speaker.model_dump(mode="json") if detailed.speaker else None,
@@ -1157,6 +1161,77 @@ async def get_recording(recording_id: str) -> dict:
     recording = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id)
     if not recording: raise HTTPException(status_code=404, detail="Recording not found")
     return _analysis_payload(recording)
+
+
+@app.post(
+    "/api/recordings/{recording_id}/reanalyze",
+    dependencies=[Depends(authorize_api)],
+)
+@app.post(
+    "/api/analysis/{recording_id}/reanalyze",
+    dependencies=[Depends(authorize_api)],
+)
+async def reanalyze_recording(recording_id: str) -> dict:
+    """Re-run speaker recognition against the current enrolled profiles."""
+    recording = await asyncio.to_thread(
+        recognizer.catalog.get_recording, recording_id
+    )
+    if not recording:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    path = await asyncio.to_thread(
+        recognizer.catalog.audio_path, recording_id, "original"
+    )
+    if not path:
+        raise HTTPException(status_code=404, detail="Original audio not found")
+
+    calibration = recognizer.catalog.calibration()
+    threshold = (
+        float(calibration["threshold"])
+        if calibration
+        else settings.recognition_threshold
+    )
+    margin = (
+        float(calibration["margin"])
+        if calibration
+        else float(_policy["min_margin"])
+    )
+    try:
+        audio = await asyncio.to_thread(_read_recording_audio, path)
+        detailed = await asyncio.to_thread(
+            recognizer.recognize_detailed,
+            audio,
+            threshold=threshold,
+            min_margin=margin,
+        )
+    except (ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    outcome = detailed.outcome
+    if (
+        outcome != "matched"
+        and _policy["unknown_speaker_policy"] == "block"
+    ):
+        outcome = "blocked"
+    timings = {
+        **(recording.get("timings") or {}),
+        **detailed.timings,
+    }
+    updated = await asyncio.to_thread(
+        recognizer.catalog.update_recording,
+        recording_id,
+        outcome=outcome,
+        speaker_id=detailed.speaker.id if detailed.speaker else None,
+        speaker_name=detailed.speaker.name if detailed.speaker else None,
+        confidence=detailed.confidence,
+        threshold=detailed.threshold,
+        margin=detailed.margin,
+        scores=detailed.scores,
+        segments=detailed.candidates,
+        timings=timings,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return _analysis_payload(updated, detailed)
 
 
 @app.get("/api/recordings/{recording_id}/audio", dependencies=[Depends(authorize_api)])
