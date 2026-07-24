@@ -45,7 +45,12 @@ class DemoHomeAssistant:
         return None
 
     def persons(self):
-        return [HomeAssistantPersonInfo(entity_id="person.tim", name="Tim")]
+        return [
+            HomeAssistantPersonInfo(
+                entity_id="person.test_user",
+                name="Testgebruiker",
+            )
+        ]
 
 
 api.home_assistant = DemoHomeAssistant()

@@ -576,15 +576,15 @@ def test_multiple_known_speakers_are_not_blocked_and_are_published():
         speaker=None,
         detected_speakers=[
             {
-                "speaker_id": "eline",
-                "speaker_name": "Eline",
-                "person_entity_id": "person.eline",
+                "speaker_id": "test-speaker-a",
+                "speaker_name": "Testspreker A",
+                "person_entity_id": "person.test_speaker_a",
                 "confidence": 0.93,
             },
             {
-                "speaker_id": "anne-marie",
-                "speaker_name": "Anne-Marie",
-                "person_entity_id": "person.anne_marie",
+                "speaker_id": "test-speaker-b",
+                "speaker_name": "Testspreker B",
+                "person_entity_id": "person.test_speaker_b",
                 "confidence": 0.91,
             },
         ],
@@ -601,7 +601,7 @@ def test_multiple_known_speakers_are_not_blocked_and_are_published():
     recognized = hass.data["speaker_recognition"]["last_result"]
     assert recognized["blocked"] is False
     assert recognized["multiple_speakers"] is True
-    assert recognized["speaker_names"] == ["Eline", "Anne-Marie"]
+    assert recognized["speaker_names"] == ["Testspreker A", "Testspreker B"]
 
 
 def test_backend_failure_is_fail_open_for_allow_and_closed_for_block():

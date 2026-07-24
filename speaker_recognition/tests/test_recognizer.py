@@ -43,13 +43,15 @@ def test_detects_multiple_known_speakers_in_separate_regions(
     tmp_path, fake_factory, identity_preprocess
 ):
     recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
-    eline = recognizer.enroll(
-        "Eline", [audio(12000)], person_entity_id="person.eline"
+    speaker_a = recognizer.enroll(
+        "Testspreker A",
+        [audio(12000)],
+        person_entity_id="person.test_speaker_a",
     )
-    anne_marie = recognizer.enroll(
-        "Anne-Marie",
+    speaker_b = recognizer.enroll(
+        "Testspreker B",
         [audio(-12000)],
-        person_entity_id="person.anne_marie",
+        person_entity_id="person.test_speaker_b",
     )
 
     detailed = recognizer.recognize_detailed(
@@ -60,12 +62,12 @@ def test_detects_multiple_known_speakers_in_separate_regions(
     assert detailed.speaker is None
     assert detailed.best_segment is None
     assert [item["speaker_id"] for item in detailed.detected_speakers] == [
-        eline.id,
-        anne_marie.id,
+        speaker_a.id,
+        speaker_b.id,
     ]
     assert [item["speaker_name"] for item in detailed.detected_speakers] == [
-        "Eline",
-        "Anne-Marie",
+        "Testspreker A",
+        "Testspreker B",
     ]
     assert detailed.detected_speakers[0]["best_segment"] == {
         "start_seconds": 0.0,
@@ -152,7 +154,7 @@ def test_rejects_silence_and_oversized_audio(tmp_path, fake_factory, identity_pr
 
 def test_name_does_not_become_filename(tmp_path, fake_factory, identity_preprocess):
     recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
-    profile = recognizer.enroll("../../Tim <script>", [audio(1000)])
+    profile = recognizer.enroll("../../Testspreker <script>", [audio(1000)])
     files = list((tmp_path / "speakers").glob("*.npy"))
     assert len(files) == 1 and files[0].stem == profile.id
 

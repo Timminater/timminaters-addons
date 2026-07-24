@@ -252,16 +252,16 @@ def test_analysis_persists_multiple_speakers_without_blocking_known_voices(
         client.post(
             "/api/enroll",
             json={
-                "speaker_name": "Eline",
-                "person_entity_id": "person.eline",
+                "speaker_name": "Testspreker A",
+                "person_entity_id": "person.test_speaker_a",
                 "samples": [{"audio": audio(12000).model_dump()}],
             },
         )
         client.post(
             "/api/enroll",
             json={
-                "speaker_name": "Anne-Marie",
-                "person_entity_id": "person.anne_marie",
+                "speaker_name": "Testspreker B",
+                "person_entity_id": "person.test_speaker_b",
                 "samples": [{"audio": audio(-12000).model_dump()}],
             },
         )
@@ -278,8 +278,8 @@ def test_analysis_persists_multiple_speakers_without_blocking_known_voices(
         assert result["matched"] is False
         assert result["blocked"] is False
         assert [item["speaker_name"] for item in result["detected_speakers"]] == [
-            "Eline",
-            "Anne-Marie",
+            "Testspreker A",
+            "Testspreker B",
         ]
         ephemeral = client.post(
             "/api/recognize", json={"audio": mixed_speakers_audio()}

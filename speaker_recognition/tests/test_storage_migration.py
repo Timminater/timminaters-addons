@@ -95,7 +95,7 @@ def test_reset_processing_preserves_source_and_recognition_metadata(tmp_path):
         speaker_id="speaker-id",
         confidence=0.91,
         timings={"stt_ms": 80, "total_ms": 100},
-        labels={"person_entity_id": "person.tim"},
+        labels={"person_entity_id": "person.test_user"},
     )
     catalogue.save_audio_variant(
         recording["id"], "denoised", b"\x02\x00" * 16_000, 16_000
@@ -111,7 +111,7 @@ def test_reset_processing_preserves_source_and_recognition_metadata(tmp_path):
             "post_utterance_ms": 8,
         },
         labels={
-            "person_entity_id": "person.tim",
+            "person_entity_id": "person.test_user",
             "audio_variant": "denoised",
             "fallback": False,
             "quality": {"stateful": True},
@@ -132,6 +132,6 @@ def test_reset_processing_preserves_source_and_recognition_metadata(tmp_path):
     assert reset["processing_backend"] is None
     assert reset["processing_status"] == "idle"
     assert reset["labels"] == {
-        "person_entity_id": "person.tim",
+        "person_entity_id": "person.test_user",
         "audio_variant": "original",
     }

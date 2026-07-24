@@ -89,13 +89,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:18099")
     parser.add_argument("--token", default="codex-210-local-test")
+    parser.add_argument("--speaker-name", required=True)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--competitor", type=Path, required=True)
     args = parser.parse_args()
 
     api = Api(args.url, args.token)
     speakers = api.request("GET", "/api/speakers")
-    target_profile = next(item for item in speakers if item["name"] == "Tim")
+    target_profile = next(
+        item for item in speakers if item["name"] == args.speaker_name
+    )
     target, target_rate = read_wav(args.target)
     competitor, competitor_rate = read_wav(args.competitor)
     target = resample(target, target_rate, 16_000)

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.1
+
+- Persoonlijke voorbeeldnamen zijn vervangen door neutrale testdata en een generieke placeholder.
+- De handmatige kwaliteitsmatrix accepteert het doelprofiel nu via `--speaker-name` in plaats van een hardgecodeerde profielnaam.
+
 ## 2.4.0
 
 - Verschillende bekende stemmen in niet-overlappende spraakregio's leveren nu de expliciete uitkomst `multiple_speakers`; de detectie gebruikt de bestaande kandidaatregio's en vereist geen apart diarization-model.
