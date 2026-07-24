@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0
+
+- Experimentele true-stateful Pipecat/DeepFilterNet3-verwerking toegevoegd achter de expliciete `audio_processing_backend: df3_streaming`-optie; `df2_batch` blijft standaard.
+- De 16 → 48 → 16 kHz-keten verwerkt audio tijdens ontvangst en voert SOXR-buffers, een gedeeltelijke hop en model-lookahead expliciet af zonder de eindtijdlijn te verkorten.
+- DF3-fouten en kwaliteitsafkeur vallen per aanvraag terug op de resident DeepFilterNet2/PyTorch-route.
+- Tract 0.21.17, Pipecat 1.6.0, DeepFilterLib 0.5.6 en het checksum-gecontroleerde upstream DF3-archief zijn vastgepind; rekenbibliotheken gebruiken één thread.
+- Een nieuwe pagina Instellingen beheert backend, pipelinebeleid en analyse-opslag zonder toegang tot `config.yaml`.
+- Bestaande analyse-WAV's kunnen per uitvoering met DF2 of stateful DF3 worden verwerkt; de werkelijk gebruikte backend en drainmetingen worden bewaard.
+- Ruisonderdrukte varianten en alleen hun verwerkingsmetingen kunnen veilig worden gewist en daarna opnieuw worden opgebouwd.
+
 ## 2.1.2
 
 - DeepFilterNet2 wordt bij het starten van de add-on opgewarmd en blijft daarna resident, zodat de eerste aanvraag na inactiviteit geen koude modelstart meer krijgt.

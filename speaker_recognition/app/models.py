@@ -122,12 +122,16 @@ class PipelinePolicy(BaseModel):
     retention_days: int = Field(default=7, ge=1, le=365)
     max_storage_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
     calibration: dict | None = None
+    audio_processing_backend: Literal["df2_batch", "df3_streaming"] = "df2_batch"
 
 
 class PipelinePolicyPatch(BaseModel):
     unknown_speaker_policy: Literal["allow", "block"] | None = None
     extraction_mode: Literal["off", "compare", "before_stt"] | None = None
     min_margin: float | None = Field(default=None, ge=0, le=2)
+    retention_days: int | None = Field(default=None, ge=1, le=365)
+    max_storage_bytes: int | None = Field(default=None, ge=1)
+    audio_processing_backend: Literal["df2_batch", "df3_streaming"] | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -166,6 +170,7 @@ class ProcessTargetAudioRequest(BaseModel):
     """Queue optional denoising for a persisted recording."""
 
     speaker_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend: Literal["df2_batch", "df3_streaming"] | None = None
 
 
 class PromoteRecordingRequest(BaseModel):

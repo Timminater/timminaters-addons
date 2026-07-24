@@ -109,10 +109,16 @@ sys.modules["speaker_recognition"] = package
 aiohttp = types.ModuleType("aiohttp")
 aiohttp.ClientError = OSError
 aiohttp.ClientSession = object
+aiohttp.ClientTimeout = lambda **kwargs: kwargs
 sys.modules.setdefault("aiohttp", aiohttp)
 
 from speaker_recognition.api import SpeakerRecognitionApiError
-from speaker_recognition.stt import SpeakerRecognitionSTT, _pcm16_mono, _processed_audio
+from speaker_recognition.stt import (
+    SpeakerRecognitionSTT,
+    _StreamingPcm16Mono,
+    _pcm16_mono,
+    _processed_audio,
+)
 
 
 class Clock:
@@ -160,10 +166,21 @@ class Source:
 
 
 class Api:
-    def __init__(self, mode="off", unknown="allow", result=None):
-        self.policy = {"extraction_mode": mode, "unknown_speaker_policy": unknown}
+    def __init__(
+        self,
+        mode="off",
+        unknown="allow",
+        result=None,
+        backend="df2_batch",
+    ):
+        self.policy = {
+            "extraction_mode": mode,
+            "unknown_speaker_policy": unknown,
+            "audio_processing_backend": backend,
+        }
         self.result = result or matched_result()
         self.analyze_calls = []
+        self.stream_analyze_calls = []
         self.finalize_calls = []
         self.policy_error = False
         self.analyze_error = False
@@ -197,6 +214,15 @@ class Api:
         if self.analyze_error:
             raise SpeakerRecognitionApiError("offline")
         self.analyze_calls.append((pcm, sample_rate, details))
+        return dict(self.result)
+
+    async def async_analyze_stream(self, pcm_stream, sample_rate, **details):
+        pcm = bytearray()
+        async for chunk in pcm_stream:
+            pcm.extend(chunk)
+        if self.analyze_error:
+            raise SpeakerRecognitionApiError("offline")
+        self.stream_analyze_calls.append((bytes(pcm), sample_rate, details))
         return dict(self.result)
 
     async def async_finalize_analysis(self, recording_id, details):
@@ -259,6 +285,57 @@ def make_proxy(api):
     proxy.hass = hass
     proxy.entity_id = "stt.speaker_recognition"
     return proxy, hass, source
+
+
+def test_streaming_wav_parser_handles_split_header_and_stereo_frames():
+    left_right = b"\xe8\x03\x18\xfc" * 137
+    document = io.BytesIO()
+    with wave.open(document, "wb") as audio:
+        audio.setnchannels(2)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(left_right)
+    parser = _StreamingPcm16Mono(SpeechMetadata(channel=2))
+    output = bytearray()
+    payload = document.getvalue()
+    for offset in range(0, len(payload), 7):
+        output.extend(parser.feed(payload[offset : offset + 7]))
+    parser.finish()
+
+    assert output == b"\x00\x00" * 137
+
+
+def test_before_stt_df3_streams_pcm_during_upload():
+    original_pcm = b"\x01\x00" * 1200
+    denoised_pcm = b"\x02\x00" * 1200
+    api = Api(
+        mode="before_stt",
+        backend="df3_streaming",
+        result=matched_result(
+            denoised_audio={
+                "audio_data": __import__("base64").b64encode(
+                    denoised_pcm
+                ).decode(),
+                "sample_rate": 16000,
+            },
+            processing_quality={"denoised_passed": True},
+        ),
+    )
+    proxy, _hass, source = make_proxy(api)
+
+    result = asyncio.run(
+        proxy.async_process_audio_stream(
+            SpeechMetadata(),
+            chunks(wav(original_pcm)),
+        )
+    )
+
+    assert result.text == "hello"
+    assert api.analyze_calls == []
+    assert api.stream_analyze_calls[0][0] == original_pcm
+    assert api.stream_analyze_calls[0][1] == 16000
+    with wave.open(io.BytesIO(source.calls[0][1]), "rb") as audio:
+        assert audio.readframes(audio.getnframes()) == denoised_pcm
 
 
 def test_off_and_compare_keep_original_audio_and_finalize_recording():

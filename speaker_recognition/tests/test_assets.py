@@ -55,7 +55,9 @@ def test_version_two_ui_exposes_analysis_calibration_and_safe_audio_management()
     document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
 
-    for page in ("profiles-page", "analysis-page", "calibration-page"):
+    for page in (
+        "profiles-page", "analysis-page", "calibration-page", "settings-page"
+    ):
         assert f'id="{page}"' in document
     for control in (
         "analysis-outcome",
@@ -66,6 +68,9 @@ def test_version_two_ui_exposes_analysis_calibration_and_safe_audio_management()
         "calibration-chart",
         "unknown-speaker-policy",
         "extraction-mode",
+        "audio-processing-backend",
+        "retention-days",
+        "max-storage-gb",
         "save-policy",
     ):
         assert f'id="{control}"' in document
@@ -85,12 +90,16 @@ def test_analysis_ui_exposes_denoised_variant_and_async_action():
     for control in (
         "analysis-original-audio",
         "analysis-denoised-audio",
+        "manual-processing-backend",
         "extract-audio",
+        "reset-processing",
     ):
         assert f'id="{control}"' in document
     assert 'id="analysis-isolated-audio"' not in document
     assert "Ruis onderdrukken" in document
     assert "/process`" in script
+    assert "/processing`" in script
+    assert 'body: JSON.stringify({ backend })' in script
     assert "pollProcessing" in script
     assert "Extra audiobewerking" in script
     assert "Totale pipeline" in script

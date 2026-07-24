@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 
 os.environ["DATA_DIR"] = "/tmp/speaker-recognition-tests-unused"
 
 from fastapi.testclient import TestClient
 
 import app.api as api
+from app.audio_processor import ProcessedAudioResult
 from app.recognizer import SpeakerRecognizer
 from conftest import FakeEncoder, audio
 
@@ -95,6 +97,83 @@ def test_chunked_request_size_is_limited(tmp_path, monkeypatch):
             "/api/enroll", content=iter([b"1234567890", b"abcdefghij"]), headers=headers
         )
         assert response.status_code == 413
+
+
+def test_streaming_analysis_consumes_chunks_and_persists_drained_audio(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setattr(
+        api,
+        "settings",
+        replace(api.settings, audio_processing_backend="df3_streaming"),
+    )
+    monkeypatch.setitem(
+        api._policy, "audio_processing_backend", "df3_streaming"
+    )
+    api.recognizer = SpeakerRecognizer(
+        tmp_path,
+        0.8,
+        10,
+        FakeEncoder,
+        lambda wav, _rate: wav,
+        audio_processing_backend="df3_streaming",
+    )
+    received = bytearray()
+
+    def denoise_stream(chunks, sample_rate, *, timeout_seconds=12):
+        assert sample_rate == 16000
+        for chunk in chunks:
+            received.extend(chunk)
+        return ProcessedAudioResult(
+            denoised_pcm=bytes(received),
+            isolated_pcm=None,
+            sample_rate=sample_rate,
+            stages={
+                "denoise": "ready",
+                "model": "warm",
+                "streaming": "drained",
+            },
+            timings={
+                "audio_processing_ms": 40.0,
+                "post_utterance_ms": 8.0,
+            },
+            quality={
+                "denoised_passed": True,
+                "stateful": True,
+                "duration_delta_ms": 0.0,
+            },
+        )
+
+    monkeypatch.setattr(
+        api.recognizer, "denoise_audio_stream", denoise_stream
+    )
+    pcm = b"\x10\x00" * 1600
+    headers = {
+        "X-Ingress-Path": "/api/hassio_ingress/test",
+        "X-Audio-Sample-Rate": "16000",
+        "X-STT-Entity-ID": "stt.source",
+    }
+    with TestClient(api.app, headers=headers) as client:
+        client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Alice",
+                "samples": [{"audio": audio(12000).model_dump()}],
+            },
+        )
+        response = client.post(
+            "/api/analyze-stream",
+            content=iter([pcm[:999], pcm[999:]]),
+        )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert received == pcm
+    assert result["denoised_available"] is True
+    assert result["processing_stages"]["streaming"] == "drained"
+    assert result["processing_quality"]["duration_delta_ms"] == 0.0
+    assert result["timings"]["post_utterance_ms"] == 8.0
 
 
 def test_v2_analysis_filters_bulk_delete_and_public_paths(tmp_path, monkeypatch):
@@ -187,4 +266,145 @@ def test_target_audio_process_is_queued_and_exposes_new_variants(tmp_path, monke
         assert detail["timings"]["baseline_total_ms"] == 1000
         assert detail["timings"]["audio_processing_ms"] == 300
         assert detail["timings"]["total_ms"] == 1300
+        assert detail["processing_backend"] == "df2_batch"
+        assert detail["processing_timings"]["audio_processing_ms"] == 300
+        rerun = client.post(
+            f"/api/analysis/{recording['recording_id']}/process",
+            json={"backend": "df3_streaming"},
+        )
+        assert rerun.status_code == 409
+        reset = client.delete(
+            f"/api/analysis/{recording['recording_id']}/processing"
+        )
+        assert reset.status_code == 200
+        reset_detail = reset.json()
+        assert reset_detail["denoised_available"] is False
+        assert reset_detail["processing_status"] == "idle"
+        assert reset_detail["processing_backend"] is None
+        assert reset_detail["processing_timings"] == {}
+        assert reset_detail["timings"] == {
+            "stt_ms": 800,
+            "total_ms": 1000,
+        }
         assert client.get(f"/api/analysis/{recording['recording_id']}/audio?variant=isolated").status_code == 404
+
+
+def test_manual_df3_streams_persisted_wav_in_chunks(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    chunks_seen: list[bytes] = []
+
+    def denoise_stream(chunks, sample_rate, *, timeout_seconds=12):
+        chunks_seen.extend(chunks)
+        pcm = b"".join(chunks_seen)
+        return ProcessedAudioResult(
+            denoised_pcm=pcm,
+            isolated_pcm=None,
+            sample_rate=sample_rate,
+            stages={"streaming": "drained"},
+            timings={
+                "audio_processing_ms": 20,
+                "post_utterance_ms": 7,
+            },
+            quality={"stateful": True, "duration_preserved": True},
+        )
+
+    monkeypatch.setattr(
+        api.recognizer, "denoise_audio_stream", denoise_stream
+    )
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Alice",
+                "samples": [{"audio": audio(12000).model_dump()}],
+            },
+        )
+        recording = client.post(
+            "/api/analyze",
+            json={
+                "audio": audio(11000, seconds=1.1).model_dump(),
+                "source": "test",
+                "extraction_mode": "off",
+            },
+        ).json()
+        response = client.post(
+            f"/api/analysis/{recording['recording_id']}/process",
+            json={"backend": "df3_streaming"},
+        )
+        assert response.status_code == 202
+        for _ in range(40):
+            detail = client.get(
+                f"/api/analysis/{recording['recording_id']}"
+            ).json()
+            if detail["processing_status"] == "complete":
+                break
+            time.sleep(0.01)
+
+    assert len(chunks_seen) > 1
+    assert all(len(chunk) <= 640 for chunk in chunks_seen)
+    assert detail["processing_backend"] == "df3_streaming"
+    assert detail["denoised_available"] is True
+    assert detail["timings"]["post_utterance_ms"] == 7
+
+
+def test_pipeline_policy_persists_runtime_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    with TestClient(
+        api.app, headers={"X-Ingress-Path": "/api/hassio_ingress/test"}
+    ) as client:
+        response = client.patch(
+            "/api/pipeline-policy",
+            json={
+                "audio_processing_backend": "df3_streaming",
+                "retention_days": 21,
+                "max_storage_bytes": 123456789,
+            },
+        )
+        assert response.status_code == 200
+        policy = response.json()
+        assert policy["audio_processing_backend"] == "df3_streaming"
+        assert policy["retention_days"] == 21
+        assert policy["max_storage_bytes"] == 123456789
+        assert api.recognizer.catalog.retention_days == 21
+        assert api.recognizer.catalog.max_storage_bytes == 123456789
+        assert (
+            api.recognizer.catalog.get_setting("pipeline_policy")[
+                "audio_processing_backend"
+            ]
+            == "df3_streaming"
+        )
+
+
+def test_processing_reset_rejects_an_active_job(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+
+    class ActiveJob:
+        @staticmethod
+        def done():
+            return False
+
+    with TestClient(
+        api.app, headers={"X-Ingress-Path": "/api/hassio_ingress/test"}
+    ) as client:
+        recording = api.recognizer.catalog.create_recording(
+            b"\x01\x00" * 16_000, 16_000, source="test"
+        )
+        api.processing_tasks[recording["id"]] = ActiveJob()
+        try:
+            response = client.delete(
+                f"/api/analysis/{recording['id']}/processing"
+            )
+        finally:
+            api.processing_tasks.pop(recording["id"], None)
+
+    assert response.status_code == 409

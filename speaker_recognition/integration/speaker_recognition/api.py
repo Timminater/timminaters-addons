@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import time
+from collections.abc import AsyncIterable
 from typing import Any
 
 from aiohttp import ClientError, ClientSession
@@ -31,6 +32,7 @@ class SpeakerRecognitionApi:
             or {
                 "extraction_mode": "off",
                 "unknown_speaker_policy": "allow",
+                "audio_processing_backend": "df2_batch",
             }
         )
 
@@ -42,14 +44,18 @@ class SpeakerRecognitionApi:
         policy = await self._request("GET", "/api/pipeline-policy", timeout=3)
         extraction_mode = str(policy.get("extraction_mode", "off"))
         unknown_policy = str(policy.get("unknown_speaker_policy", "allow"))
+        backend = str(policy.get("audio_processing_backend", "df2_batch"))
         if extraction_mode not in {"off", "compare", "before_stt"}:
             extraction_mode = "off"
         if unknown_policy not in {"allow", "block"}:
             unknown_policy = "allow"
+        if backend not in {"df2_batch", "df3_streaming"}:
+            backend = "df2_batch"
         self._policy = {
             **policy,
             "extraction_mode": extraction_mode,
             "unknown_speaker_policy": unknown_policy,
+            "audio_processing_backend": backend,
         }
         self._policy_cached_at = now
         return dict(self._policy)
@@ -97,6 +103,39 @@ class SpeakerRecognitionApi:
             },
             timeout=45,
         )
+
+    async def async_analyze_stream(
+        self,
+        pcm_stream: AsyncIterable[bytes],
+        sample_rate: int,
+        *,
+        source_entity_id: str,
+        satellite_id: str | None,
+    ) -> dict[str, Any]:
+        """Upload PCM incrementally while the App advances stateful DF3."""
+        headers = {
+            **self._headers,
+            "Content-Type": "application/octet-stream",
+            "X-Audio-Sample-Rate": str(sample_rate),
+            "X-STT-Entity-ID": source_entity_id,
+        }
+        if satellite_id:
+            headers["X-Satellite-ID"] = satellite_id
+        try:
+            async with self._session.post(
+                f"{self._url}/api/analyze-stream",
+                headers=headers,
+                data=pcm_stream,
+                timeout=150,
+            ) as response:
+                if response.status >= 400:
+                    detail = await response.text()
+                    raise SpeakerRecognitionApiError(
+                        f"App returned HTTP {response.status}: {detail[:200]}"
+                    )
+                return await response.json()
+        except (ClientError, TimeoutError) as error:
+            raise SpeakerRecognitionApiError(str(error)) from error
 
     async def async_finalize_analysis(
         self, recording_id: str, details: dict[str, Any]

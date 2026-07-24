@@ -1,9 +1,11 @@
-FROM python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
+FROM python:3.11.15-slim-bookworm@sha256:b18992999dbe963a45a8a4da40ac2b1975be1a776d939d098c647482bcad5cba
 
 ARG BUILD_VERSION=1.0.0
 ARG BUILD_ARCH=amd64
 ARG DEEPFILTERNET2_REVISION=d375b2d8309e0935d165700c91da9de862a99c31
 ARG DEEPFILTERNET2_SHA256=850e695d1c27f2a7b4dcd89b16bc8d49367effc680b1369e995e31d46376cba7
+ARG PIPECAT_DF3_REVISION=212c7f684d41159b897a986ddfbb7ad667405ccd
+ARG PIPECAT_DF3_SHA256=2064706cf5488e723a3404de2f0c6a559dffbf35daf9ede0b382e2ab32ef5a60
 
 LABEL \
     io.hass.name="Speaker Recognition" \
@@ -17,6 +19,11 @@ LABEL \
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    RAYON_NUM_THREADS=1 \
     DATA_DIR=/data \
     PORT=8099
 
@@ -32,11 +39,21 @@ RUN apt-get update \
     && pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1 torchaudio==2.5.1 \
     && pip install -r requirements.txt \
     && curl -fsSL \
+      "https://github.com/vahidkowsari/pipecat-deepfilternet-stream/archive/${PIPECAT_DF3_REVISION}.tar.gz" \
+      -o /tmp/pipecat-deepfilternet-stream.tar.gz \
+    && echo "${PIPECAT_DF3_SHA256}  /tmp/pipecat-deepfilternet-stream.tar.gz" | sha256sum -c - \
+    && mkdir -p /tmp/pipecat-deepfilternet-stream \
+    && tar -xzf /tmp/pipecat-deepfilternet-stream.tar.gz \
+      --strip-components=1 -C /tmp/pipecat-deepfilternet-stream \
+    && pip install --no-deps /tmp/pipecat-deepfilternet-stream \
+    && curl -fsSL \
       "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/${DEEPFILTERNET2_REVISION}/models/DeepFilterNet2.zip" \
       -o /tmp/deepfilternet2.zip \
     && echo "${DEEPFILTERNET2_SHA256}  /tmp/deepfilternet2.zip" | sha256sum -c - \
     && unzip -q /tmp/deepfilternet2.zip -d /opt/models \
-    && rm -f /tmp/deepfilternet2.zip \
+    && rm -rf /tmp/deepfilternet2.zip \
+      /tmp/pipecat-deepfilternet-stream \
+      /tmp/pipecat-deepfilternet-stream.tar.gz \
     && apt-get purge -y --auto-remove build-essential curl unzip \
     && rm -rf /var/lib/apt/lists/*
 

@@ -46,6 +46,17 @@ De globale policy in de webinterface bevat:
 
 DeepFilterNet2 werkt intern op 48 kHz en levert 16 kHz mono-PCM met dezelfde tijdlijn terug. Clips tot maximaal 120 seconden worden ondersteund. Live STT heeft voorrang op handmatige Analyse-taken. De modelworker wordt tijdens het starten van de add-on opgewarmd en blijft resident tot de add-on stopt. Daardoor zijn gebruikersaanvragen vanaf de eerste opname warm en onderling vergelijkbaar. Het resident houden activeert de audiobewerking niet: in modus `off` blijft de worker alleen gereed in het geheugen.
 
+De backendkeuze op de pagina **Instellingen** staat standaard op `DF2 batch`
+en wordt lokaal bewaard; toegang tot `config.yaml` is niet nodig.
+`DF3 stateful streaming` activeert voor **Vóór STT** de experimentele stateful
+Pipecat/DeepFilterNet3-route. De companion streamt WAV/PCM dan tijdens de
+opname naar de App; de 16 → 48 → 16 kHz-keten wordt dus niet na afloop als
+batch gestart. Aan het einde worden input-SOXR, een eventuele gedeeltelijke
+hop, drie model-lookaheadhops en output-SOXR expliciet afgevoerd. Bij iedere
+fout of afgekeurde kwaliteit gebruikt dezelfde aanvraag de resident DF2-route.
+Laat `DF2 batch` geselecteerd totdat de doelomgeving- en kwaliteitseisen in
+[DF3_STREAMING_VALIDATION.md](DF3_STREAMING_VALIDATION.md) zijn bewezen.
+
 Wanneer de backend niet bereikbaar is, blijft de normale `allow`-policy fail-open. Een actief bekende `block`-policy faalt gesloten.
 
 ## Analyse
@@ -61,9 +72,20 @@ Per item zijn, voor zover beschikbaar, zichtbaar:
 - herkennings-, warme denoise-, model-laad-, STT- en totale verwerkingstijd;
 - modelstappen, kwaliteitsmetingen, gebruikte audiovariant, fallbackreden, blokkering en doorgifte aan de conversation-agent.
 
-Met **Ruis onderdrukken** start je een asynchrone verwerking zonder een profiel te kiezen. De golfvormselectie blijft uitsluitend bedoeld om een handmatig gekozen deel aan een bestaand of nieuw enrollmentprofiel toe te voegen. Analyse-items kunnen afzonderlijk, als selectie of gezamenlijk worden verwijderd.
+Met **Ruis onderdrukken** start je een asynchrone verwerking zonder een profiel
+te kiezen. Per uitvoering kun je DF2 batch of DF3 stateful streaming selecteren;
+DF3 leest de bestaande WAV in begrensde blokken en gebruikt dezelfde drainroute
+als live audio. Met **Ruisonderdrukking wissen** verwijder je alleen de afgeleide
+WAV en verwerkingsmetingen, zodat je opnieuw kunt verwerken. Origineel,
+transcript en herkenningsresultaat blijven behouden. De golfvormselectie blijft
+uitsluitend bedoeld om een handmatig gekozen deel aan een bestaand of nieuw
+enrollmentprofiel toe te voegen. Analyse-items kunnen afzonderlijk, als selectie
+of gezamenlijk worden verwijderd.
 
-Analyse-audio wordt standaard zeven dagen bewaard, met daarnaast een globale limiet van 2 GiB. Bij overschrijding worden de oudste opnamen eerst verwijderd. Deze tijdelijke WAV's zijn uitgesloten van Home Assistant App-backups.
+Analyse-audio wordt standaard zeven dagen bewaard, met daarnaast een globale
+limiet van 2 GiB. Beide waarden zijn via **Instellingen** aanpasbaar en worden
+direct toegepast; bij overschrijding worden de oudste opnamen eerst verwijderd.
+Deze tijdelijke WAV's zijn uitgesloten van Home Assistant App-backups.
 
 ## Kalibratie
 

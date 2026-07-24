@@ -54,8 +54,10 @@ def test_v20_catalogue_migrates_without_losing_recordings(tmp_path):
     assert migrated["denoised_path"] is None
     assert migrated["isolated_path"] is None
     assert migrated["processing_status"] == "idle"
+    assert migrated["processing_backend"] is None
     assert migrated["processing_stages"] == {}
     assert migrated["processing_quality"] == {}
+    assert migrated["processing_timings"] == {}
 
 
 def test_retention_removes_analysis_variants_but_keeps_enrollment_audio(tmp_path):
@@ -79,3 +81,57 @@ def test_retention_removes_analysis_variants_but_keeps_enrollment_audio(tmp_path
     assert removed == 1
     assert catalogue.get_recording(recording["id"]) is None
     assert sample_path is not None and sample_path.is_file()
+
+
+def test_reset_processing_preserves_source_and_recognition_metadata(tmp_path):
+    catalogue = AudioCatalog(tmp_path)
+    catalogue.initialize()
+    recording = catalogue.create_recording(
+        b"\x01\x00" * 16_000,
+        16_000,
+        source="test",
+        transcript="bewaar mij",
+        outcome="matched",
+        speaker_id="speaker-id",
+        confidence=0.91,
+        timings={"stt_ms": 80, "total_ms": 100},
+        labels={"person_entity_id": "person.tim"},
+    )
+    catalogue.save_audio_variant(
+        recording["id"], "denoised", b"\x02\x00" * 16_000, 16_000
+    )
+    catalogue.update_recording(
+        recording["id"],
+        processing_status="complete",
+        processing_backend="df3_streaming",
+        processing_stages={"streaming": "drained"},
+        processing_quality={"stateful": True},
+        processing_timings={
+            "audio_processing_ms": 25,
+            "post_utterance_ms": 8,
+        },
+        labels={
+            "person_entity_id": "person.tim",
+            "audio_variant": "denoised",
+            "fallback": False,
+            "quality": {"stateful": True},
+        },
+    )
+    denoised = catalogue.audio_path(recording["id"], "denoised")
+
+    reset = catalogue.reset_processing(recording["id"])
+    repeated = catalogue.reset_processing(recording["id"])
+
+    assert denoised is not None and not denoised.exists()
+    assert reset is not None and repeated is not None
+    assert reset["transcript"] == "bewaar mij"
+    assert reset["speaker_id"] == "speaker-id"
+    assert reset["confidence"] == 0.91
+    assert reset["timings"] == {"stt_ms": 80, "total_ms": 100}
+    assert reset["processing_timings"] == {}
+    assert reset["processing_backend"] is None
+    assert reset["processing_status"] == "idle"
+    assert reset["labels"] == {
+        "person_entity_id": "person.tim",
+        "audio_variant": "original",
+    }

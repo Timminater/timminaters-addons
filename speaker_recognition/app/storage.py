@@ -62,8 +62,10 @@ class AudioCatalog:
                       bytes INTEGER NOT NULL DEFAULT 0, labels_json TEXT NOT NULL DEFAULT '{}',
                       denoised_path TEXT, isolated_path TEXT,
                       processing_status TEXT NOT NULL DEFAULT 'idle', processing_speaker_id TEXT,
+                      processing_backend TEXT,
                       processing_stages_json TEXT NOT NULL DEFAULT '{}', processing_quality_json TEXT NOT NULL DEFAULT '{}',
-                      processing_fallback_reason TEXT
+                      processing_fallback_reason TEXT,
+                      processing_timings_json TEXT NOT NULL DEFAULT '{}'
                     );
                     CREATE INDEX IF NOT EXISTS recordings_created ON recordings(created_at DESC);
                     CREATE INDEX IF NOT EXISTS recordings_outcome ON recordings(outcome);
@@ -90,9 +92,11 @@ class AudioCatalog:
                     "denoised_path": "TEXT", "isolated_path": "TEXT",
                     "processing_status": "TEXT NOT NULL DEFAULT 'idle'",
                     "processing_speaker_id": "TEXT",
+                    "processing_backend": "TEXT",
                     "processing_stages_json": "TEXT NOT NULL DEFAULT '{}'",
                     "processing_quality_json": "TEXT NOT NULL DEFAULT '{}'",
                     "processing_fallback_reason": "TEXT",
+                    "processing_timings_json": "TEXT NOT NULL DEFAULT '{}'",
                 }
                 for column, definition in migrations.items():
                     if column not in existing:
@@ -163,9 +167,16 @@ class AudioCatalog:
         columns = {
             "source", "satellite_id", "stt_entity_id", "transcript", "outcome", "speaker_id", "speaker_name",
             "confidence", "threshold", "margin", "extraction_mode", "extraction_status", "conversation_forwarded",
-            "processing_status", "processing_speaker_id", "processing_fallback_reason",
+            "processing_status", "processing_speaker_id", "processing_backend",
+            "processing_fallback_reason", "denoised_path",
         }
-        json_columns = {"scores": "scores_json", "segments": "segments_json", "timings": "timings_json", "labels": "labels_json", "processing_stages": "processing_stages_json", "processing_quality": "processing_quality_json"}
+        json_columns = {
+            "scores": "scores_json", "segments": "segments_json",
+            "timings": "timings_json", "labels": "labels_json",
+            "processing_stages": "processing_stages_json",
+            "processing_quality": "processing_quality_json",
+            "processing_timings": "processing_timings_json",
+        }
         values: list[Any] = []
         clauses: list[str] = []
         for key, value in changes.items():
@@ -180,6 +191,65 @@ class AudioCatalog:
         values.extend([_iso(), recording_id])
         with self._lock, self._connect() as db:
             db.execute(f"UPDATE recordings SET {', '.join(clauses)}, updated_at=? WHERE id=?", values)
+        return self.get_recording(recording_id)
+
+    def reset_processing(self, recording_id: str) -> dict[str, Any] | None:
+        """Remove only reproducible denoise output and processing metadata."""
+        self._safe_id(recording_id)
+        with self._lock:
+            recording = self.get_recording(recording_id)
+            if recording is None:
+                return None
+            raw_path = recording.get("denoised_path")
+            if raw_path:
+                denoised = Path(raw_path).resolve()
+                allowed = self.analysis_dir.resolve()
+                if allowed not in denoised.parents:
+                    raise ValueError("Denoised audio path is outside analysis storage")
+                denoised.unlink(missing_ok=True)
+
+            labels = dict(recording.get("labels") or {})
+            for key in ("fallback", "fallback_reason", "quality"):
+                labels.pop(key, None)
+            labels["audio_variant"] = "original"
+
+            # New records keep processor timings separate. For records written
+            # by 2.1.0 before this migration, reconstruct the original baseline.
+            timings = dict(recording.get("timings") or {})
+            baseline_total = timings.pop("baseline_total_ms", None)
+            for key in (
+                "audio_processing_ms", "denoise_ms", "model_load_ms",
+                "cold_request_ms", "cold_start_ms", "post_utterance_ms",
+                "stream_compute_ms", "stream_wall_ms", "df3_load_ms",
+            ):
+                timings.pop(key, None)
+            if baseline_total is not None:
+                timings["total_ms"] = baseline_total
+            extraction_status = (
+                "disabled"
+                if recording.get("extraction_mode") == "off"
+                else "not_processed"
+            )
+
+            with self._connect() as db:
+                db.execute(
+                    """
+                    UPDATE recordings
+                    SET denoised_path=NULL, processing_status='idle',
+                        processing_speaker_id=NULL, processing_backend=NULL,
+                        processing_stages_json='{}',
+                        processing_quality_json='{}',
+                        processing_fallback_reason=NULL,
+                        processing_timings_json='{}',
+                        extraction_status=?, timings_json=?, labels_json=?,
+                        updated_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        extraction_status, json.dumps(timings),
+                        json.dumps(labels), _iso(), recording_id,
+                    ),
+                )
         return self.get_recording(recording_id)
 
     def save_extracted(self, recording_id: str, pcm: bytes, sample_rate: int, status: str = "ready") -> dict[str, Any] | None:
@@ -214,7 +284,13 @@ class AudioCatalog:
     @staticmethod
     def _row(row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
-        for source, destination in (("scores_json", "scores"), ("segments_json", "segments"), ("timings_json", "timings"), ("labels_json", "labels"), ("processing_stages_json", "processing_stages"), ("processing_quality_json", "processing_quality")):
+        for source, destination in (
+            ("scores_json", "scores"), ("segments_json", "segments"),
+            ("timings_json", "timings"), ("labels_json", "labels"),
+            ("processing_stages_json", "processing_stages"),
+            ("processing_quality_json", "processing_quality"),
+            ("processing_timings_json", "processing_timings"),
+        ):
             result[destination] = json.loads(result.pop(source) or "{}")
         result["conversation_forwarded"] = bool(result["conversation_forwarded"]) if result["conversation_forwarded"] is not None else None
         return result

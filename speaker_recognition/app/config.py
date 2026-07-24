@@ -18,6 +18,7 @@ class Settings:
     max_audio_seconds: int
     api_token: str
     companion_token: str
+    audio_processing_backend: str
     port: int
 
     @classmethod
@@ -45,6 +46,15 @@ class Settings:
             os.replace(temporary, companion_token_path)
         if not companion_token:
             raise RuntimeError("The companion integration token is empty")
+        audio_processing_backend = str(
+            options.get("audio_processing_backend", "df2_batch")
+        )
+        if audio_processing_backend not in {"df2_batch", "df3_streaming"}:
+            logging.getLogger(__name__).warning(
+                "Unsupported audio_processing_backend %r; using df2_batch",
+                audio_processing_backend,
+            )
+            audio_processing_backend = "df2_batch"
         return cls(
             data_dir=data_dir,
             log_level=str(options.get("log_level", "info")).upper(),
@@ -52,5 +62,6 @@ class Settings:
             max_audio_seconds=max_seconds,
             api_token=str(options.get("api_token", "")).strip(),
             companion_token=companion_token,
+            audio_processing_backend=audio_processing_backend,
             port=int(os.environ.get("PORT", "8099")),
         )

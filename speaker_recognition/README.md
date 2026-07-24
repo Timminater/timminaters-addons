@@ -28,6 +28,8 @@ Leg per persoon liefst 2–3 heldere fragmenten van 5–30 seconden vast. Gebrui
 
 Alleen `amd64` wordt gepubliceerd. De modellen zitten offline in de image en downloaden tijdens gebruik niets. Geef de Home Assistant-VM bij voorkeur 6 GB RAM. DeepFilterNet2 wordt tijdens het starten van de add-on opgewarmd en blijft resident (in de validatietest circa 323 MiB), ook wanneer audiobewerking uitstaat. Er wordt dan geen audio verwerkt, maar een latere aanvraag heeft geen koude modelstart.
 
+De experimentele Pipecat/DeepFilterNet3-route is expliciet te kiezen op de pagina **Instellingen**; `DF2 batch` blijft de standaard en veilige rollback. DF3 verwerkt inkomende `before_stt`-audio per 10 ms-hop en voert aan het utterance-einde beide SOXR-resamplers en model-lookahead af. In **Analyse** kan dezelfde stateful route per bestaande WAV worden gekozen. Zie [DF3_STREAMING_VALIDATION.md](DF3_STREAMING_VALIDATION.md) voor pins, draincontract, bewijs en nog openstaande acceptatietests.
+
 Zie [DOCS.md](DOCS.md) voor de werking, instellingen, opslag en privacy-informatie.
 
 ## Herkomst

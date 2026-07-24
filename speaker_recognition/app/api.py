@@ -7,6 +7,7 @@ import base64
 import binascii
 import html
 import logging
+import queue
 import secrets
 import socket
 import time
@@ -60,11 +61,13 @@ from app.satellite import (
 _LOGGER = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).parent.parent / "web"
 MAX_REQUEST_BYTES = 64 * 1024 * 1024
+STREAM_FINALIZE_TIMEOUT_SECONDS = 12
 settings = Settings.load()
 recognizer = SpeakerRecognizer(
     data_dir=settings.data_dir,
     threshold=settings.recognition_threshold,
     max_audio_seconds=settings.max_audio_seconds,
+    audio_processing_backend=settings.audio_processing_backend,
 )
 home_assistant = HomeAssistantClient()
 satellite_enrollment = SatelliteEnrollmentCoordinator()
@@ -75,6 +78,7 @@ _policy: dict[str, object] = {
     "unknown_speaker_policy": "allow", "extraction_mode": "off",
     "min_margin": 0.0, "retention_days": 7,
     "max_storage_bytes": 2 * 1024 * 1024 * 1024,
+    "audio_processing_backend": settings.audio_processing_backend,
 }
 
 
@@ -82,13 +86,16 @@ _policy: dict[str, object] = {
 async def lifespan(_: FastAPI):
     global maintenance_task
     await asyncio.to_thread(recognizer.initialize)
+    saved_policy = recognizer.catalog.get_setting("pipeline_policy", {})
+    if isinstance(saved_policy, dict):
+        _policy.update({key: value for key, value in saved_policy.items() if key in _policy})
+    recognizer.configure_audio_processing_backend(
+        str(_policy["audio_processing_backend"])
+    )
     # Start the multiprocessing worker from the main server thread before the
     # app accepts traffic. Forking it from asyncio's thread pool is unsafe on
     # Linux once other worker threads exist.
     recognizer.warm_audio_processor()
-    saved_policy = recognizer.catalog.get_setting("pipeline_policy", {})
-    if isinstance(saved_policy, dict):
-        _policy.update({key: value for key, value in saved_policy.items() if key in _policy})
     recognizer.catalog.retention_days = int(_policy["retention_days"])
     recognizer.catalog.max_storage_bytes = int(_policy["max_storage_bytes"])
     maintenance_task = asyncio.create_task(_catalogue_maintenance(), name="speaker-recognition-catalogue-cleanup")
@@ -142,6 +149,10 @@ async def limit_request_size(request: Request, call_next):
                 return Response(content="Request body is too large", status_code=413)
         except ValueError:
             return Response(content="Invalid Content-Length", status_code=400)
+    # This route enforces its limit while consuming ASGI chunks. Buffering it
+    # in middleware would turn stateful processing back into disguised batch.
+    if request.url.path == "/api/analyze-stream":
+        return await call_next(request)
     body = bytearray()
     async for chunk in request.stream():
         body.extend(chunk)
@@ -241,16 +252,30 @@ async def get_pipeline_policy() -> PipelinePolicy:
 
 @app.patch("/api/pipeline-policy", response_model=PipelinePolicy, dependencies=[Depends(authorize_api)])
 async def patch_pipeline_policy(request: PipelinePolicyPatch) -> PipelinePolicy:
-    for key, value in request.model_dump(exclude_none=True).items():
+    changes = request.model_dump(exclude_none=True)
+    for key, value in changes.items():
         _policy[key] = value
+    if "audio_processing_backend" in changes:
+        recognizer.configure_audio_processing_backend(
+            str(_policy["audio_processing_backend"])
+        )
     recognizer.catalog.retention_days = int(_policy["retention_days"])
     recognizer.catalog.max_storage_bytes = int(_policy["max_storage_bytes"])
     recognizer.catalog.set_setting("pipeline_policy", _policy)
+    if {"retention_days", "max_storage_bytes"} & changes.keys():
+        await asyncio.to_thread(
+            recognizer.catalog.cleanup,
+            None,
+            set(processing_tasks),
+        )
     return _policy_response()
 
 
 def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = False) -> dict:
     result = dict(recording)
+    result["timings"] = _merge_processing_timings(
+        result.get("timings"), result.get("processing_timings")
+    )
     original_path = result.pop("original_path", None)
     extracted_path = result.pop("extracted_path", None)
     denoised_path = result.pop("denoised_path", None)
@@ -334,6 +359,22 @@ def _read_recording_audio(path: Path) -> AudioInput:
         )
 
 
+def _recording_sample_rate(path: Path) -> int:
+    with wave.open(str(path), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise ValueError("Unsupported audio format")
+        return int(handle.getframerate())
+
+
+def _iter_recording_pcm(path: Path, frames_per_chunk: int = 320):
+    """Yield bounded PCM blocks so persisted WAV processing stays stateful."""
+    with wave.open(str(path), "rb") as handle:
+        if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+            raise ValueError("Unsupported audio format")
+        while chunk := handle.readframes(frames_per_chunk):
+            yield chunk
+
+
 def _merge_processing_timings(
     existing: dict | None,
     processing: dict | None,
@@ -376,47 +417,92 @@ def _merge_processing_timings(
 async def _run_target_processing(
     recording_id: str,
     _speaker_id: str | None = None,
+    backend: str = "df2_batch",
 ) -> None:
     """Run optional denoising and persist a successful variant."""
     try:
         await asyncio.to_thread(
             recognizer.catalog.update_recording, recording_id,
-            processing_status="running", processing_stages={"queue": "running"},
+            processing_status="running", processing_backend=backend,
+            processing_stages={"queue": "running"},
         )
         path = await asyncio.to_thread(recognizer.catalog.audio_path, recording_id, "original")
         if not path:
             raise ValueError("Recording not found")
-        processor = getattr(recognizer, "denoise_audio", None)
-        if not callable(processor):
-            raise RuntimeError("Denoise processing engine is not available")
         audio = await asyncio.to_thread(_read_recording_audio, path)
-        # Manual Analyse jobs may contain up to 120 seconds of audio. They are
-        # preemptible so a live Assist request always gets the worker first.
-        result = await asyncio.to_thread(
-            processor,
-            audio,
-            timeout_seconds=180,
-            priority="analysis",
-        )
+        requested_backend = backend
+        requested_fallback = None
+        processing_started = time.perf_counter()
+        if backend == "df3_streaming":
+            result = await asyncio.to_thread(
+                recognizer.denoise_audio_stream,
+                _iter_recording_pcm(path),
+                _recording_sample_rate(path),
+                timeout_seconds=180,
+            )
+            requested_fallback = _processing_value(
+                result, "fallback_reason"
+            )
+            if not _processing_value(result, "denoised_pcm"):
+                result = await asyncio.to_thread(
+                    recognizer.denoise_audio,
+                    audio,
+                    timeout_seconds=180,
+                    priority="analysis",
+                )
+                backend = "df2_batch"
+                quality = dict(_processing_value(result, "quality", {}))
+                quality.update(
+                    {
+                        "requested_backend": requested_backend,
+                        "fallback_backend": backend,
+                        "df3_fallback_reason": requested_fallback,
+                    }
+                )
+                if isinstance(result, dict):
+                    result["quality"] = quality
+                else:
+                    result.quality = quality
+        else:
+            result = await asyncio.to_thread(
+                recognizer.denoise_audio,
+                audio,
+                timeout_seconds=180,
+                priority="analysis",
+            )
         sample_rate = int(_processing_value(result, "sample_rate", 16000))
         denoised = _processing_value(result, "denoised_pcm")
         if denoised:
             await asyncio.to_thread(recognizer.catalog.save_audio_variant, recording_id, "denoised", denoised, sample_rate)
         fallback_reason = _processing_value(result, "fallback_reason")
+        if requested_backend != backend and requested_fallback:
+            fallback_reason = f"df3_to_df2:{requested_fallback}"
+        processing_timings = dict(
+            _processing_value(result, "timings", {})
+        )
+        if backend == "df3_streaming":
+            processing_timings["audio_processing_ms"] = round(
+                (time.perf_counter() - processing_started) * 1000, 2
+            )
         variant = "denoised" if denoised else "original"
         current = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id) or {}
         await asyncio.to_thread(
             recognizer.catalog.update_recording,
             recording_id,
             processing_status="complete",
+            processing_backend=backend,
             processing_stages=_processing_value(result, "stages", {}),
             processing_quality=_processing_value(result, "quality", {}),
             processing_fallback_reason=fallback_reason,
-            timings=_merge_processing_timings(
-                current.get("timings"),
-                _processing_value(result, "timings", {}),
-            ),
-            labels={**(current.get("labels") or {}), "audio_variant": variant, "fallback": variant != "denoised"},
+            processing_timings=processing_timings,
+            labels={
+                **(current.get("labels") or {}),
+                "audio_variant": variant,
+                "fallback": (
+                    variant != "denoised" or requested_backend != backend
+                ),
+                "fallback_reason": fallback_reason,
+            },
         )
     except asyncio.CancelledError:
         raise
@@ -433,6 +519,212 @@ async def _run_target_processing(
             )
     finally:
         processing_tasks.pop(recording_id, None)
+
+
+@app.post("/api/analyze-stream", dependencies=[Depends(authorize_api)])
+async def analyze_stream(
+    request: Request,
+    sample_rate: int = Header(alias="X-Audio-Sample-Rate"),
+    source_entity_id: str = Header(alias="X-STT-Entity-ID"),
+    satellite_id: str | None = Header(default=None, alias="X-Satellite-ID"),
+) -> dict:
+    """Process PCM during upload, then persist/recognize the drained utterance."""
+    if _policy["audio_processing_backend"] != "df3_streaming":
+        raise HTTPException(
+            status_code=409,
+            detail="Stateful DF3 is not configured",
+        )
+    if sample_rate < 8_000 or sample_rate > 48_000:
+        raise HTTPException(status_code=400, detail="Unsupported sample rate")
+
+    sentinel = object()
+    chunks: queue.Queue[bytes | object] = queue.Queue()
+
+    def incoming():
+        while True:
+            item = chunks.get()
+            if item is sentinel:
+                return
+            yield bytes(item)
+
+    processor_task = asyncio.create_task(
+        asyncio.to_thread(
+            recognizer.denoise_audio_stream,
+            incoming(),
+            sample_rate,
+            timeout_seconds=STREAM_FINALIZE_TIMEOUT_SECONDS,
+        ),
+        name="speaker-recognition-df3-stream",
+    )
+    original = bytearray()
+    pending = b""
+    body_error: HTTPException | None = None
+    max_audio_bytes = min(
+        MAX_REQUEST_BYTES,
+        settings.max_audio_seconds * sample_rate * 2,
+    )
+    try:
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            combined = pending + chunk
+            complete = len(combined) - (len(combined) % 2)
+            pending = combined[complete:]
+            pcm = combined[:complete]
+            if pcm:
+                original.extend(pcm)
+                if len(original) > max_audio_bytes:
+                    body_error = HTTPException(
+                        status_code=413,
+                        detail="Streaming audio exceeds the configured limit",
+                    )
+                    break
+                chunks.put(pcm)
+        if pending and body_error is None:
+            body_error = HTTPException(
+                status_code=400,
+                detail="Streaming audio ended with an incomplete PCM16 sample",
+            )
+    finally:
+        chunks.put(sentinel)
+
+    processed = await processor_task
+    if body_error is not None:
+        raise body_error
+    if not original:
+        raise HTTPException(status_code=400, detail="Streaming audio is empty")
+
+    audio_input = AudioInput(
+        audio_data=base64.b64encode(original).decode(),
+        sample_rate=sample_rate,
+    )
+    requested_fallback = processed.fallback_reason
+    if processed.denoised_pcm is None:
+        # The resident DF2/PyTorch path remains the rollback for any startup,
+        # stream, drain or quality failure in the explicitly selected route.
+        processed = await asyncio.to_thread(
+            recognizer.denoise_audio,
+            audio_input,
+            timeout_seconds=STREAM_FINALIZE_TIMEOUT_SECONDS,
+        )
+        processed.quality["requested_backend"] = "df3_streaming"
+        processed.quality["fallback_backend"] = "df2_batch"
+        if requested_fallback:
+            processed.quality["df3_fallback_reason"] = requested_fallback
+
+    # Reuse the established persistence and original-audio recognition path,
+    # but do not run its batch denoiser a second time.
+    payload = await analyze(
+        AnalyzeRequest(
+            audio=audio_input,
+            source="pipeline",
+            satellite_id=satellite_id,
+            stt_entity_id=source_entity_id,
+            extraction_mode="off",
+        )
+    )
+    recording_id = str(payload["recording_id"])
+    detailed = None
+    if processed.denoised_pcm and not payload.get("matched"):
+        calibration = recognizer.catalog.calibration()
+        threshold = (
+            float(calibration["threshold"])
+            if calibration
+            else settings.recognition_threshold
+        )
+        margin = (
+            float(calibration["margin"])
+            if calibration
+            else float(_policy["min_margin"])
+        )
+        denoised_input = AudioInput(
+            audio_data=base64.b64encode(processed.denoised_pcm).decode(),
+            sample_rate=processed.sample_rate,
+        )
+        detailed = await asyncio.to_thread(
+            recognizer.recognize_detailed,
+            denoised_input,
+            threshold=threshold,
+            min_margin=margin,
+        )
+        if detailed.speaker is not None:
+            await asyncio.to_thread(
+                recognizer.catalog.update_recording,
+                recording_id,
+                outcome="matched",
+                speaker_id=detailed.speaker.id,
+                speaker_name=detailed.speaker.name,
+                confidence=detailed.confidence,
+                threshold=detailed.threshold,
+                margin=detailed.margin,
+                scores=detailed.scores,
+                segments=detailed.candidates,
+            )
+
+    if processed.denoised_pcm:
+        await asyncio.to_thread(
+            recognizer.catalog.save_audio_variant,
+            recording_id,
+            "denoised",
+            processed.denoised_pcm,
+            processed.sample_rate,
+        )
+    current = (
+        await asyncio.to_thread(
+            recognizer.catalog.get_recording, recording_id
+        )
+        or {}
+    )
+    variant = "denoised" if processed.denoised_pcm else "original"
+    labels = dict(current.get("labels") or {})
+    labels.update(
+        {
+            "audio_variant": variant,
+            "fallback": requested_fallback is not None or variant == "original",
+            "fallback_reason": requested_fallback,
+            "quality": processed.quality,
+        }
+    )
+    recording = await asyncio.to_thread(
+        recognizer.catalog.update_recording,
+        recording_id,
+        extraction_mode="before_stt",
+        extraction_status="ready" if variant == "denoised" else "failed",
+        processing_status="complete",
+        processing_backend=(
+            "df2_batch"
+            if processed.quality.get("fallback_backend") == "df2_batch"
+            else "df3_streaming"
+        ),
+        processing_speaker_id=(
+            detailed.speaker.id
+            if detailed is not None and detailed.speaker is not None
+            else current.get("speaker_id")
+        ),
+        processing_stages=processed.stages,
+        processing_quality=processed.quality,
+        processing_fallback_reason=requested_fallback,
+        processing_timings={
+            **processed.timings,
+            **(
+                {
+                    "audio_processing_ms": processed.timings.get(
+                        "post_utterance_ms", 0.0
+                    )
+                }
+                if processed.quality.get("fallback_backend") != "df2_batch"
+                else {}
+            ),
+        },
+        labels=labels,
+    )
+    response = _analysis_payload(recording or current, detailed)
+    if processed.denoised_pcm:
+        response["denoised_audio"] = {
+            "audio_data": base64.b64encode(processed.denoised_pcm).decode(),
+            "sample_rate": processed.sample_rate,
+        }
+    return response
 
 
 @app.post("/api/analyze", dependencies=[Depends(authorize_api)])
@@ -535,11 +827,12 @@ async def analyze(request: AnalyzeRequest) -> dict:
             if processed is not None:
                 updates.update({
                     "processing_status": "complete",
+                    "processing_backend": "df2_batch",
                     "processing_speaker_id": detailed.speaker.id if detailed.speaker else None,
                     "processing_stages": processed.stages,
                     "processing_quality": processed.quality,
                     "processing_fallback_reason": processed.fallback_reason,
-                    "timings": {**detailed.timings, **processed.timings},
+                    "processing_timings": processed.timings,
                 })
             elif mode == "before_stt":
                 updates.update(
@@ -578,11 +871,17 @@ async def analyze(request: AnalyzeRequest) -> dict:
                     recognizer.catalog.update_recording,
                     recording["id"],
                     processing_status="queued",
+                    processing_backend=str(
+                        _policy["audio_processing_backend"]
+                    ),
                     processing_speaker_id=None,
                     processing_stages={"queue": "queued"},
                 ) or recording
                 task = asyncio.create_task(
-                    _run_target_processing(recording["id"]),
+                    _run_target_processing(
+                        recording["id"],
+                        backend=str(_policy["audio_processing_backend"]),
+                    ),
                     name=f"speaker-recognition-compare-{recording['id']}",
                 )
                 processing_tasks[recording["id"]] = task
@@ -879,27 +1178,62 @@ async def recording_audio(recording_id: str, variant: str = "original") -> FileR
     dependencies=[Depends(authorize_api)],
 )
 async def process_target_audio(recording_id: str, request: ProcessTargetAudioRequest) -> dict:
-    """Queue optional DeepFilterNet2 denoising."""
+    """Queue optional DF2 batch or true stateful DF3 denoising."""
     recording = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id)
     if not recording:
         raise HTTPException(status_code=404, detail="Recording not found")
     existing = processing_tasks.get(recording_id)
     if existing and not existing.done():
         return _analysis_payload(recording)
+    if recording.get("denoised_path"):
+        raise HTTPException(
+            status_code=409,
+            detail="Wis de bestaande ruisonderdrukking voordat je opnieuw verwerkt",
+        )
+    backend = request.backend or str(_policy["audio_processing_backend"])
     recording = await asyncio.to_thread(
         recognizer.catalog.update_recording,
         recording_id,
         processing_status="queued",
+        processing_backend=backend,
         processing_speaker_id=None,
         processing_stages={"queue": "queued"},
         processing_quality={},
+        processing_timings={},
         processing_fallback_reason=None,
     ) or recording
     task = asyncio.create_task(
-        _run_target_processing(recording_id),
+        _run_target_processing(recording_id, backend=backend),
         name=f"speaker-recognition-process-{recording_id}",
     )
     processing_tasks[recording_id] = task
+    return _analysis_payload(recording)
+
+
+@app.delete(
+    "/api/recordings/{recording_id}/processing",
+    dependencies=[Depends(authorize_api)],
+)
+@app.delete(
+    "/api/analysis/{recording_id}/processing",
+    dependencies=[Depends(authorize_api)],
+)
+async def reset_target_processing(recording_id: str) -> dict:
+    """Remove only reproducible denoise output and processor measurements."""
+    existing = processing_tasks.get(recording_id)
+    if existing and not existing.done():
+        raise HTTPException(
+            status_code=409,
+            detail="Ruisonderdrukking is nog actief",
+        )
+    try:
+        recording = await asyncio.to_thread(
+            recognizer.catalog.reset_processing, recording_id
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    if recording is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
     return _analysis_payload(recording)
 
 

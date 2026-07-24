@@ -14,6 +14,7 @@ import wave
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Callable, Protocol
 
 import numpy as np
@@ -74,6 +75,7 @@ class SpeakerRecognizer:
         encoder_factory: Callable[[], Encoder] = _default_encoder,
         preprocess: Callable[[NDArray[np.float32], int], NDArray[np.float32]] = _default_preprocess,
         min_margin: float = 0.0,
+        audio_processing_backend: str = "df2_batch",
     ) -> None:
         self._profiles_dir = data_dir / "speakers"
         self._registry_path = self._profiles_dir / "registry.json"
@@ -87,7 +89,9 @@ class SpeakerRecognizer:
         self._embeddings: dict[str, NDArray[np.float32]] = {}
         self._lock = threading.RLock()
         self.catalog = AudioCatalog(data_dir)
-        self._audio_processor = TargetAudioProcessor()
+        self._audio_processor = TargetAudioProcessor(
+            backend=audio_processing_backend
+        )
 
     @property
     def ready(self) -> bool:
@@ -112,6 +116,10 @@ class SpeakerRecognizer:
     def warm_audio_processor(self) -> bool:
         """Load the optional denoiser once and keep it resident."""
         return self._audio_processor.start()
+
+    def configure_audio_processing_backend(self, backend: str) -> None:
+        """Change the preferred runtime backend without restarting models."""
+        self._audio_processor.configure_backend(backend)
 
     def enroll(
         self,
@@ -348,6 +356,20 @@ class SpeakerRecognizer:
             fallback_reason=(
                 None if result.denoised_pcm is not None else result.fallback_reason
             ),
+        )
+
+    def denoise_audio_stream(
+        self,
+        chunks: Iterable[bytes],
+        sample_rate: int,
+        *,
+        timeout_seconds: float = 12,
+    ) -> ProcessedAudioResult:
+        """Run the configured stateful backend while PCM chunks arrive."""
+        return self._audio_processor.process_stream(
+            chunks,
+            sample_rate,
+            timeout_seconds=timeout_seconds,
         )
 
     def recognize_detailed(

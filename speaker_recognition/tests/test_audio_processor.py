@@ -155,3 +155,45 @@ def test_start_skips_missing_model_directory(tmp_path):
     processor = TargetAudioProcessor(deepfilter_path=str(tmp_path / "missing"))
 
     assert processor.start() is False
+
+
+def test_df3_can_load_on_demand_when_global_default_is_df2(monkeypatch):
+    class StreamingConnection:
+        def __init__(self):
+            self.sent = []
+            self.responses = iter(
+                (
+                    {"type": "df3_started", "df3_load_ms": 12.5},
+                    {"type": "df3_chunk_processed"},
+                    {
+                        "type": "df3_finished",
+                        "denoised_pcm": b"\x01\x00",
+                        "sample_rate": 16_000,
+                        "stages": {"streaming": "drained"},
+                        "timings": {"post_utterance_ms": 4.0},
+                        "quality": {"stateful": True},
+                        "fallback_reason": None,
+                    },
+                )
+            )
+
+        def send(self, payload):
+            self.sent.append(payload)
+
+        def poll(self, _timeout):
+            return True
+
+        def recv(self):
+            return next(self.responses)
+
+    connection = StreamingConnection()
+    processor = TargetAudioProcessor(backend="df2_batch")
+    monkeypatch.setattr(processor, "_ensure_worker", lambda: connection)
+
+    result = processor.process_stream([b"\x01\x00"], 16_000)
+
+    assert result.denoised_pcm == b"\x01\x00"
+    assert result.quality["backend"] == "df3_streaming"
+    assert result.quality["model_was_loaded"] is False
+    assert result.timings["df3_load_ms"] == 12.5
+    assert processor._df3_ready is True

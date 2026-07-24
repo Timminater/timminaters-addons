@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import logging
+import struct
 import wave
 from array import array
 from collections.abc import AsyncIterable
@@ -96,6 +97,102 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
         audio.setframerate(sample_rate)
         audio.writeframes(pcm)
     return output.getvalue()
+
+
+class _StreamingPcm16Mono:
+    """Incrementally strip a WAV header and downmix complete PCM frames."""
+
+    def __init__(self, metadata: SpeechMetadata) -> None:
+        self.sample_rate = int(metadata.sample_rate)
+        self.channels = int(metadata.channel)
+        self._mode: str | None = None
+        self._header = bytearray()
+        self._remainder = b""
+
+    def feed(self, chunk: bytes) -> bytes:
+        if self._mode is None:
+            self._header.extend(chunk)
+            if len(self._header) < 12:
+                return b""
+            if not (
+                self._header[:4] == b"RIFF"
+                and self._header[8:12] == b"WAVE"
+            ):
+                self._mode = "pcm"
+                chunk = bytes(self._header)
+                self._header.clear()
+            else:
+                parsed = self._parse_wav_header()
+                if parsed is None:
+                    return b""
+                data_offset, channels, sample_rate = parsed
+                if sample_rate != self.sample_rate:
+                    raise ValueError(
+                        "WAV sample rate differs from SpeechMetadata"
+                    )
+                self.channels = channels
+                self._mode = "wav"
+                chunk = bytes(self._header[data_offset:])
+                self._header.clear()
+        return self._downmix(chunk)
+
+    def finish(self) -> None:
+        if self._mode is None:
+            raise ValueError("Incomplete WAV/PCM stream header")
+        if self._remainder:
+            raise ValueError("Audio ended with an incomplete PCM frame")
+
+    def _parse_wav_header(self) -> tuple[int, int, int] | None:
+        position = 12
+        channels: int | None = None
+        sample_rate: int | None = None
+        while True:
+            if len(self._header) < position + 8:
+                return None
+            chunk_id = bytes(self._header[position : position + 4])
+            chunk_size = struct.unpack_from("<I", self._header, position + 4)[0]
+            payload = position + 8
+            if chunk_id == b"data":
+                if channels is None or sample_rate is None:
+                    raise ValueError("WAV data precedes its format chunk")
+                return payload, channels, sample_rate
+            padded_size = chunk_size + (chunk_size % 2)
+            if len(self._header) < payload + padded_size:
+                return None
+            if chunk_id == b"fmt ":
+                if chunk_size < 16:
+                    raise ValueError("Invalid WAV format chunk")
+                audio_format, channels, sample_rate = struct.unpack_from(
+                    "<HHI", self._header, payload
+                )
+                bits_per_sample = struct.unpack_from(
+                    "<H", self._header, payload + 14
+                )[0]
+                if audio_format != 1 or bits_per_sample != 16:
+                    raise ValueError("Only 16-bit PCM WAV audio is supported")
+                if channels < 1:
+                    raise ValueError("Invalid WAV channel count")
+            position = payload + padded_size
+
+    def _downmix(self, data: bytes) -> bytes:
+        frame_bytes = self.channels * 2
+        combined = self._remainder + data
+        complete = len(combined) - (len(combined) % frame_bytes)
+        self._remainder = combined[complete:]
+        complete_data = combined[:complete]
+        if self.channels == 1:
+            return complete_data
+        samples = array("h")
+        samples.frombytes(complete_data)
+        mono = array("h")
+        for offset in range(0, len(samples), self.channels):
+            mono.append(
+                round(
+                    sum(samples[offset : offset + self.channels])
+                    / self.channels
+                )
+            )
+        return mono.tobytes()
 
 
 def _processed_audio(result: dict) -> tuple[str, tuple[bytes, int]] | None:
@@ -239,6 +336,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
 
             mode = policy.get("extraction_mode", "off")
             unknown_policy = policy.get("unknown_speaker_policy", "allow")
+            processing_backend = policy.get(
+                "audio_processing_backend", "df2_batch"
+            )
             if not policy_available and unknown_policy == "block":
                 # Drain the input so the Voice satellite receives AudioStop and
                 # reliably returns to idle even when the fail-closed policy wins.
@@ -268,6 +368,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                     stream_token,
                     unknown_policy,
                     started,
+                    processing_backend,
                 )
             return await self._async_parallel_stt(
                 source,
@@ -403,43 +504,66 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         stream_token: dict,
         unknown_policy: str,
         started: float,
+        processing_backend: str = "df2_batch",
     ) -> SpeechResult:
         """Analyse a complete utterance before choosing audio for source STT."""
-        audio = bytearray()
-        try:
-            async for chunk in stream:
-                audio.extend(chunk)
-                if len(audio) > MAX_ANALYSIS_BYTES:
-                    raise ValueError("STT audio exceeds the analysis limit")
-            if not audio:
-                return SpeechResult(None, SpeechResultState.ERROR)
-            pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
-        except ValueError as error:
-            _LOGGER.warning("Could not buffer audio for pre-STT analysis: %s", error)
-            return SpeechResult(None, SpeechResultState.ERROR)
-
-        result = None
-        recognition_started = self.hass.loop.time()
-        if api is not None:
-            try:
-                # This mode sits directly in the Assist request path.  A
-                # processing job that is still queued or a busy model worker
-                # must never hold that path indefinitely.
-                result = await asyncio.wait_for(
-                    api.async_analyze(
-                        pcm,
-                        sample_rate,
-                        source_entity_id=self._source_entity_id,
-                        satellite_id=(
-                            None if stream_token["ambiguous"] else satellite_id
-                        ),
-                        extraction_mode="before_stt",
+        if (
+            processing_backend == "df3_streaming"
+            and api is not None
+        ):
+            audio, pcm, sample_rate, result, recognition_ms = (
+                await self._stream_before_stt_analysis(
+                    api,
+                    metadata,
+                    stream,
+                    satellite_id=(
+                        None if stream_token["ambiguous"] else satellite_id
                     ),
-                    timeout=PRE_STT_ANALYSIS_TIMEOUT_SECONDS,
                 )
-            except (SpeakerRecognitionApiError, TimeoutError) as error:
-                _LOGGER.warning("Pre-STT speaker analysis failed: %s", error)
-        recognition_ms = (self.hass.loop.time() - recognition_started) * 1000
+            )
+        else:
+            audio = bytearray()
+            try:
+                async for chunk in stream:
+                    audio.extend(chunk)
+                    if len(audio) > MAX_ANALYSIS_BYTES:
+                        raise ValueError("STT audio exceeds the analysis limit")
+                if not audio:
+                    return SpeechResult(None, SpeechResultState.ERROR)
+                pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+            except ValueError as error:
+                _LOGGER.warning(
+                    "Could not buffer audio for pre-STT analysis: %s", error
+                )
+                return SpeechResult(None, SpeechResultState.ERROR)
+
+            result = None
+            recognition_started = self.hass.loop.time()
+            if api is not None:
+                try:
+                    # This mode sits directly in the Assist request path. A
+                    # busy worker must never hold that path indefinitely.
+                    result = await asyncio.wait_for(
+                        api.async_analyze(
+                            pcm,
+                            sample_rate,
+                            source_entity_id=self._source_entity_id,
+                            satellite_id=(
+                                None
+                                if stream_token["ambiguous"]
+                                else satellite_id
+                            ),
+                            extraction_mode="before_stt",
+                        ),
+                        timeout=PRE_STT_ANALYSIS_TIMEOUT_SECONDS,
+                    )
+                except (SpeakerRecognitionApiError, TimeoutError) as error:
+                    _LOGGER.warning(
+                        "Pre-STT speaker analysis failed: %s", error
+                    )
+            recognition_ms = (
+                self.hass.loop.time() - recognition_started
+            ) * 1000
         blocked = self._is_blocked(result, unknown_policy)
         if result is None and unknown_policy == "block":
             blocked = True
@@ -546,6 +670,115 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             self.hass.bus.async_fire(EVENT_DETECTED, recognized.copy())
             await self._finalize_stt(api, recognized, transcript, stt_ms, started)
         return transcript
+
+    async def _stream_before_stt_analysis(
+        self,
+        api,
+        metadata: SpeechMetadata,
+        stream: AsyncIterable[bytes],
+        *,
+        satellite_id: str | None,
+    ) -> tuple[bytearray, bytes, int, dict | None, float]:
+        """Tee HA audio into the chunked App request without pre-buffering."""
+        audio = bytearray()
+        pcm = b""
+        sample_rate = int(metadata.sample_rate)
+        parser = _StreamingPcm16Mono(metadata)
+        pcm_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        finished_at = self.hass.loop.time()
+
+        async def produce() -> None:
+            nonlocal finished_at
+            try:
+                async for chunk in stream:
+                    audio.extend(chunk)
+                    if len(audio) > MAX_ANALYSIS_BYTES:
+                        raise ValueError(
+                            "STT audio exceeds the analysis limit"
+                        )
+                    pcm = parser.feed(chunk)
+                    if pcm:
+                        pcm_queue.put_nowait(pcm)
+                parser.finish()
+            finally:
+                finished_at = self.hass.loop.time()
+                pcm_queue.put_nowait(None)
+
+        async def pcm_stream():
+            while True:
+                chunk = await pcm_queue.get()
+                if chunk is None:
+                    return
+                yield chunk
+
+        producer = self.hass.async_create_task(produce())
+        request_task = self.hass.async_create_task(
+            api.async_analyze_stream(
+                pcm_stream(),
+                int(metadata.sample_rate),
+                source_entity_id=self._source_entity_id,
+                satellite_id=satellite_id,
+            )
+        )
+        request_error: Exception | None = None
+        result: dict | None = None
+        try:
+            await producer
+            result = await request_task
+        except asyncio.CancelledError:
+            producer.cancel()
+            request_task.cancel()
+            await asyncio.gather(
+                producer, request_task, return_exceptions=True
+            )
+            raise
+        except (ValueError, SpeakerRecognitionApiError, TimeoutError) as error:
+            request_error = error
+            # Ensure the satellite stream is fully drained even if the App
+            # rejected the request before end-of-utterance.
+            try:
+                await producer
+            except ValueError as producer_error:
+                request_error = producer_error
+            if not request_task.done():
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+            else:
+                await asyncio.gather(request_task, return_exceptions=True)
+
+        recognition_ms = (
+            self.hass.loop.time() - finished_at
+        ) * 1000
+        if request_error is not None:
+            _LOGGER.warning(
+                "Stateful DF3 request failed; using resident DF2 batch "
+                "fallback: %s",
+                request_error,
+            )
+            try:
+                pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+                fallback_started = self.hass.loop.time()
+                result = await asyncio.wait_for(
+                    api.async_analyze(
+                        pcm,
+                        sample_rate,
+                        source_entity_id=self._source_entity_id,
+                        satellite_id=satellite_id,
+                        extraction_mode="before_stt",
+                    ),
+                    timeout=PRE_STT_ANALYSIS_TIMEOUT_SECONDS,
+                )
+                recognition_ms = (
+                    self.hass.loop.time() - fallback_started
+                ) * 1000
+            except (ValueError, SpeakerRecognitionApiError, TimeoutError) as error:
+                _LOGGER.warning(
+                    "DF2 fallback analysis also failed: %s", error
+                )
+                result = None
+        else:
+            pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+        return audio, pcm, sample_rate, result, recognition_ms
 
     @staticmethod
     def _is_blocked(result: dict | None, unknown_policy: str) -> bool:

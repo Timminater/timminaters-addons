@@ -9,6 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -119,6 +120,12 @@ class _Models:
         from df.enhance import init_df
 
         load_started = time.perf_counter()
+        torch.set_num_threads(1)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            # PyTorch only permits setting this before inter-op work starts.
+            pass
         # DeepFilterNet's logger queries the source checkout's Git metadata.
         # Production images contain the pinned model, not Git or a checkout.
         df.logger.get_commit_hash = lambda: None
@@ -156,16 +163,34 @@ class _Models:
         )
 
 
-def _worker_main(connection: Connection, deepfilter_path: str) -> None:
+def _worker_main(
+    connection: Connection,
+    deepfilter_path: str,
+    configured_backend: str = "df2_batch",
+) -> None:
     models = _Models(deepfilter_path)
+    df3_ready = False
     try:
         model_load_ms = models.load()
-        connection.send(
-            {
-                "type": "ready",
-                "model_load_ms": model_load_ms,
-            }
-        )
+        if configured_backend == "df3_streaming":
+            try:
+                from pipecat_deepfilternet_stream import ensure_runnables
+
+                ensure_runnables()
+                df3_ready = True
+            except Exception as error:
+                # DF2 remains resident and is the safe per-request fallback.
+                _LOGGER.warning(
+                    "Could not preload stateful DF3; DF2 fallback remains ready: %s",
+                    error,
+                )
+        ready = {
+            "type": "ready",
+            "model_load_ms": model_load_ms,
+        }
+        if configured_backend == "df3_streaming":
+            ready["df3_ready"] = df3_ready
+        connection.send(ready)
     except Exception as error:
         _LOGGER.warning("Could not preload DeepFilterNet2: %s", error)
         try:
@@ -180,6 +205,7 @@ def _worker_main(connection: Connection, deepfilter_path: str) -> None:
         connection.close()
         return
 
+    stream_session: Any = None
     while True:
         try:
             request = connection.recv()
@@ -187,6 +213,109 @@ def _worker_main(connection: Connection, deepfilter_path: str) -> None:
             break
         if request is None:
             break
+        request_type = request.get("type")
+        if request_type == "df3_start":
+            df3_load_ms: float | None = None
+            if not df3_ready:
+                try:
+                    load_started = time.perf_counter()
+                    from pipecat_deepfilternet_stream import ensure_runnables
+
+                    ensure_runnables()
+                    df3_ready = True
+                    df3_load_ms = round(
+                        (time.perf_counter() - load_started) * 1000, 2
+                    )
+                    _LOGGER.info(
+                        "Stateful DF3 loaded on demand and kept resident (%.2f ms)",
+                        df3_load_ms,
+                    )
+                except Exception as error:
+                    connection.send(
+                        {"type": "df3_failed", "error": str(error)}
+                    )
+                    continue
+            try:
+                from app.df3_streaming import Df3StreamingSession
+
+                # A fresh object owns all mutable tract, STFT and SOXR state.
+                stream_session = Df3StreamingSession(
+                    int(request["sample_rate"])
+                )
+                connection.send(
+                    {
+                        "type": "df3_started",
+                        "df3_load_ms": df3_load_ms,
+                    }
+                )
+            except Exception as error:
+                stream_session = None
+                connection.send(
+                    {"type": "df3_failed", "error": str(error)}
+                )
+            continue
+        if request_type == "df3_chunk":
+            try:
+                if stream_session is None:
+                    raise RuntimeError("DF3 stream was not started")
+                stream_session.process_chunk(request["pcm"])
+                connection.send({"type": "df3_chunk_processed"})
+            except Exception as error:
+                stream_session = None
+                connection.send(
+                    {"type": "df3_failed", "error": str(error)}
+                )
+            continue
+        if request_type == "df3_abort":
+            stream_session = None
+            connection.send({"type": "df3_aborted"})
+            continue
+        if request_type == "df3_finish":
+            try:
+                if stream_session is None:
+                    raise RuntimeError("DF3 stream was not started")
+                original = (
+                    np.frombuffer(stream_session.source_pcm, dtype="<i2")
+                    .astype(np.float32)
+                    / 32768.0
+                )
+                streamed = stream_session.finish()
+                denoised = (
+                    np.frombuffer(streamed.pcm, dtype="<i2")
+                    .astype(np.float32)
+                    / 32768.0
+                )
+                quality = _quality(original, denoised)
+                quality.update(streamed.metrics)
+                denoised_pcm = streamed.pcm
+                fallback_reason = None
+                stage = "ready"
+                if quality["denoised_passed"] is not True:
+                    denoised_pcm = None
+                    fallback_reason = "denoised_quality_failed"
+                    stage = "rejected_quality"
+                connection.send(
+                    {
+                        "type": "df3_finished",
+                        "denoised_pcm": denoised_pcm,
+                        "sample_rate": stream_session.sample_rate,
+                        "stages": {
+                            "denoise": stage,
+                            "model": "warm",
+                            "streaming": "drained",
+                        },
+                        "timings": streamed.timings,
+                        "quality": quality,
+                        "fallback_reason": fallback_reason,
+                    }
+                )
+            except Exception as error:
+                connection.send(
+                    {"type": "df3_failed", "error": str(error)}
+                )
+            finally:
+                stream_session = None
+            continue
         original = np.asarray(request["audio"], dtype=np.float32)
         original = original[: MAX_CLIP_SECONDS * CANONICAL_RATE]
         stages: dict[str, str] = {}
@@ -251,7 +380,15 @@ def _worker_main(connection: Connection, deepfilter_path: str) -> None:
 class TargetAudioProcessor:
     """Own one preloaded denoise worker for the add-on lifetime."""
 
-    def __init__(self, *, deepfilter_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        deepfilter_path: str | None = None,
+        backend: str = "df2_batch",
+    ) -> None:
+        if backend not in {"df2_batch", "df3_streaming"}:
+            raise ValueError("Unsupported audio processing backend")
+        self.backend = backend
         self.deepfilter_path = deepfilter_path or os.environ.get(
             "DEEPFILTER_MODEL_DIR",
             "/opt/models/DeepFilterNet2",
@@ -262,6 +399,7 @@ class TargetAudioProcessor:
         self._priority_lock = threading.Lock()
         self._waiting_live = 0
         self._model_load_ms: float | None = None
+        self._df3_ready = False
 
     def _live_waiting(self) -> bool:
         with self._priority_lock:
@@ -278,7 +416,7 @@ class TargetAudioProcessor:
         parent, child = multiprocessing.Pipe()
         process = multiprocessing.Process(
             target=_worker_main,
-            args=(child, self.deepfilter_path),
+            args=(child, self.deepfilter_path, self.backend),
             daemon=True,
             name="speaker-recognition-denoise",
         )
@@ -296,9 +434,13 @@ class TargetAudioProcessor:
                 f"DeepFilterNet2 preload failed: {startup.get('error', 'unknown error')}"
             )
         self._model_load_ms = float(startup["model_load_ms"])
+        self._df3_ready = bool(startup.get("df3_ready", False))
         _LOGGER.info(
-            "DeepFilterNet2 preloaded and kept resident (%.2f ms)",
+            "DeepFilterNet2 preloaded and kept resident (%.2f ms); "
+            "configured backend=%s, df3_ready=%s",
             self._model_load_ms,
+            self.backend,
+            self._df3_ready,
         )
         return parent
 
@@ -317,6 +459,12 @@ class TargetAudioProcessor:
                 _LOGGER.warning("Could not start audio model worker: %s", error)
                 return False
         return True
+
+    def configure_backend(self, backend: str) -> None:
+        """Set the preferred backend without discarding resident models."""
+        if backend not in {"df2_batch", "df3_streaming"}:
+            raise ValueError("Unsupported audio processing backend")
+        self.backend = backend
 
     def process(
         self,
@@ -374,6 +522,8 @@ class TargetAudioProcessor:
                     )
             payload = connection.recv()
             timings = dict(payload["timings"])
+            quality = dict(payload["quality"])
+            quality["backend"] = "df2_batch"
             request_ms = round((time.perf_counter() - started) * 1000, 2)
             if payload["quality"].get("model_was_loaded"):
                 timings["audio_processing_ms"] = request_ms
@@ -385,7 +535,7 @@ class TargetAudioProcessor:
                 sample_rate=int(payload["sample_rate"]),
                 stages=dict(payload["stages"]),
                 timings=timings,
-                quality=dict(payload["quality"]),
+                quality=quality,
                 fallback_reason=payload.get("fallback_reason"),
             )
         except (EOFError, BrokenPipeError, OSError) as error:
@@ -394,6 +544,104 @@ class TargetAudioProcessor:
             return self._failure("worker_failed", "failed", started)
         finally:
             self._lock.release()
+
+    def process_stream(
+        self,
+        chunks: Iterable[bytes],
+        sample_rate: int,
+        *,
+        timeout_seconds: float = DEFAULT_LIVE_TIMEOUT_SECONDS,
+    ) -> ProcessedAudioResult:
+        """Process incoming PCM chunks statefully and drain at utterance end."""
+        started = time.perf_counter()
+        with self._priority_lock:
+            self._waiting_live += 1
+        if not self._lock.acquire(timeout=max(0.1, timeout_seconds)):
+            with self._priority_lock:
+                self._waiting_live -= 1
+            return self._failure("processor_busy", "busy", started)
+        with self._priority_lock:
+            self._waiting_live -= 1
+        connection: Connection | None = None
+        try:
+            connection = self._ensure_worker()
+            connection.send(
+                {"type": "df3_start", "sample_rate": int(sample_rate)}
+            )
+            response = self._receive_with_timeout(
+                connection, timeout_seconds
+            )
+            if response.get("type") != "df3_started":
+                raise RuntimeError(
+                    response.get("error", "DF3 stream start failed")
+                )
+            df3_load_ms = response.get("df3_load_ms")
+            self._df3_ready = True
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                connection.send({"type": "df3_chunk", "pcm": bytes(chunk)})
+                response = self._receive_with_timeout(
+                    connection, timeout_seconds
+                )
+                if response.get("type") != "df3_chunk_processed":
+                    raise RuntimeError(
+                        response.get("error", "DF3 stream chunk failed")
+                    )
+            connection.send({"type": "df3_finish"})
+            payload = self._receive_with_timeout(
+                connection, timeout_seconds
+            )
+            if payload.get("type") != "df3_finished":
+                raise RuntimeError(
+                    payload.get("error", "DF3 stream drain failed")
+                )
+            timings = dict(payload["timings"])
+            if df3_load_ms is not None:
+                timings["df3_load_ms"] = float(df3_load_ms)
+                timings["cold_request_ms"] = round(
+                    (time.perf_counter() - started) * 1000, 2
+                )
+            quality = dict(payload["quality"])
+            quality["backend"] = "df3_streaming"
+            quality["model_was_loaded"] = df3_load_ms is None
+            return ProcessedAudioResult(
+                denoised_pcm=payload["denoised_pcm"],
+                isolated_pcm=None,
+                sample_rate=int(payload["sample_rate"]),
+                stages=dict(payload["stages"]),
+                timings=timings,
+                quality=quality,
+                fallback_reason=payload.get("fallback_reason"),
+            )
+        except TimeoutError:
+            _LOGGER.warning("Stateful DF3 stream timed out")
+            self.close()
+            return self._failure(
+                "df3_stream_timeout", "timeout", started
+            )
+        except (EOFError, BrokenPipeError, OSError, RuntimeError) as error:
+            _LOGGER.warning(
+                "Stateful DF3 stream failed; DF2 fallback is available: %s",
+                error,
+            )
+            if connection is not None:
+                try:
+                    connection.send({"type": "df3_abort"})
+                    self._receive_with_timeout(connection, 1.0)
+                except (EOFError, BrokenPipeError, OSError, TimeoutError):
+                    self.close()
+            return self._failure("df3_stream_failed", "failed", started)
+        finally:
+            self._lock.release()
+
+    @staticmethod
+    def _receive_with_timeout(
+        connection: Connection, timeout_seconds: float
+    ) -> dict[str, Any]:
+        if not connection.poll(max(0.1, timeout_seconds)):
+            raise TimeoutError("Audio worker response timed out")
+        return dict(connection.recv())
 
     @staticmethod
     def _failure(
@@ -424,6 +672,7 @@ class TargetAudioProcessor:
         self._connection = None
         self._process = None
         self._model_load_ms = None
+        self._df3_ready = False
         if connection is not None:
             try:
                 connection.close()

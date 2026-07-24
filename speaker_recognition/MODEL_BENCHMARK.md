@@ -1,8 +1,10 @@
 # DeepFilterNet2 validation for 2.1.2
 
 Validation is performed on amd64 with four CPU cores and a hard 2 GiB
-container memory limit. The image contains DeepFilterNet2 only; SpEx+ and all
-target-speaker separation code and weights were removed.
+container memory limit. The default route uses DeepFilterNet2 only; SpEx+ and
+all target-speaker separation code and weights were removed. The optional,
+non-default DF3 route is tracked separately in
+[DF3_STREAMING_VALIDATION.md](DF3_STREAMING_VALIDATION.md).
 
 ## Measurement policy
 
