@@ -330,6 +330,45 @@ def _read_recording_audio(path: Path) -> AudioInput:
         )
 
 
+def _merge_processing_timings(
+    existing: dict | None,
+    processing: dict | None,
+) -> dict:
+    """Keep the original pipeline time and add optional audio processing."""
+    merged = dict(existing or {})
+    processing_timings = dict(processing or {})
+    processing_ms = processing_timings.pop(
+        "audio_processing_ms",
+        processing_timings.pop("total_ms", None),
+    )
+    merged.update(processing_timings)
+    if processing_ms is None:
+        return merged
+
+    previous_processing_ms = merged.get("audio_processing_ms")
+    baseline_ms = merged.get("baseline_total_ms")
+    if baseline_ms is None:
+        previous_total_ms = merged.get("total_ms")
+        if previous_total_ms is not None and previous_processing_ms is not None:
+            baseline_ms = max(
+                0.0,
+                float(previous_total_ms) - float(previous_processing_ms),
+            )
+        elif previous_total_ms is not None:
+            baseline_ms = float(previous_total_ms)
+        else:
+            baseline_ms = 0.0
+        # Older 2.1.0 records may already have had total_ms overwritten by a
+        # manual job. STT time is a safe lower bound for the original pipeline.
+        if merged.get("stt_ms") is not None:
+            baseline_ms = max(float(baseline_ms), float(merged["stt_ms"]))
+
+    merged["baseline_total_ms"] = round(float(baseline_ms), 2)
+    merged["audio_processing_ms"] = round(float(processing_ms), 2)
+    merged["total_ms"] = round(float(baseline_ms) + float(processing_ms), 2)
+    return merged
+
+
 async def _run_target_processing(recording_id: str, speaker_id: str) -> None:
     """Run the optional engine hook and persist only successful variants.
 
@@ -374,6 +413,7 @@ async def _run_target_processing(recording_id: str, speaker_id: str) -> None:
             await asyncio.to_thread(recognizer.catalog.save_audio_variant, recording_id, "isolated", isolated, sample_rate)
         fallback_reason = _processing_value(result, "fallback_reason")
         variant = "isolated" if isolated else "denoised" if denoised else "original"
+        current = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id) or {}
         await asyncio.to_thread(
             recognizer.catalog.update_recording,
             recording_id,
@@ -381,8 +421,11 @@ async def _run_target_processing(recording_id: str, speaker_id: str) -> None:
             processing_stages=_processing_value(result, "stages", {}),
             processing_quality=_processing_value(result, "quality", {}),
             processing_fallback_reason=fallback_reason,
-            timings={**(await asyncio.to_thread(recognizer.catalog.get_recording, recording_id) or {}).get("timings", {}), **(_processing_value(result, "timings", {}) or {})},
-            labels={**((await asyncio.to_thread(recognizer.catalog.get_recording, recording_id) or {}).get("labels", {})), "audio_variant": variant, "fallback": variant != "isolated"},
+            timings=_merge_processing_timings(
+                current.get("timings"),
+                _processing_value(result, "timings", {}),
+            ),
+            labels={**(current.get("labels") or {}), "audio_variant": variant, "fallback": variant != "isolated"},
         )
     except asyncio.CancelledError:
         raise

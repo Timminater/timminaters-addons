@@ -161,7 +161,12 @@ def test_target_audio_process_is_queued_and_exposes_new_variants(tmp_path, monke
             "isolated_pcm": raw,
             "sample_rate": payload.sample_rate,
             "stages": {"denoise": "complete", "isolation": "complete"},
-            "timings": {"denoise_ms": 1, "isolation_ms": 2},
+            "timings": {
+                "denoise_ms": 1,
+                "isolation_ms": 2,
+                "audio_processing_ms": 300,
+                "total_ms": 300,
+            },
             "quality": {"status": "accepted"},
         }
 
@@ -169,6 +174,10 @@ def test_target_audio_process_is_queued_and_exposes_new_variants(tmp_path, monke
     with TestClient(api.app, headers={"X-Ingress-Path": "/api/hassio_ingress/test"}) as client:
         speaker = client.post("/api/enroll", json={"speaker_name": "Alice", "samples": [{"audio": audio(12000).model_dump()}]}).json()["speaker"]
         recording = client.post("/api/analyze", json={"audio": audio(11000).model_dump(), "source": "test"}).json()
+        api.recognizer.catalog.update_recording(
+            recording["recording_id"],
+            timings={"stt_ms": 800, "total_ms": 1000},
+        )
         response = client.post(f"/api/analysis/{recording['recording_id']}/process", json={"speaker_id": speaker["id"]})
         assert response.status_code == 202
         for _ in range(20):
@@ -179,6 +188,9 @@ def test_target_audio_process_is_queued_and_exposes_new_variants(tmp_path, monke
         assert detail["processing_status"] == "complete"
         assert detail["denoised_available"] is True
         assert detail["isolated_available"] is True
+        assert detail["timings"]["baseline_total_ms"] == 1000
+        assert detail["timings"]["audio_processing_ms"] == 300
+        assert detail["timings"]["total_ms"] == 1300
         assert client.get(f"/api/analysis/{recording['recording_id']}/audio?variant=isolated").status_code == 200
         # Existing clients still use extracted; it resolves to isolated first.
         assert client.get(f"/api/analysis/{recording['recording_id']}/audio?variant=extracted").status_code == 200
