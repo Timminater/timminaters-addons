@@ -7,6 +7,7 @@
     <meta name="ingress-base" content="__BASE_PATH__">
     <title>Speaker Recognition</title>
     <link rel="stylesheet" href="__BASE_PATH__assets/styles.css">
+    <script defer src="__BASE_PATH__assets/i18n.js"></script>
     <script defer src="__BASE_PATH__assets/app.js"></script>
   </head>
   <body>
@@ -21,7 +22,7 @@
         <a href="#calibration" data-route="calibration">Kalibratie</a>
         <a href="#settings" data-route="settings">Instellingen</a>
       </nav>
-      <div class="header-meta"><span id="storage-status" class="storage-status">Analyse-opslag laden…</span><div id="engine-status" class="status-pill"><i></i><span>Verbinden…</span></div></div>
+      <div class="header-meta"><label class="language-picker"><span class="visually-hidden">Taal</span><select id="language-select" aria-label="Taal"><option value="nl">Nederlands</option><option value="en">English</option></select></label><span id="storage-status" class="storage-status">Analyse-opslag laden…</span><div id="engine-status" class="status-pill"><i></i><span>Verbinden…</span></div></div>
     </header>
 
     <main>
