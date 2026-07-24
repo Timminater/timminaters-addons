@@ -296,10 +296,35 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
         if available
     ]
     labels = result.get("labels") if isinstance(result.get("labels"), dict) else {}
-    for key in ("audio_variant", "fallback", "conversation_reason", "person_entity_id"):
+    for key in (
+        "audio_variant", "fallback", "conversation_reason", "person_entity_id",
+        "person_entity_ids", "speaker_names",
+    ):
         if key in labels:
             result[key] = labels[key]
     result["conversation_person_entity_id"] = labels.get("person_entity_id")
+    result["conversation_person_entity_ids"] = labels.get("person_entity_ids", [])
+    result["conversation_speaker_names"] = labels.get("speaker_names", [])
+    detected_speakers = (
+        detailed.detected_speakers
+        if detailed is not None
+        else labels.get("detected_speakers", [])
+    )
+    profiles = {item.id: item for item in recognizer.list_speakers()}
+    result["detected_speakers"] = []
+    for detected in detected_speakers if isinstance(detected_speakers, list) else []:
+        if not isinstance(detected, dict):
+            continue
+        item = dict(detected)
+        profile = profiles.get(str(item.get("speaker_id")))
+        if profile is not None:
+            item["speaker_name"] = profile.name
+            item["person_entity_id"] = profile.person_entity_id
+        result["detected_speakers"].append(item)
+    result["multiple_speakers"] = (
+        result.get("outcome") == "multiple_speakers"
+        or len(result["detected_speakers"]) > 1
+    )
     result["blocked"] = result.get("outcome") == "blocked"
     result["matched"] = result.get("outcome") == "matched"
     result["threshold_source"] = (
@@ -338,6 +363,8 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
             "confidence": detailed.confidence, "margin": detailed.margin, "threshold": detailed.threshold,
             "threshold_source": "calibration" if recognizer.catalog.calibration() else "configuration",
             "best_segment": detailed.best_segment, "candidate_count": len(detailed.candidates),
+            "detected_speakers": detailed.detected_speakers,
+            "multiple_speakers": len(detailed.detected_speakers) > 1,
         })
         if include_audio:
             pcm = detailed.extracted_pcm or detailed.canonical_pcm
@@ -629,7 +656,10 @@ async def analyze_stream(
     )
     recording_id = str(payload["recording_id"])
     detailed = None
-    if processed.denoised_pcm and not payload.get("matched"):
+    if (
+        processed.denoised_pcm
+        and payload.get("outcome") not in {"matched", "multiple_speakers"}
+    ):
         calibration = recognizer.catalog.calibration()
         threshold = (
             float(calibration["threshold"])
@@ -651,18 +681,29 @@ async def analyze_stream(
             threshold=threshold,
             min_margin=margin,
         )
-        if detailed.speaker is not None:
+        if detailed.outcome in {"matched", "multiple_speakers"}:
+            labels = dict(
+                (
+                    await asyncio.to_thread(
+                        recognizer.catalog.get_recording, recording_id
+                    )
+                    or {}
+                ).get("labels")
+                or {}
+            )
+            labels["detected_speakers"] = detailed.detected_speakers
             await asyncio.to_thread(
                 recognizer.catalog.update_recording,
                 recording_id,
-                outcome="matched",
-                speaker_id=detailed.speaker.id,
-                speaker_name=detailed.speaker.name,
+                outcome=detailed.outcome,
+                speaker_id=detailed.speaker.id if detailed.speaker else None,
+                speaker_name=detailed.speaker.name if detailed.speaker else None,
                 confidence=detailed.confidence,
                 threshold=detailed.threshold,
                 margin=detailed.margin,
                 scores=detailed.scores,
                 segments=detailed.candidates,
+                labels=labels,
             )
 
     if processed.denoised_pcm:
@@ -784,7 +825,6 @@ async def analyze(request: AnalyzeRequest) -> dict:
                 detailed = await recognition_call
             processed = None
             if mode == "before_stt":
-                original_speaker = detailed.speaker
                 remaining = live_deadline - time.perf_counter()
                 if remaining > 0.1:
                     processed = await asyncio.to_thread(
@@ -793,7 +833,7 @@ async def analyze(request: AnalyzeRequest) -> dict:
                         timeout_seconds=remaining,
                     )
                 if (
-                    original_speaker is None
+                    detailed.outcome not in {"matched", "multiple_speakers"}
                     and processed is not None
                     and processed.denoised_pcm
                 ):
@@ -820,12 +860,18 @@ async def analyze(request: AnalyzeRequest) -> dict:
                     if denoised_result and denoised_result.speaker is not None:
                         detailed = denoised_result
             outcome = detailed.outcome
-            if outcome != "matched" and _policy["unknown_speaker_policy"] == "block": outcome = "blocked"
+            if (
+                outcome not in {"matched", "multiple_speakers"}
+                and _policy["unknown_speaker_policy"] == "block"
+            ):
+                outcome = "blocked"
+            labels = dict(recording.get("labels") or {})
+            labels["detected_speakers"] = detailed.detected_speakers
             updates = {
                 "outcome": outcome, "speaker_id": detailed.speaker.id if detailed.speaker else None,
                 "speaker_name": detailed.speaker.name if detailed.speaker else None, "confidence": detailed.confidence,
                 "threshold": detailed.threshold, "margin": detailed.margin, "scores": detailed.scores,
-                "segments": detailed.candidates, "timings": detailed.timings,
+                "segments": detailed.candidates, "timings": detailed.timings, "labels": labels,
                 "extraction_status": "disabled" if mode == "off" else "processing" if processed else "queued" if mode == "compare" else "not_processed",
             }
             if processed is not None:
@@ -925,7 +971,12 @@ async def finalize_conversation(recording_id: str, request: ConversationRecordin
     current = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id)
     if not current: raise HTTPException(status_code=404, detail="Recording not found")
     labels = dict(current.get("labels") or {})
-    labels.update({"person_entity_id": request.person_entity_id, "conversation_reason": request.conversation_reason})
+    labels.update({
+        "person_entity_id": request.person_entity_id,
+        "person_entity_ids": request.person_entity_ids,
+        "speaker_names": request.speaker_names,
+        "conversation_reason": request.conversation_reason,
+    })
     recording = await asyncio.to_thread(recognizer.catalog.update_recording, recording_id, conversation_forwarded=request.conversation_forwarded, timings=request.timings or current.get("timings", {}), labels=labels)
     return _analysis_payload(recording or current)
 
@@ -1121,13 +1172,31 @@ async def delete_speaker(speaker_id: str, request: DeleteSpeakerRequest | None =
 @app.post("/api/recognize", response_model=RecognitionResult, dependencies=[Depends(authorize_api)])
 async def recognize(request: RecognitionRequest) -> RecognitionResult:
     try:
-        speaker, confidence, scores = await asyncio.to_thread(recognizer.recognize, request.audio)
+        calibration = recognizer.catalog.calibration()
+        threshold = (
+            float(calibration["threshold"])
+            if calibration
+            else settings.recognition_threshold
+        )
+        margin = (
+            float(calibration["margin"])
+            if calibration
+            else float(_policy["min_margin"])
+        )
+        detailed = await asyncio.to_thread(
+            recognizer.recognize_detailed,
+            request.audio,
+            threshold=threshold,
+            min_margin=margin,
+        )
         return RecognitionResult(
-            matched=speaker is not None,
-            speaker=speaker,
-            confidence=confidence,
-            threshold=settings.recognition_threshold,
-            scores=scores,
+            matched=detailed.speaker is not None,
+            speaker=detailed.speaker,
+            confidence=detailed.confidence,
+            threshold=detailed.threshold,
+            scores=detailed.scores,
+            outcome=detailed.outcome,
+            detected_speakers=detailed.detected_speakers,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -1208,7 +1277,7 @@ async def reanalyze_recording(recording_id: str) -> dict:
 
     outcome = detailed.outcome
     if (
-        outcome != "matched"
+        outcome not in {"matched", "multiple_speakers"}
         and _policy["unknown_speaker_policy"] == "block"
     ):
         outcome = "blocked"
@@ -1216,6 +1285,8 @@ async def reanalyze_recording(recording_id: str) -> dict:
         **(recording.get("timings") or {}),
         **detailed.timings,
     }
+    labels = dict(recording.get("labels") or {})
+    labels["detected_speakers"] = detailed.detected_speakers
     updated = await asyncio.to_thread(
         recognizer.catalog.update_recording,
         recording_id,
@@ -1228,6 +1299,7 @@ async def reanalyze_recording(recording_id: str) -> dict:
         scores=detailed.scores,
         segments=detailed.candidates,
         timings=timings,
+        labels=labels,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Recording not found")

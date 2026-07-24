@@ -6,14 +6,14 @@ Lokale stemherkenning voor Home Assistant met een ingebouwde Ingress-interface. 
 
 - Enrollment via upload, browsermicrofoon of een bestaand Home Assistant Voice-apparaat.
 - Meerdere permanente WAV-samples per profiel, inclusief afspelen, downloaden, activeren, deactiveren en verwijderen.
-- Multi-window-herkenning met spraaksegmentdetectie, confidence, marge en kandidaat-scores.
+- Multi-window-herkenning met spraaksegmentdetectie, confidence, marge, kandidaat-scores en een expliciete uitkomst voor meerdere bekende sprekers.
 - Een globale pipeline-policy: onbekende stemmen toestaan of blokkeren en ruisonderdrukking uit, vergelijken of vóór STT toepassen.
 - Optionele lokale ruisonderdrukking met DeepFilterNet2; standaard blijft deze uitgeschakeld.
 - Zeven dagen analysehistorie met transcript, timings, diagnose en originele en ruisonderdrukte audio.
 - Fragmentselectie uit een analyse-opname om een bestaand of nieuw profiel te verbeteren.
 - Een kalibratiewizard die op basis van de opgeslagen samples een conservatieve drempel adviseert.
-- Veilige persoonscontext voor een vervolgagent, zonder Home Assistant-gebruikersrechten te wijzigen.
-- Twee tijdelijke diagnostische sensoren voor de laatste herkenning en de doorgifte aan de conversation-agent.
+- Veilige enkelvoudige of meervoudige speakercontext voor een vervolgagent, zonder Home Assistant-gebruikersrechten te wijzigen.
+- Twee tijdelijke diagnostische sensoren met speakerlijsten en de doorgifte aan de conversation-agent.
 
 ## Installatie
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.4.0
+
+- Verschillende bekende stemmen in niet-overlappende spraakregio's leveren nu de expliciete uitkomst `multiple_speakers`; de detectie gebruikt de bestaande kandidaatregio's en vereist geen apart diarization-model.
+- De Home Assistant-diagnosesensoren en het detectie-event bevatten speakerlijsten, persoonkoppelingen, confidence en beste tijdsegmenten.
+- De conversation-proxy geeft alle overtuigend herkende sprekers als niet-vertrouwde context aan de LLM door en waarschuwt dat losse woorden niet aan één persoon mogen worden toegeschreven.
+- De blokkeerpolicy laat meerdere bekende sprekers door, maar blijft onbekende, ambigue en ongeldige resultaten blokkeren.
+
 ## 2.3.0
 
 - Bestaande analyse-opnamen kunnen opnieuw worden herkend met de actuele stemprofielen, drempel, scoremarge en kalibratie zonder transcript, audioverwerking of conversation-historie te wijzigen.

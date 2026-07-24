@@ -163,7 +163,7 @@ async function loadAnalysis(reset = false) {
   finally { elements.analysisLoading.hidden = true; }
 }
 
-function outcomeLabel(outcome) { return ({ matched: "Herkend", unmatched: "Niet herkend", ambiguous: "Twijfelachtig", error: "Fout", blocked: "Geblokkeerd" })[outcome] || outcome || "Onbekend"; }
+function outcomeLabel(outcome) { return ({ matched: "Herkend", multiple_speakers: "Meerdere sprekers", unmatched: "Niet herkend", ambiguous: "Twijfelachtig", error: "Fout", blocked: "Geblokkeerd" })[outcome] || outcome || "Onbekend"; }
 function recordingOutcome(item) { return item.outcome || (item.blocked ? "blocked" : item.error ? "error" : item.ambiguous ? "ambiguous" : item.matched ? "matched" : "unmatched"); }
 function renderAnalysis() {
   empty(elements.analysisGrid);
@@ -173,7 +173,8 @@ function renderAnalysis() {
     const head = document.createElement("div"); head.className = "analysis-card-head";
     const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = selected.has(id); checkbox.ariaLabel = `${item.transcript || "Opname"} selecteren`; checkbox.addEventListener("click", (event) => event.stopPropagation()); checkbox.addEventListener("change", () => { checkbox.checked ? selected.add(id) : selected.delete(id); updateSelection(); });
     const badge = appendText(head, "span", outcomeLabel(outcome), `outcome outcome-${outcome}`); badge.title = outcomeLabel(outcome); head.append(checkbox); card.append(head);
-    const title = appendText(card, "strong", item.speaker_name || item.speaker?.name || item.person_name || "Onbekende speaker", "analysis-speaker");
+    const detectedNames = (item.detected_speakers || []).map((speaker) => speaker.speaker_name).filter(Boolean);
+    const title = appendText(card, "strong", detectedNames.length > 1 ? detectedNames.join(" + ") : item.speaker_name || item.speaker?.name || item.person_name || "Onbekende speaker", "analysis-speaker");
     appendText(card, "p", item.transcript || "Geen transcript beschikbaar", "analysis-transcript");
     const facts = document.createElement("div"); facts.className = "analysis-facts"; appendText(facts, "span", formatDate(item.created_at || item.timestamp)); const duration = item.duration ?? item.duration_seconds; appendText(facts, "span", `${formatScore(item.confidence ?? item.score)}${duration != null ? ` · ${formatDuration(duration)}` : ""}`); card.append(facts);
     const source = appendText(card, "span", item.source === "test" ? "Test" : item.source || "Pipeline", "source-tag"); source.title = item.satellite_name || item.satellite || "";
@@ -212,7 +213,9 @@ function renderAnalysisDetail(item) {
   });
   elements.downloadOriginal.href = audioEndpoint(id, "original"); elements.downloadOriginal.download = `${htmlSafeFilename(item.speaker_name || "recording")}-${id}.wav`;
   state.analysis.duration = number(item.duration ?? item.duration_seconds); state.analysis.trim = { start: 0, end: state.analysis.duration }; elements.trimStart.value = 0; elements.trimEnd.value = state.analysis.duration || ""; setText(elements.waveformRange, state.analysis.duration ? `0.0 – ${state.analysis.duration.toFixed(1)} sec` : "Duur laden…");
-  metadataList(elements.recognitionMetadata, [["Uitkomst", outcomeLabel(recordingOutcome(item))], ["Speaker", item.speaker_name || item.speaker?.name || "Niet herkend"], ["Gekoppelde persoon", item.recognized_person_entity_id || "—"], ["Confidence", formatScore(item.confidence ?? item.score)], ["Threshold", item.threshold != null ? formatScore(item.threshold) : "—"], ["Marge", (item.margin ?? item.min_margin) != null ? formatScore(item.margin ?? item.min_margin) : "—"], ["Beste segment", item.best_segment ? `${formatDuration(item.best_segment.start ?? item.best_segment.start_seconds)} – ${formatDuration(item.best_segment.end ?? item.best_segment.end_seconds)}` : "—"], ["Kandidaten", item.candidate_count], ["Alle scores", scoresText(item.scores || item.all_scores)]]);
+  const detected = item.detected_speakers || [];
+  const detectedText = detected.map((speaker) => `${speaker.speaker_name}${speaker.person_entity_id ? ` (${speaker.person_entity_id})` : ""} · ${formatScore(speaker.confidence)} · ${formatDuration(speaker.best_segment?.start_seconds)}–${formatDuration(speaker.best_segment?.end_seconds)}`).join(", ");
+  metadataList(elements.recognitionMetadata, [["Uitkomst", outcomeLabel(recordingOutcome(item))], ["Speaker", item.speaker_name || item.speaker?.name || (detected.length > 1 ? "Meerdere" : "Niet herkend")], ["Gedetecteerde sprekers", detectedText], ["Gekoppelde persoon", item.recognized_person_entity_id || "—"], ["Confidence", formatScore(item.confidence ?? item.score)], ["Threshold", item.threshold != null ? formatScore(item.threshold) : "—"], ["Marge", (item.margin ?? item.min_margin) != null ? formatScore(item.margin ?? item.min_margin) : "—"], ["Beste segment", item.best_segment ? `${formatDuration(item.best_segment.start ?? item.best_segment.start_seconds)} – ${formatDuration(item.best_segment.end ?? item.best_segment.end_seconds)}` : "—"], ["Kandidaten", item.candidate_count], ["Alle scores", scoresText(item.scores || item.all_scores)]]);
   const timing = item.timings || {};
   const quality = item.processing_quality || {};
   const stages = item.processing_stages || {};

@@ -134,7 +134,7 @@ class FakeStates:
         return self._states
 
     def get(self, entity_id):
-        if self._person_exists and entity_id == "person.alice":
+        if self._person_exists and entity_id in {"person.alice", "person.bob"}:
             return SimpleNamespace(entity_id=entity_id, state="home")
         return None
 
@@ -162,6 +162,45 @@ def result(**overrides):
     return value
 
 
+def multiple_speaker_result(**overrides):
+    value = result(
+        matched=False,
+        outcome="multiple_speakers",
+        confidence=0.94,
+        person_entity_id=None,
+        speaker_name=None,
+        multiple_speakers=True,
+        speaker_names=["Alice", "Bob"],
+        person_entity_ids=["person.alice", "person.bob"],
+        detected_speakers=[
+            {
+                "speaker_id": "voice-1",
+                "speaker_name": "Alice",
+                "person_entity_id": "person.alice",
+                "confidence": 0.94,
+                "margin": 0.31,
+                "best_segment": {
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                },
+            },
+            {
+                "speaker_id": "voice-2",
+                "speaker_name": "Bob",
+                "person_entity_id": "person.bob",
+                "confidence": 0.92,
+                "margin": 0.28,
+                "best_segment": {
+                    "start_seconds": 1.4,
+                    "end_seconds": 2.6,
+                },
+            },
+        ],
+    )
+    value.update(overrides)
+    return value
+
+
 def test_result_matches_satellite_and_is_consumed_once():
     hass = fake_hass()
     remember_result(hass, result())
@@ -170,6 +209,19 @@ def test_result_matches_satellite_and_is_consumed_once():
     ] == "person.alice"
     assert hass.dispatched == [SIGNAL_RESULT_UPDATED, SIGNAL_RESULT_UPDATED]
     assert hass.data["speaker_recognition"]["last_result"]["consumed"] is True
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+
+
+def test_multiple_speakers_are_consumed_as_one_correlated_result():
+    hass = fake_hass()
+    remember_result(hass, multiple_speaker_result())
+
+    consumed = consume_result(hass, "assist_satellite.kitchen", 0.8)
+
+    assert consumed is not None
+    assert consumed["outcome"] == "multiple_speakers"
+    assert consumed["speaker_names"] == ["Alice", "Bob"]
+    assert consumed["person_entity_ids"] == ["person.alice", "person.bob"]
     assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
 
 
@@ -287,6 +339,12 @@ def test_result_fails_closed_for_wrong_source_stale_or_low_confidence():
     remember_result(hass, result())
     assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
 
+    hass = fake_hass()
+    low_multiple = multiple_speaker_result()
+    low_multiple["detected_speakers"][1]["confidence"] = 0.4
+    remember_result(hass, low_multiple)
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+
 
 def test_unattributed_conversation_never_receives_personalization():
     hass = fake_hass()
@@ -348,6 +406,54 @@ def test_conversation_personalization_preserves_original_context_and_fields():
     assert forwarding["satellite_id"] == "assist_satellite.kitchen"
 
 
+def test_multiple_speakers_reach_llm_and_diagnostic_entities():
+    class Source:
+        supported_languages = "*"
+
+        async def async_process(self, user_input):
+            self.received = user_input
+            return ConversationResult()
+
+    hass = fake_hass()
+    hass.agent = Source()
+    remember_result(hass, multiple_speaker_result())
+    proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
+    proxy.hass = hass
+    original = ConversationInput(
+        text="Turn on the light",
+        context=object(),
+        conversation_id="conversation-multiple",
+        device_id="device-1",
+        satellite_id="assist_satellite.kitchen",
+        language="nl",
+        agent_id="conversation.proxy",
+    )
+
+    asyncio.run(proxy.async_process(original))
+
+    prompt = hass.agent.received.extra_system_prompt
+    assert "multiple probable speakers" in prompt
+    assert "Alice (person.alice)" in prompt
+    assert "Bob (person.bob)" in prompt
+    assert "Do not attribute specific words" in prompt
+    entry = SimpleNamespace(entry_id="main-entry")
+    recognition_sensor = LastRecognitionSensor(entry)
+    recognition_sensor.hass = hass
+    context_sensor = LastConversationContextSensor(entry)
+    context_sensor.hass = hass
+    assert recognition_sensor.native_value == "multiple_speakers"
+    assert recognition_sensor.extra_state_attributes["speaker_count"] == 2
+    assert recognition_sensor.extra_state_attributes["speaker_names"] == [
+        "Alice",
+        "Bob",
+    ]
+    assert context_sensor.native_value == "multiple_speakers"
+    assert context_sensor.extra_state_attributes["person_entity_ids"] == [
+        "person.alice",
+        "person.bob",
+    ]
+
+
 def test_conversation_finalizes_correlated_recording_without_changing_context():
     class Source:
         supported_languages = "*"
@@ -398,6 +504,8 @@ def test_conversation_finalizes_correlated_recording_without_changing_context():
                 "forwarded": True,
                 "reason": "person_context_submitted",
                 "person_entity_id": "person.alice",
+                "person_entity_ids": ["person.alice"],
+                "speaker_names": [],
             },
         )
     ]

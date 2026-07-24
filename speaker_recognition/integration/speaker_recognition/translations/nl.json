@@ -20,7 +20,7 @@
       },
       "add_conversation": {
         "title": "Conversation-proxy toevoegen",
-        "description": "Koppel een bestaande conversation-agent en voeg een gekoppelde persoon toe als niet-vertrouwde personalisatiecontext. Stemherkenning wijzigt nooit Home Assistant-gebruikers of rechten.",
+        "description": "Koppel een bestaande conversation-agent en voeg één of meerdere herkende sprekers toe als niet-vertrouwde personalisatiecontext. Stemherkenning wijzigt nooit Home Assistant-gebruikers of rechten.",
         "data": {"conversation_entity": "Conversation-bronagent", "min_confidence": "Minimale speakerzekerheid"},
         "data_description": {"min_confidence": "Onder deze zekerheid wordt geen persoonscontext toegevoegd en werkt de bronagent normaal."}
       }
@@ -32,7 +32,7 @@
     "step": {
       "init": {
         "title": "Opties voor speakerherkenning",
-        "description": "De backendverbinding wordt vóór opslaan gecontroleerd. Persoonscontext is alleen personalisatie en nooit autorisatie.",
+        "description": "De backendverbinding wordt vóór opslaan gecontroleerd. Enkelvoudige of meervoudige speakercontext is alleen personalisatie en nooit autorisatie.",
         "data": {"url": "URL van herkenningsbackend", "token": "Companion-token van backend", "stt_entity": "Spraak-naar-tekst-bronentiteit", "conversation_entity": "Conversation-bronagent", "min_confidence": "Minimale speakerzekerheid"}
       }
     },

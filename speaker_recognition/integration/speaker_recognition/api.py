@@ -196,6 +196,8 @@ class SpeakerRecognitionApi:
         forwarded: bool,
         reason: str,
         person_entity_id: str | None = None,
+        person_entity_ids: list[str] | None = None,
+        speaker_names: list[str] | None = None,
     ) -> None:
         """Record whether mapped person context reached the conversation agent."""
         await self._request(
@@ -205,6 +207,8 @@ class SpeakerRecognitionApi:
                 "conversation_forwarded": forwarded,
                 "conversation_reason": reason,
                 "person_entity_id": person_entity_id,
+                "person_entity_ids": person_entity_ids or [],
+                "speaker_names": speaker_names or [],
             },
             expect_json=False,
             timeout=5,

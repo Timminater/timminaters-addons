@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import os
 import time
 from dataclasses import replace
+
+import numpy as np
 
 os.environ["DATA_DIR"] = "/tmp/speaker-recognition-tests-unused"
 
@@ -12,6 +15,20 @@ import app.api as api
 from app.audio_processor import ProcessedAudioResult
 from app.recognizer import SpeakerRecognizer
 from conftest import FakeEncoder, audio
+
+
+def mixed_speakers_audio():
+    pcm = np.concatenate(
+        (
+            np.full(16000, 12000, dtype="<i2"),
+            np.zeros(8000, dtype="<i2"),
+            np.full(16000, -12000, dtype="<i2"),
+        )
+    )
+    return {
+        "audio_data": base64.b64encode(pcm.tobytes()).decode(),
+        "sample_rate": 16000,
+    }
 
 
 def test_api_contract_and_ingress_auth(tmp_path, monkeypatch):
@@ -219,6 +236,64 @@ def test_v2_analysis_filters_bulk_delete_and_public_paths(tmp_path, monkeypatch)
         assert deleted.status_code == 200
         assert deleted.json() == {"deleted": 1}
         assert client.get("/api/analysis").json()["total"] == 1
+
+
+def test_analysis_persists_multiple_speakers_without_blocking_known_voices(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "unknown_speaker_policy", "block")
+    monkeypatch.setitem(api._policy, "min_margin", 0.1)
+    api.recognizer = SpeakerRecognizer(
+        tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav
+    )
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Eline",
+                "person_entity_id": "person.eline",
+                "samples": [{"audio": audio(12000).model_dump()}],
+            },
+        )
+        client.post(
+            "/api/enroll",
+            json={
+                "speaker_name": "Anne-Marie",
+                "person_entity_id": "person.anne_marie",
+                "samples": [{"audio": audio(-12000).model_dump()}],
+            },
+        )
+
+        response = client.post(
+            "/api/analyze",
+            json={"audio": mixed_speakers_audio(), "source": "test"},
+        )
+
+        assert response.status_code == 200
+        result = response.json()
+        assert result["outcome"] == "multiple_speakers"
+        assert result["multiple_speakers"] is True
+        assert result["matched"] is False
+        assert result["blocked"] is False
+        assert [item["speaker_name"] for item in result["detected_speakers"]] == [
+            "Eline",
+            "Anne-Marie",
+        ]
+        ephemeral = client.post(
+            "/api/recognize", json={"audio": mixed_speakers_audio()}
+        ).json()
+        assert ephemeral["outcome"] == "multiple_speakers"
+        assert len(ephemeral["detected_speakers"]) == 2
+        detail = client.get(
+            f"/api/analysis/{result['recording_id']}"
+        ).json()
+        assert detail["outcome"] == "multiple_speakers"
+        assert detail["detected_speakers"] == result["detected_speakers"]
+        assert client.get(
+            f"/api/analysis?speaker_id={result['detected_speakers'][0]['speaker_id']}"
+        ).json()["total"] == 1
 
 
 def test_reanalyze_uses_current_profiles_and_preserves_pipeline_history(

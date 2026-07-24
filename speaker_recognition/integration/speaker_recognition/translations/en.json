@@ -20,7 +20,7 @@
       },
       "add_conversation": {
         "title": "Add conversation proxy",
-        "description": "Wrap an existing conversation agent and add a mapped person as untrusted personalization context. Voice recognition never changes Home Assistant users or permissions.",
+        "description": "Wrap an existing conversation agent and add one or more recognized speakers as untrusted personalization context. Voice recognition never changes Home Assistant users or permissions.",
         "data": {"conversation_entity": "Source conversation agent", "min_confidence": "Minimum speaker confidence"},
         "data_description": {"min_confidence": "Below this confidence, no person context is added and the source agent is used normally."}
       }
@@ -32,7 +32,7 @@
     "step": {
       "init": {
         "title": "Speaker Recognition options",
-        "description": "Backend connection settings are validated before they are saved. Conversation person context is personalization only and never authorization.",
+        "description": "Backend connection settings are validated before they are saved. Single- or multi-speaker context is personalization only and never authorization.",
         "data": {"url": "Recognition backend URL", "token": "Backend companion token", "stt_entity": "Source speech-to-text entity", "conversation_entity": "Source conversation agent", "min_confidence": "Minimum speaker confidence"}
       }
     },

@@ -46,6 +46,7 @@ class RecognitionAnalysis:
     margin: float
     outcome: str
     best_segment: dict[str, float] | None
+    detected_speakers: list[dict[str, object]]
     candidates: list[dict[str, object]]
     timings: dict[str, float]
     canonical_pcm: bytes
@@ -421,7 +422,16 @@ class SpeakerRecognizer:
             margin = best_score - (sorted_scores[1] if len(sorted_scores) > 1 else -1.0)
             effective_threshold = self._threshold if threshold is None else threshold
             effective_margin = self._min_margin if min_margin is None else min_margin
-            if best_score < effective_threshold:
+            detected_speakers = self._detect_multiple_speakers(
+                scored, effective_threshold, effective_margin
+            )
+            if len(detected_speakers) > 1:
+                outcome = "multiple_speakers"; match = None
+                best_score = max(
+                    float(item["confidence"]) for item in detected_speakers
+                )
+                margin = min(float(item["margin"]) for item in detected_speakers)
+            elif best_score < effective_threshold:
                 outcome = "unmatched"; match = None
             elif margin < effective_margin:
                 outcome = "ambiguous"; match = None
@@ -438,14 +448,118 @@ class SpeakerRecognizer:
             named_scores = {self._profiles[item].name: score for item, score in score_by_id.items()}
             return RecognitionAnalysis(
                 speaker=match, confidence=best_score, scores=named_scores, threshold=effective_threshold,
-                margin=margin, outcome=outcome, best_segment=self._public_segment(best_by_id.get(best_id)),
-                candidates=scored, timings={
+                margin=margin, outcome=outcome, best_segment=(
+                    None
+                    if outcome == "multiple_speakers"
+                    else self._public_segment(best_by_id.get(best_id))
+                ),
+                detected_speakers=detected_speakers, candidates=scored, timings={
                     "recognition_ms": round((recognition_finished - started) * 1000, 2),
                     "extraction_ms": round(extraction_ms, 2),
                 },
                 canonical_pcm=np.asarray(np.clip(canonical, -1, 0.9999695)*32768, dtype="<i2").tobytes(),
                 extracted_pcm=extracted, extraction_status=extraction_status,
             )
+
+    def _detect_multiple_speakers(
+        self,
+        candidates: list[dict[str, object]],
+        threshold: float,
+        min_margin: float,
+    ) -> list[dict[str, object]]:
+        """Find decisive different winners in non-overlapping speech regions."""
+        profiles_by_name = {
+            profile.name: profile for profile in self._profiles.values()
+        }
+        evidence: list[dict[str, object]] = []
+        for candidate in candidates:
+            if candidate.get("kind") == "utterance":
+                continue
+            start = float(candidate["start_seconds"])
+            end = float(candidate["end_seconds"])
+            if end - start < 0.5:
+                continue
+            scores = dict(candidate.get("scores") or {})
+            ranked = sorted(
+                (
+                    (name, float(score))
+                    for name, score in scores.items()
+                    if name in profiles_by_name
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if not ranked:
+                continue
+            name, confidence = ranked[0]
+            runner_up = ranked[1][1] if len(ranked) > 1 else -1.0
+            margin = confidence - runner_up
+            if confidence < threshold or margin < min_margin:
+                continue
+            profile = profiles_by_name[name]
+            evidence.append(
+                {
+                    "speaker_id": profile.id,
+                    "speaker_name": profile.name,
+                    "person_entity_id": profile.person_entity_id,
+                    "confidence": confidence,
+                    "margin": margin,
+                    "start_seconds": start,
+                    "end_seconds": end,
+                    "kind": candidate.get("kind"),
+                }
+            )
+
+        supported_ids: set[str] = set()
+        for index, left in enumerate(evidence):
+            for right in evidence[index + 1 :]:
+                if left["speaker_id"] == right["speaker_id"]:
+                    continue
+                non_overlapping = (
+                    float(left["end_seconds"]) <= float(right["start_seconds"])
+                    or float(right["end_seconds"]) <= float(left["start_seconds"])
+                )
+                if non_overlapping:
+                    supported_ids.update(
+                        (str(left["speaker_id"]), str(right["speaker_id"]))
+                    )
+        if len(supported_ids) < 2:
+            return []
+
+        best_by_speaker: dict[str, dict[str, object]] = {}
+        first_seen: dict[str, float] = {}
+        for item in evidence:
+            speaker_id = str(item["speaker_id"])
+            if speaker_id not in supported_ids:
+                continue
+            first_seen[speaker_id] = min(
+                first_seen.get(speaker_id, float(item["start_seconds"])),
+                float(item["start_seconds"]),
+            )
+            if (
+                speaker_id not in best_by_speaker
+                or float(item["confidence"])
+                > float(best_by_speaker[speaker_id]["confidence"])
+            ):
+                best_by_speaker[speaker_id] = item
+
+        result: list[dict[str, object]] = []
+        for speaker_id in sorted(best_by_speaker, key=first_seen.__getitem__):
+            item = best_by_speaker[speaker_id]
+            result.append(
+                {
+                    "speaker_id": item["speaker_id"],
+                    "speaker_name": item["speaker_name"],
+                    "person_entity_id": item["person_entity_id"],
+                    "confidence": round(float(item["confidence"]), 6),
+                    "margin": round(float(item["margin"]), 6),
+                    "best_segment": {
+                        "start_seconds": item["start_seconds"],
+                        "end_seconds": item["end_seconds"],
+                    },
+                }
+            )
+        return result
 
     def _embed(self, encoder: Encoder, audio_input: AudioInput) -> NDArray[np.float32]:
         wav = self._decode_audio(audio_input)
@@ -481,7 +595,14 @@ class SpeakerRecognizer:
             if float(np.max(energies)) >= 0.008 and float(np.ptp(energies)) < 0.005:
                 speaking = np.ones_like(energies, dtype=bool)
             else:
-                speaking = energies >= max(0.008, floor * 2.2)
+                # A short silence may occupy exactly the lower quantile and
+                # interpolation can otherwise lift ``floor`` close to speech
+                # energy, eliminating every region. Cap the adaptive threshold
+                # at half the observed peak so real pauses still split speakers.
+                speaking = energies >= max(
+                    0.008,
+                    min(floor * 2.2, float(np.max(energies)) * 0.5),
+                )
             start: int | None = None
             for index, active in enumerate(np.append(speaking, False)):
                 if active and start is None: start = index

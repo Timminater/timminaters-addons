@@ -83,6 +83,11 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
         result = self.data
         if result is None:
             return None
+        if (
+            result.get("multiple_speakers")
+            or result.get("outcome") == "multiple_speakers"
+        ):
+            return "multiple_speakers"
         if not result.get("matched"):
             return "not_recognized"
         return result.get("speaker_name") or result.get("person_entity_id") or "matched"
@@ -100,6 +105,11 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
             "speaker_id": result.get("speaker_id"),
             "speaker_name": result.get("speaker_name"),
             "person_entity_id": result.get("person_entity_id"),
+            "multiple_speakers": bool(result.get("multiple_speakers")),
+            "speaker_count": len(result.get("detected_speakers") or []),
+            "speakers": result.get("detected_speakers", []),
+            "speaker_names": result.get("speaker_names", []),
+            "person_entity_ids": result.get("person_entity_ids", []),
             "satellite_id": result.get("satellite_id"),
             "stt_entity_id": result.get("entity_id"),
             "scores": result.get("scores", {}),
@@ -152,6 +162,14 @@ class LastConversationContextSensor(SpeakerRecognitionDiagnosticSensor):
         context = self.data
         if context is None:
             return None
+        if (
+            context.get("forwarded")
+            and (
+                context.get("multiple_speakers")
+                or len(context.get("speaker_names") or []) > 1
+            )
+        ):
+            return "multiple_speakers"
         return (
             context.get("person_entity_id")
             if context.get("forwarded")

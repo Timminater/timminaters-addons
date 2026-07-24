@@ -569,6 +569,41 @@ def test_block_skips_pre_stt_or_discards_parallel_transcript():
         assert hass.data["speaker_recognition"]["last_result"]["blocked"] is True
 
 
+def test_multiple_known_speakers_are_not_blocked_and_are_published():
+    multiple = matched_result(
+        matched=False,
+        outcome="multiple_speakers",
+        speaker=None,
+        detected_speakers=[
+            {
+                "speaker_id": "eline",
+                "speaker_name": "Eline",
+                "person_entity_id": "person.eline",
+                "confidence": 0.93,
+            },
+            {
+                "speaker_id": "anne-marie",
+                "speaker_name": "Anne-Marie",
+                "person_entity_id": "person.anne_marie",
+                "confidence": 0.91,
+            },
+        ],
+    )
+    api = Api(mode="off", unknown="block", result=multiple)
+    proxy, hass, source = make_proxy(api)
+
+    returned = asyncio.run(
+        proxy.async_process_audio_stream(SpeechMetadata(), chunks(wav()))
+    )
+
+    assert returned.result is SpeechResultState.SUCCESS
+    assert len(source.calls) == 1
+    recognized = hass.data["speaker_recognition"]["last_result"]
+    assert recognized["blocked"] is False
+    assert recognized["multiple_speakers"] is True
+    assert recognized["speaker_names"] == ["Eline", "Anne-Marie"]
+
+
 def test_backend_failure_is_fail_open_for_allow_and_closed_for_block():
     for unknown, expected_calls, expected_state in (
         ("allow", 1, SpeechResultState.SUCCESS),

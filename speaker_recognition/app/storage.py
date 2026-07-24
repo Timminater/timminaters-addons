@@ -303,9 +303,17 @@ class AudioCatalog:
     @staticmethod
     def _recording_predicate(*, outcome: str | None = None, source: str | None = None, speaker_id: str | None = None, query: str | None = None, since: str | None = None) -> tuple[str, list[Any]]:
         where: list[str] = []; values: list[Any] = []
-        for column, value in (("outcome", outcome), ("source", source), ("speaker_id", speaker_id)):
+        for column, value in (("outcome", outcome), ("source", source)):
             if value:
                 where.append(f"{column}=?"); values.append(value)
+        if speaker_id:
+            where.append(
+                "(speaker_id=? OR EXISTS ("
+                "SELECT 1 FROM json_each(recordings.labels_json, '$.detected_speakers') "
+                "WHERE json_extract(json_each.value, '$.speaker_id')=?"
+                "))"
+            )
+            values.extend([speaker_id, speaker_id])
         if query:
             where.append("(speaker_name LIKE ? OR transcript LIKE ? OR satellite_id LIKE ? OR stt_entity_id LIKE ?)")
             search = f"%{query}%"

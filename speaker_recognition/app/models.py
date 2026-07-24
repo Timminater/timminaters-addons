@@ -104,6 +104,8 @@ class RecognitionResult(BaseModel):
     confidence: float
     threshold: float
     scores: dict[str, float]
+    outcome: Literal["matched", "unmatched", "ambiguous", "multiple_speakers"]
+    detected_speakers: list[dict[str, object]] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):
@@ -144,7 +146,7 @@ class AnalyzeRequest(BaseModel):
 
 class FinalizeRecordingRequest(BaseModel):
     transcript: str | None = Field(default=None, max_length=10000)
-    outcome: Literal["matched", "unmatched", "ambiguous", "error", "blocked"] | None = None
+    outcome: Literal["matched", "unmatched", "ambiguous", "multiple_speakers", "error", "blocked"] | None = None
     stt_entity_id: str | None = Field(default=None, max_length=255)
     timings: dict[str, float] | None = None
     conversation_forwarded: bool | None = None
@@ -158,8 +160,31 @@ class FinalizeRecordingRequest(BaseModel):
 class ConversationRecordingRequest(BaseModel):
     conversation_forwarded: bool
     person_entity_id: str | None = Field(default=None, pattern=r"^person\.[a-z0-9_]+$")
+    person_entity_ids: list[str] = Field(default_factory=list, max_length=20)
+    speaker_names: list[str] = Field(default_factory=list, max_length=20)
     conversation_reason: str | None = Field(default=None, max_length=300)
     timings: dict[str, float] | None = None
+
+    @field_validator("person_entity_ids")
+    @classmethod
+    def validate_person_entity_ids(cls, values: list[str]) -> list[str]:
+        if any(
+            not value.startswith("person.")
+            or value.count(".") != 1
+            or not value.removeprefix("person.")
+            or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_." for character in value)
+            for value in values
+        ):
+            raise ValueError("Invalid person entity ID")
+        return list(dict.fromkeys(values))
+
+    @field_validator("speaker_names")
+    @classmethod
+    def clean_speaker_names(cls, values: list[str]) -> list[str]:
+        cleaned = [" ".join(value.split()) for value in values]
+        if any(not value or len(value) > 80 for value in cleaned):
+            raise ValueError("Invalid speaker name")
+        return list(dict.fromkeys(cleaned))
 
 
 class ExtractRequest(BaseModel):

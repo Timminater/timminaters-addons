@@ -132,6 +132,8 @@ def test_analysis_and_finalize_use_v2_contract():
     assert session.calls[2][2]["json"]["conversation_reason"] == (
         "no_eligible_fresh_satellite_match"
     )
+    assert session.calls[2][2]["json"]["person_entity_ids"] == []
+    assert session.calls[2][2]["json"]["speaker_names"] == []
 
 
 def test_enrollment_claim_sends_the_locally_observed_satellite():

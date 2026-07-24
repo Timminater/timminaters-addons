@@ -126,6 +126,9 @@ def test_analysis_ui_can_reanalyze_and_preview_enrollment_selection():
     assert "recognized_person_entity_id" in script
     assert "conversation_person_entity_id" in script
     assert "Conversation-persoon" in script
+    assert '<option value="multiple_speakers">Meerdere sprekers</option>' in document
+    assert 'multiple_speakers: "Meerdere sprekers"' in script
+    assert "Gedetecteerde sprekers" in script
 
 
 def test_settings_explain_the_minimum_speaker_score_margin():

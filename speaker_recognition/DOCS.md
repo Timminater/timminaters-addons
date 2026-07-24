@@ -11,7 +11,7 @@ Voeg de integratie daarna nogmaals toe voor:
 1. een **STT-proxy** rond de STT-engine van de Assist-pipeline; en
 2. optioneel een **conversation-proxy** rond de bestaande conversation-agent.
 
-De STT-proxy laat dezelfde audiostream herkennen en stuurt hem volgens de globale policy door naar STT. De conversation-proxy kan een verse, exact aan dezelfde Voice-satelliet gekoppelde stemmatch als niet-vertrouwde personalisatiecontext aanbieden. Tekst, taal, conversation-id, device/satellite-id en vooral het oorspronkelijke Home Assistant `Context` blijven behouden. Een stemmatch verandert nooit `Context.user_id`, authenticatie of rechten.
+De STT-proxy laat dezelfde audiostream herkennen en stuurt hem volgens de globale policy door naar STT. De conversation-proxy kan een verse, exact aan dezelfde Voice-satelliet gekoppelde stemmatch of lijst met meerdere bekende sprekers als niet-vertrouwde personalisatiecontext aanbieden. Bij meerdere sprekers wordt expliciet gemeld dat losse woorden of opdrachten niet automatisch aan één persoon mogen worden toegeschreven. Tekst, taal, conversation-id, device/satellite-id en vooral het oorspronkelijke Home Assistant `Context` blijven behouden. Een stemmatch verandert nooit `Context.user_id`, authenticatie of rechten.
 
 ## Profielen en enrollment
 
@@ -72,6 +72,13 @@ Per item zijn, voor zover beschikbaar, zichtbaar:
 - herkennings-, warme denoise-, model-laad-, STT- en totale verwerkingstijd;
 - modelstappen, kwaliteitsmetingen, gebruikte audiovariant, fallbackreden, blokkering en doorgifte aan de conversation-agent.
 
+De herkenner vergelijkt daarnaast overtuigende winnaars in niet-overlappende
+spraakregio's. Wanneer verschillende bekende profielen afzonderlijke regio's
+winnen, wordt de uitkomst **Meerdere sprekers**. Deze uitkomst blijft onder de
+blokkeerpolicy toegestaan, omdat alle gemelde stemmen bekende profielen zijn.
+Gelijktijdig door elkaar praten kan zonder een zwaarder diarization- of
+stemseparatiemodel niet betrouwbaar aan afzonderlijke personen worden gekoppeld.
+
 Met **Opnieuw analyseren** wordt de originele WAV opnieuw beoordeeld met de
 actuele stemprofielen, herkenningsdrempel, scoremarge en toegepaste kalibratie.
 Alleen het herkenningsresultaat wordt vervangen; transcript, audiovarianten,
@@ -106,7 +113,7 @@ De hoofdentry maakt twee diagnose-sensoren:
 - `sensor.speaker_recognition_laatste_herkenning`
 - `sensor.speaker_recognition_laatste_gesprekscontext`
 
-Ze tonen onder andere recording-id, speaker/person, confidence, marge, drempel, scores, timings, extractiestatus, blokkering en of persoonscontext aan de vervolgagent is aangeboden. Elke sensor wist zijn toestand dertig seconden na de laatste eigen update. `forwarded: true` betekent dat de integratie de context aan de agent heeft aangeboden; het garandeert niet dat een externe LLM die inhoud gebruikt.
+Ze tonen onder andere recording-id, speaker/person, confidence, marge, drempel, scores, timings, extractiestatus, blokkering en of persoonscontext aan de vervolgagent is aangeboden. Bij meerdere sprekers krijgt **Laatste herkenning** de toestand `multiple_speakers` en de attributen `speaker_count`, `speakers`, `speaker_names` en `person_entity_ids`. **Laatste gesprekscontext** krijgt eveneens `multiple_speakers` wanneer die lijst aan de conversation-agent is aangeboden. De bestaande entity-id's en enkelvoudige attributen blijven compatibel. Elke sensor wist zijn toestand dertig seconden na de laatste eigen update. `forwarded: true` betekent dat de integratie de context aan de agent heeft aangeboden; het garandeert niet dat een externe LLM die inhoud gebruikt.
 
 ## App-instellingen en API
 
@@ -142,3 +149,4 @@ Iedere gebruiker met beheerrechten voor deze App kan opgeslagen stemopnamen belu
 - Browsermicrofoon vereist browsertoestemming en ondersteuning in het Ingress-frame; upload blijft beschikbaar.
 - Voice-enrollment vereist de Speaker Recognition STT-proxy in de pipeline van het Voice-apparaat.
 - Stemherkenning blijft probabilistisch en kan bij ruis, galm, ziekte of overlappende stemmen fouten maken.
+- Meerdere sprekers worden alleen gemeld wanneer verschillende bekende stemmen overtuigend in afzonderlijke, niet-overlappende spraakregio's winnen; gelijktijdige overlap blijft één gemengde embedding.

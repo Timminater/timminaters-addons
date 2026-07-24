@@ -25,6 +25,58 @@ def speech_tone(frequency: float, seconds: float = 10) -> AudioInput:
     )
 
 
+def mixed_speakers_audio() -> AudioInput:
+    pcm = np.concatenate(
+        (
+            np.full(16_000, 12_000, dtype="<i2"),
+            np.zeros(8_000, dtype="<i2"),
+            np.full(16_000, -12_000, dtype="<i2"),
+        )
+    )
+    return AudioInput(
+        audio_data=base64.b64encode(pcm.tobytes()).decode(),
+        sample_rate=16_000,
+    )
+
+
+def test_detects_multiple_known_speakers_in_separate_regions(
+    tmp_path, fake_factory, identity_preprocess
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    eline = recognizer.enroll(
+        "Eline", [audio(12000)], person_entity_id="person.eline"
+    )
+    anne_marie = recognizer.enroll(
+        "Anne-Marie",
+        [audio(-12000)],
+        person_entity_id="person.anne_marie",
+    )
+
+    detailed = recognizer.recognize_detailed(
+        mixed_speakers_audio(), threshold=0.8, min_margin=0.1
+    )
+
+    assert detailed.outcome == "multiple_speakers"
+    assert detailed.speaker is None
+    assert detailed.best_segment is None
+    assert [item["speaker_id"] for item in detailed.detected_speakers] == [
+        eline.id,
+        anne_marie.id,
+    ]
+    assert [item["speaker_name"] for item in detailed.detected_speakers] == [
+        "Eline",
+        "Anne-Marie",
+    ]
+    assert detailed.detected_speakers[0]["best_segment"] == {
+        "start_seconds": 0.0,
+        "end_seconds": 1.0,
+    }
+    assert detailed.detected_speakers[1]["best_segment"] == {
+        "start_seconds": 1.5,
+        "end_seconds": 2.5,
+    }
+
+
 def test_enroll_append_recognize_delete_and_reload(tmp_path, fake_factory, identity_preprocess):
     recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
     alice = recognizer.enroll("Alice", [audio(12000), audio(8000)])

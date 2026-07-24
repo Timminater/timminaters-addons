@@ -102,14 +102,34 @@ def consume_result(
     results.clear()
     results.extend(fresh)
 
-    candidates = [
-        item
-        for item in fresh
-        if item.get("matched")
-        and float(item.get("confidence", 0.0)) >= min_confidence
-        and item.get("person_entity_id")
-        and not item.get("consumed")
-    ]
+    def eligible(item: dict[str, Any]) -> bool:
+        if item.get("consumed"):
+            return False
+        detected = item.get("detected_speakers")
+        if item.get("outcome") == "multiple_speakers":
+            if not isinstance(detected, list) or len(detected) < 2:
+                return False
+            for speaker in detected:
+                if (
+                    not isinstance(speaker, dict)
+                    or not speaker.get("speaker_name")
+                    or float(speaker.get("confidence", 0.0)) < min_confidence
+                ):
+                    return False
+                person_entity_id = speaker.get("person_entity_id")
+                if (
+                    person_entity_id
+                    and hass.states.get(person_entity_id) is None
+                ):
+                    return False
+            return True
+        return bool(
+            item.get("matched")
+            and float(item.get("confidence", 0.0)) >= min_confidence
+            and item.get("person_entity_id")
+        )
+
+    candidates = [item for item in fresh if eligible(item)]
     # A voice match is only safe personalization metadata when both pipeline
     # stages identify the same Assist satellite. Browser/mobile conversations
     # without a satellite id must never inherit a nearby voice result.
@@ -121,7 +141,10 @@ def consume_result(
     if not candidates:
         return None
     selected = max(candidates, key=lambda item: item["timestamp"])
-    if hass.states.get(selected["person_entity_id"]) is None:
+    if (
+        selected.get("outcome") != "multiple_speakers"
+        and hass.states.get(selected["person_entity_id"]) is None
+    ):
         return None
     selected["consumed"] = True
     selected["conversation_claimed"] = True

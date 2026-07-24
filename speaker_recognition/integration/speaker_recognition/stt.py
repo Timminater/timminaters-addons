@@ -784,6 +784,11 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
     def _is_blocked(result: dict | None, unknown_policy: str) -> bool:
         if unknown_policy != "block" or result is None:
             return False
+        if (
+            result.get("outcome") == "multiple_speakers"
+            and len(result.get("detected_speakers") or []) > 1
+        ):
+            return False
         return not bool(result.get("matched")) or result.get("outcome") in {
             "unmatched",
             "ambiguous",
@@ -874,6 +879,19 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             or result.get("processing_quality")
             or processing.get("quality")
         )
+        detected_speakers = payload.get("detected_speakers") or []
+        if not isinstance(detected_speakers, list):
+            detected_speakers = []
+        speaker_names = [
+            item.get("speaker_name")
+            for item in detected_speakers
+            if isinstance(item, dict) and item.get("speaker_name")
+        ]
+        person_entity_ids = [
+            item.get("person_entity_id")
+            for item in detected_speakers
+            if isinstance(item, dict) and item.get("person_entity_id")
+        ]
         recognized = {
             "recording_id": result.get("recording_id") or payload.get("recording_id"),
             "speaker_id": speaker.get("id"),
@@ -882,6 +900,13 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "confidence": payload.get("confidence", 0.0),
             "matched": bool(payload.get("matched")),
             "outcome": payload.get("outcome", "matched" if payload.get("matched") else "unmatched"),
+            "multiple_speakers": (
+                payload.get("outcome") == "multiple_speakers"
+                and len(detected_speakers) > 1
+            ),
+            "detected_speakers": detected_speakers,
+            "speaker_names": speaker_names,
+            "person_entity_ids": person_entity_ids,
             "scores": payload.get("scores", {}),
             "margin": payload.get("margin"),
             "threshold": payload.get("threshold"),
