@@ -48,37 +48,48 @@ def main() -> None:
     )
     processor = TargetAudioProcessor()
     started = time.perf_counter()
-    cold = processor.process(mixture, timeout_seconds=30)
-    warm = processor.process(mixture, timeout_seconds=30)
+    if not processor.start():
+        raise SystemExit("DeepFilterNet2 could not be preloaded")
+    preload_elapsed = time.perf_counter() - started
+    first = processor.process(mixture, timeout_seconds=30)
+    repeated = processor.process(mixture, timeout_seconds=30)
     elapsed = time.perf_counter() - started
     hold_seconds = float(os.environ.get("MODEL_SMOKE_HOLD_SECONDS", "0"))
     if hold_seconds:
         time.sleep(hold_seconds)
     processor.close()
 
-    if cold.denoised_pcm is None or warm.denoised_pcm is None:
+    if first.denoised_pcm is None or repeated.denoised_pcm is None:
         raise SystemExit(
             "Model pipeline failed: "
-            f"cold={cold.stages}/{cold.fallback_reason}; "
-            f"warm={warm.stages}/{warm.fallback_reason}"
+            f"first={first.stages}/{first.fallback_reason}; "
+            f"repeated={repeated.stages}/{repeated.fallback_reason}"
         )
     expected_bytes = sample_count * 2
-    if abs(len(warm.denoised_pcm) - expected_bytes) > CANONICAL_RATE * 2 * 0.05:
+    if (
+        abs(len(repeated.denoised_pcm) - expected_bytes)
+        > CANONICAL_RATE * 2 * 0.05
+    ):
         raise SystemExit("Denoised audio differs by more than 50 ms")
-    if cold.isolated_pcm is not None or warm.isolated_pcm is not None:
+    if first.isolated_pcm is not None or repeated.isolated_pcm is not None:
         raise SystemExit("Speaker isolation must not be available")
-    if "denoise_ms" in cold.timings or cold.quality.get("timing_comparable"):
-        raise SystemExit("Cold model timing was incorrectly marked comparable")
-    if "denoise_ms" not in warm.timings or not warm.quality.get("timing_comparable"):
-        raise SystemExit("Warm model timing was not marked comparable")
+    for label, result in (("first", first), ("repeated", repeated)):
+        if (
+            "denoise_ms" not in result.timings
+            or "audio_processing_ms" not in result.timings
+            or not result.quality.get("timing_comparable")
+            or result.stages.get("model") != "warm"
+        ):
+            raise SystemExit(f"{label.title()} resident-model run was not comparable")
 
     peak_kib = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     print(
         "MODEL_PIPELINE_OK",
         f"seconds={elapsed:.3f}",
+        f"preload_seconds={preload_elapsed:.3f}",
         f"peak_child_mib={peak_kib / 1024:.1f}",
-        f"cold_timings={cold.timings}",
-        f"warm_timings={warm.timings}",
+        f"first_timings={first.timings}",
+        f"repeated_timings={repeated.timings}",
     )
 
 

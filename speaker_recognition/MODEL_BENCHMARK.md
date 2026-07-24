@@ -7,16 +7,16 @@ target-speaker separation code and weights were removed.
 ## Measurement policy
 
 The offline smoke test processes the same deterministic five-second
-speech-like clip twice:
+speech-like clip twice after explicitly preloading DeepFilterNet2:
 
-1. the cold run loads DeepFilterNet2 and reports `model_load_ms`,
-   `cold_start_ms` and `cold_request_ms`;
-2. the warm run reuses the loaded model and is the only run allowed to report
-   comparable `denoise_ms` and `audio_processing_ms`.
+1. startup loads DeepFilterNet2 before any user audio is submitted;
+2. the first user run must already report comparable `denoise_ms` and
+   `audio_processing_ms`;
+3. a repeated run verifies that the same resident worker remains warm.
 
 This prevents model initialization from contaminating repeatable inference
-figures. Cold-start latency remains visible as operational data, but is never
-presented as a comparable denoise result.
+figures. Startup preload time is reported separately from both user-triggered
+runs.
 
 Every accepted output must be mono PCM, retain the original duration within
 50 ms, remain below one percent clipping and complete with the whole container
@@ -33,8 +33,9 @@ The final local release-image run produced:
 - warm `audio_processing_ms`: 0.322 seconds;
 - peak child-process memory: 323.1 MiB.
 
-The cold result deliberately contained no `denoise_ms` or
-`audio_processing_ms`.
+These historical figures were recorded before startup preloading was enabled.
+The 2.1.2 smoke test now reports preload time separately and requires both
+subsequent denoise runs to use the comparable warm path.
 
 ## Earlier Home Assistant VM observation
 
