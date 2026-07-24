@@ -163,9 +163,9 @@ class ExtractRequest(BaseModel):
 
 
 class ProcessTargetAudioRequest(BaseModel):
-    """Queue real target-speaker processing for a persisted recording."""
+    """Queue optional denoising for a persisted recording."""
 
-    speaker_id: str = Field(min_length=1, max_length=64)
+    speaker_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class PromoteRecordingRequest(BaseModel):

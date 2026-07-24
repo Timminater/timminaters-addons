@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.1
+
+- SpEx+ en doelstemisolatie zijn volledig uit de runtime en image verwijderd; optionele audiobewerking bestaat voortaan alleen uit DeepFilterNet2-ruisonderdrukking.
+- Handmatige ruisonderdrukking bewaart de oorspronkelijke pipelinetijd en toont de totale geschatte pipeline inclusief de extra audiobewerking.
+- Herverwerking van een bestaande opname telt eerdere verwerkingstijd niet opnieuw op.
+- Koude modelstarts krijgen aparte laad- en cold-startmetingen. Alleen runs waarbij DeepFilterNet2 al geladen was leveren vergelijkbare `denoise_ms` en `audio_processing_ms`.
+
 ## 2.1.0
 
 - Echte lokale ruisonderdrukking met DeepFilterNet2 en enrollment-gestuurde doelstemisolatie met SpEx+.

@@ -1,40 +1,43 @@
-# Model validation for 2.1.0
+# DeepFilterNet2 validation for 2.1.1
 
-Validation was performed on amd64 with four CPU cores and a hard 2 GiB
-container memory limit.
+Validation is performed on amd64 with four CPU cores and a hard 2 GiB
+container memory limit. The image contains DeepFilterNet2 only; SpEx+ and all
+target-speaker separation code and weights were removed.
 
-## Bundled pipeline
+## Measurement policy
 
-The offline container smoke test processes five seconds of deterministic
-speech-like audio without network access. DeepFilterNet2 and SpEx+ both
-returned mono PCM with the original duration:
+The offline smoke test processes the same deterministic five-second
+speech-like clip twice:
 
-- total cold processing time: 3.72 seconds;
-- peak model-process memory: 472.7 MiB;
-- warm target-isolation stage on the live fixture: approximately 0.50 seconds.
+1. the cold run loads DeepFilterNet2 and reports `model_load_ms`,
+   `cold_start_ms` and `cold_request_ms`;
+2. the warm run reuses the loaded model and is the only run allowed to report
+   comparable `denoise_ms` and `audio_processing_ms`.
 
-The live quality matrix used an enrollment recording for the target speaker
-and a second public voice as interference. It covered clean audio, constant
-noise, music-like tones, two simultaneous speakers, absent target, silence and
-clipping. The absent target and silence were rejected. Every accepted output
-preserved duration and remained below one percent clipping.
+This prevents model initialization from contaminating repeatable inference
+figures. Cold-start latency remains visible as operational data, but is never
+presented as a comparable denoise result.
 
-For the two-speaker fixture, the SpEx+ output correlation was 0.3246 with the
-target and 0.0073 with the competitor.
+Every accepted output must be mono PCM, retain the original duration within
+50 ms, remain below one percent clipping and complete with the whole container
+limited to 2 GiB. The worker is unloaded after five minutes of inactivity.
 
-## SepFormer-WHAMR research comparison
+## Denoise-only container result
 
-SpeechBrain 1.0.3 with `speechbrain/sepformer-whamr` was tested separately
-under the same 2 GiB and four-CPU limit. It is not shipped in the App.
+The final local release-image run produced:
 
-- model load: 13.65 seconds;
-- cold inference: 3.95 seconds;
-- warm inference: 3.75 seconds;
-- peak process memory: 826.5 MiB;
-- selected output correlation: 0.5661 target, 0.0448 competitor.
+- cold request: 3.093 seconds;
+- model initialization reported separately: 0.132 seconds;
+- warm comparable `denoise_ms`: 0.318 seconds;
+- warm `audio_processing_ms`: 0.322 seconds;
+- peak child-process memory: 323.1 MiB.
 
-SepFormer fit the time and memory ceilings, but passed over six times as much
-competitor correlation as SpEx+ on the same mixture. It therefore failed the
-“less competing speech” replacement condition. A WER result could not reverse
-that conjunctive decision and was not used to replace SpEx+. The final
-Home Assistant Voice A/B remains the release check for transcript quality.
+The cold result deliberately contained no `denoise_ms` or
+`audio_processing_ms`.
+
+## Earlier Home Assistant VM observation
+
+On the first 5.27-second Home Assistant Voice recording tested before the
+denoise-only rebuild, the DeepFilterNet2 stage took 2.32 seconds while loading
+the model. A subsequent warm run took 0.19 seconds. The denoise-only container
+result above is authoritative for the final package.

@@ -99,30 +99,13 @@ def _wav_bytes(pcm: bytes, sample_rate: int) -> bytes:
 
 
 def _processed_audio(result: dict) -> tuple[str, tuple[bytes, int]] | None:
-    """Choose target audio in the 2.1 fallback order.
-
-    New App responses expose ``audio_variants``.  Some development builds
-    expose the same documents as ``isolated_audio``/``denoised_audio``.  The
-    final branch retains the 2.0 ``processed_audio`` and ``extracted_audio``
-    contract, treating it as the best available isolated result.  Keeping this
-    compatibility here also means a partially upgraded add-on can never block
-    Assist solely because its companion integration was updated first.
-    """
+    """Choose only validated denoised audio; isolation is not supported."""
     payload = (
         result.get("result") if isinstance(result.get("result"), dict) else result
     )
     variants = payload.get("audio_variants") or result.get("audio_variants") or {}
     if not isinstance(variants, dict):
         variants = {}
-    isolated_candidates = (
-        variants.get("isolated"),
-        payload.get("isolated_audio"),
-        result.get("isolated_audio"),
-    )
-    for value in isolated_candidates:
-        if (decoded := _decode_audio(value)) is not None:
-            return "isolated", decoded
-
     quality = (
         payload.get("processing_quality")
         or payload.get("quality")
@@ -150,14 +133,6 @@ def _processed_audio(result: dict) -> tuple[str, tuple[bytes, int]] | None:
             if (decoded := _decode_audio(value)) is not None:
                 return "denoised", decoded
 
-    for value in (
-        payload.get("processed_audio"),
-        payload.get("extracted_audio"),
-        result.get("processed_audio"),
-        result.get("extracted_audio"),
-    ):
-        if (decoded := _decode_audio(value)) is not None:
-            return "isolated", decoded
     return None
 
 
@@ -479,14 +454,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             audio_variant, (processed_pcm, processed_rate) = processed
             if processed_pcm:
                 source_audio = _wav_bytes(processed_pcm, processed_rate)
-                # Denoising is a safe, deliberate fallback when target-speaker
-                # isolation is unavailable.  Surface that fact explicitly in
-                # the diagnostic sensor and recording finalization.
-                fallback = audio_variant != "isolated"
-                if fallback:
-                    fallback_reason = self._fallback_reason(
-                        result, "isolated_unavailable"
-                    )
+                fallback = False
                 try:
                     source_metadata = replace(
                         metadata, sample_rate=processed_rate, channel=1
@@ -506,7 +474,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         elif not blocked:
             fallback = True
             fallback_reason = self._fallback_reason(
-                result, "isolated_and_denoised_unavailable"
+                result, "denoised_unavailable"
             )
 
         recognized = None
@@ -692,14 +660,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "denoise_ms": self._stage_timing(
                 timing_values, "denoise_ms", "denoising_ms", "denoise"
             ),
-            "isolation_ms": self._stage_timing(
-                timing_values,
-                "isolation_ms",
-                "isolated_ms",
-                "isolation",
-                "extract_ms",
-            )
-            or timings.get("extraction_ms"),
+            "model_load_ms": timings.get("model_load_ms"),
+            "cold_start_ms": timings.get("cold_start_ms"),
+            "cold_request_ms": timings.get("cold_request_ms"),
             "audio_processing_ms": timings.get("audio_processing_ms")
             or timings.get("processing_ms"),
             "stage_timings": timing_values.get("stages") or timing_values.get("stage_timings"),
@@ -759,8 +722,11 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             details["fallback_reason"] = recognized.get("fallback_reason")
         if recognized.get("denoise_ms") is not None:
             details.setdefault("timings", {})["denoise_ms"] = recognized["denoise_ms"]
-        if recognized.get("isolation_ms") is not None:
-            details.setdefault("timings", {})["isolation_ms"] = recognized["isolation_ms"]
+        for timing_name in ("model_load_ms", "cold_start_ms", "cold_request_ms"):
+            if recognized.get(timing_name) is not None:
+                details.setdefault("timings", {})[timing_name] = recognized[
+                    timing_name
+                ]
         if recognized.get("audio_processing_ms") is not None:
             details.setdefault("timings", {})["audio_processing_ms"] = recognized[
                 "audio_processing_ms"

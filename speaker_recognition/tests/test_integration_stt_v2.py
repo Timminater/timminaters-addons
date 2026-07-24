@@ -308,7 +308,7 @@ def test_voice_enrollment_claim_uses_pre_round_trip_satellite_snapshot():
     )
 
 
-def test_before_stt_uses_valid_legacy_extracted_wav_as_isolated_audio():
+def test_before_stt_ignores_legacy_extracted_audio():
     processed_pcm = b"\x02\x00" * 100
     import base64
 
@@ -329,14 +329,14 @@ def test_before_stt_uses_valid_legacy_extracted_wav_as_isolated_audio():
     assert returned.result is SpeechResultState.SUCCESS
     metadata, sent = source.calls[0]
     pcm, rate = _pcm16_mono(sent, metadata)
-    assert pcm == processed_pcm
+    assert pcm == b"\x01\x00" * 400
     assert rate == 16000
     result = hass.data["speaker_recognition"]["last_result"]
-    assert result["audio_variant"] == "isolated"
-    assert result["fallback"] is False
+    assert result["audio_variant"] == "original"
+    assert result["fallback"] is True
 
 
-def test_before_stt_prefers_isolated_then_denoised_before_original():
+def test_before_stt_ignores_isolated_and_uses_denoised():
     import base64
 
     isolated = b"\x03\x00" * 10
@@ -359,8 +359,8 @@ def test_before_stt_prefers_isolated_then_denoised_before_original():
                 "recognition_ms": 25.0,
                 "audio_processing_ms": 42.0,
             },
-            processing_stages={"denoise": {"ms": 10}, "isolation": {"ms": 20}},
-            processing_quality={"passed": True},
+            processing_stages={"denoise": {"ms": 10}, "model": "warm"},
+            processing_quality={"passed": True, "model_was_loaded": True},
         ),
     )
     proxy, hass, source = make_proxy(api)
@@ -368,12 +368,11 @@ def test_before_stt_prefers_isolated_then_denoised_before_original():
 
     pcm, _rate = _pcm16_mono(source.calls[0][1], source.calls[0][0])
     result = hass.data["speaker_recognition"]["last_result"]
-    assert pcm == isolated
-    assert result["audio_variant"] == "isolated"
+    assert pcm == denoised
+    assert result["audio_variant"] == "denoised"
     assert result["denoise_ms"] == 10.0
-    assert result["isolation_ms"] == 20.0
     assert result["audio_processing_ms"] == 42.0
-    assert result["quality"] == {"passed": True}
+    assert result["quality"] == {"passed": True, "model_was_loaded": True}
 
 
 def test_before_stt_uses_denoised_when_isolated_is_unavailable():
@@ -400,11 +399,10 @@ def test_before_stt_uses_denoised_when_isolated_is_unavailable():
     result = hass.data["speaker_recognition"]["last_result"]
     assert pcm == denoised
     assert result["audio_variant"] == "denoised"
-    assert result["fallback"] is True
-    assert result["fallback_reason"] == "isolation_quality_rejected"
+    assert result["fallback"] is False
 
 
-def test_processed_audio_keeps_v20_extracted_payload_compatible():
+def test_processed_audio_ignores_v20_extracted_payload():
     import base64
 
     pcm = b"\x05\x00" * 10
@@ -415,7 +413,7 @@ def test_processed_audio_keeps_v20_extracted_payload_compatible():
                 "sample_rate": 16000,
             }
         }
-    ) == ("isolated", (pcm, 16000))
+    ) is None
 
 
 def test_processed_audio_ignores_boolean_availability_flags():
@@ -430,7 +428,7 @@ def test_processed_audio_ignores_boolean_availability_flags():
                 "sample_rate": 16000,
             },
         }
-    ) == ("isolated", (pcm, 16000))
+    ) is None
 
 
 def test_processed_audio_rejects_conflicting_denoised_variant():

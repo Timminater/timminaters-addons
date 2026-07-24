@@ -131,7 +131,7 @@ def main() -> None:
         api.request(
             "POST",
             f"/api/analysis/{recording_id}/process",
-            {"speaker_id": target_profile["id"]},
+            {},
         )
         deadline = time.monotonic() + 185
         while True:
@@ -145,8 +145,6 @@ def main() -> None:
             "outcome": analyzed.get("outcome"),
             "speaker": analyzed.get("speaker_name"),
             "confidence": analyzed.get("confidence"),
-            "isolated": analyzed.get("isolated_available")
-            or bool(analyzed.get("isolated_audio")),
             "denoised": analyzed.get("denoised_available")
             or bool(analyzed.get("denoised_audio")),
             "stages": analyzed.get("processing_stages"),
@@ -154,18 +152,6 @@ def main() -> None:
             "quality": analyzed.get("processing_quality"),
             "timings": analyzed.get("timings"),
         }
-        if name == "two_speakers" and results[name]["isolated"]:
-            separated, separated_rate = api.audio(
-                f"/api/analysis/{recording_id}/audio?variant=isolated"
-            )
-            separated = resample(separated, separated_rate, 16_000)
-            results[name]["target_correlation"] = round(
-                correlation(separated, target), 6
-            )
-            results[name]["competitor_correlation"] = round(
-                correlation(separated, competitor), 6
-            )
-
     warm_started = time.monotonic()
     warm_live = api.request(
         "POST",
@@ -178,8 +164,8 @@ def main() -> None:
     )
     warm_elapsed = time.monotonic() - warm_started
     results["warm_live_clean"] = {
-        "isolated": warm_live.get("isolated_available")
-        or bool(warm_live.get("isolated_audio")),
+        "denoised": warm_live.get("denoised_available")
+        or bool(warm_live.get("denoised_audio")),
         "fallback": warm_live.get("processing_fallback_reason"),
         "stages": warm_live.get("processing_stages"),
         "quality": warm_live.get("processing_quality"),
@@ -203,25 +189,18 @@ def main() -> None:
             raise
         results["silence"] = {"rejected_http": error.code}
 
-    if results["absent_target"]["isolated"]:
-        raise AssertionError("Absent target speaker produced accepted isolated audio")
     for name, result in results.items():
         if name != "silence" and result["quality"]:
             if result["quality"].get("duration_preserved") is not True:
                 raise AssertionError(f"{name}: duration was not preserved")
             if float(result["quality"].get("clipping_ratio", 1.0)) >= 0.01:
                 raise AssertionError(f"{name}: processed audio clips excessively")
-    if not results["clean"]["isolated"]:
-        raise AssertionError("Clean target speech did not produce accepted isolated audio")
-    if not results["two_speakers"]["isolated"]:
-        raise AssertionError("Two-speaker mixture did not produce accepted isolated audio")
-    if (
-        results["two_speakers"]["target_correlation"]
-        <= results["two_speakers"]["competitor_correlation"]
-    ):
-        raise AssertionError("Isolated audio retained more competitor than target")
-    if not results["warm_live_clean"]["isolated"]:
-        raise AssertionError("Warm before_stt target speech did not produce isolated audio")
+    if not results["clean"]["denoised"]:
+        raise AssertionError("Clean speech did not produce accepted denoised audio")
+    if not results["constant_noise"]["denoised"]:
+        raise AssertionError("Noisy speech did not produce accepted denoised audio")
+    if not results["warm_live_clean"]["denoised"]:
+        raise AssertionError("Warm before_stt speech did not produce denoised audio")
     if results["warm_live_clean"]["wall_seconds"] > 12:
         raise AssertionError("Warm before_stt processing exceeded 12 seconds")
     print(json.dumps(results, indent=2, sort_keys=True))

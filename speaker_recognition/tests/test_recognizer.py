@@ -128,23 +128,3 @@ def test_corrupt_profile_does_not_hide_other_profiles(tmp_path, fake_factory, id
 
     restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
     assert [profile.id for profile in restarted.list_speakers()] == [alice.id]
-
-
-def test_reference_uses_active_samples_and_is_capped_at_30_seconds(
-    tmp_path, fake_factory, identity_preprocess
-):
-    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
-    profile = recognizer.enroll(
-        "Alice",
-        [speech_tone(150), speech_tone(170), speech_tone(190), speech_tone(210)],
-    )
-
-    reference = recognizer._reference_audio(profile.id)
-    assert 1 * 16_000 <= reference.size <= 30 * 16_000
-    assert float(np.max(np.abs(reference))) <= 0.851
-
-    latest = recognizer.catalog.list_samples(profile.id, active_only=True)[-1]
-    recognizer.catalog.set_sample_active(latest["id"], False)
-    rebuilt = recognizer._reference_audio(profile.id)
-
-    assert not np.array_equal(reference, rebuilt)

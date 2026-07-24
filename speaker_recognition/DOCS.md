@@ -41,10 +41,10 @@ De globale policy in de webinterface bevat:
 - **Onbekende speaker toestaan** (standaard): STT en conversation blijven werken wanneer niemand wordt herkend.
 - **Onbekende speaker blokkeren**: een onbekende of ambigue uiting stopt vóór de conversation-agent. Gebruik dit niet als beveiligingsmiddel voor sloten, alarmen of andere gevoelige acties.
 - **Audiobewerking uit** (standaard): STT ontvangt de oorspronkelijke audio.
-- **Alleen vergelijken**: de App maakt DeepFilterNet2-ruisonderdrukking en SpEx+-doelstemisolatie op de achtergrond; STT ontvangt nog steeds het origineel.
-- **Vóór STT** (experimenteel): de App probeert binnen maximaal twaalf seconden eerst de geïsoleerde doelstem en daarna de ruisonderdrukte audio aan STT te geven. Bij tijdsoverschrijding, onvoldoende geheugen, een ambigue speaker-validatie of een modelfout ontvangt STT het origineel.
+- **Alleen vergelijken**: de App maakt DeepFilterNet2-ruisonderdrukking op de achtergrond; STT ontvangt nog steeds het origineel.
+- **Vóór STT** (experimenteel): de App probeert binnen maximaal twaalf seconden de ruisonderdrukte audio aan STT te geven. Bij tijdsoverschrijding, kwaliteitsafkeur of een modelfout ontvangt STT het origineel.
 
-DeepFilterNet2 werkt intern op 48 kHz. SpEx+ gebruikt een maximaal dertig seconden lange referentie die uit de actieve permanente enrollment-WAV's van het gekozen profiel wordt opgebouwd en werkt intern op 8 kHz. Alle resultaten keren als 16 kHz mono-PCM terug met dezelfde tijdlijn. Clips boven dertig seconden worden tot maximaal 120 seconden in overlappende blokken verwerkt. Live STT heeft voorrang op handmatige Analyse-taken; de modelworker wordt na vijf minuten inactiviteit ontladen.
+DeepFilterNet2 werkt intern op 48 kHz en levert 16 kHz mono-PCM met dezelfde tijdlijn terug. Clips tot maximaal 120 seconden worden ondersteund. Live STT heeft voorrang op handmatige Analyse-taken; de modelworker wordt na vijf minuten inactiviteit ontladen. Een koude start toont `model_load_ms` en `cold_request_ms`, maar krijgt bewust geen `denoise_ms` of vergelijkbare `audio_processing_ms`. Alleen een run waarbij het model al geladen was telt mee als vergelijkbare prestatiemeting.
 
 Wanneer de backend niet bereikbaar is, blijft de normale `allow`-policy fail-open. Een actief bekende `block`-policy faalt gesloten.
 
@@ -54,14 +54,14 @@ De pagina **Analyse** bewaart gewone Assist-pipeline-opnamen en opnamen van **Te
 
 Per item zijn, voor zover beschikbaar, zichtbaar:
 
-- aparte spelers voor origineel, ruisonderdrukt en geïsoleerde doelstem;
+- aparte spelers voor origineel en ruisonderdrukt;
 - transcript en bron/satelliet;
 - match, confidence, drempel, marge en alle profiel-scores;
 - gebruikte segmenten en het beste tijdvenster;
-- herkennings-, denoise-, isolatie-, STT- en totale verwerkingstijd;
+- herkennings-, warme denoise-, model-laad-, STT- en totale verwerkingstijd;
 - modelstappen, kwaliteitsmetingen, gebruikte audiovariant, fallbackreden, blokkering en doorgifte aan de conversation-agent.
 
-Met **Doelstem isoleren** kies je eerst een profiel en start je een asynchrone verwerking. De golfvormselectie blijft uitsluitend bedoeld om een handmatig gekozen deel aan een bestaand of nieuw enrollmentprofiel toe te voegen. Analyse-items kunnen afzonderlijk, als selectie of gezamenlijk worden verwijderd.
+Met **Ruis onderdrukken** start je een asynchrone verwerking zonder een profiel te kiezen. De golfvormselectie blijft uitsluitend bedoeld om een handmatig gekozen deel aan een bestaand of nieuw enrollmentprofiel toe te voegen. Analyse-items kunnen afzonderlijk, als selectie of gezamenlijk worden verwijderd.
 
 Analyse-audio wordt standaard zeven dagen bewaard, met daarnaast een globale limiet van 2 GiB. Bij overschrijding worden de oudste opnamen eerst verwijderd. Deze tijdelijke WAV's zijn uitgesloten van Home Assistant App-backups.
 
@@ -92,8 +92,8 @@ Belangrijkste routes:
 - `GET /api/speakers`, `POST /api/enroll` en profiel/sample-routes;
 - `POST /api/recognize` voor een vluchtige compatibiliteitstest;
 - `POST /api/analyze` en `/api/analysis/*` voor opgeslagen diagnose;
-- `POST /api/analysis/{id}/process` om asynchroon een gekozen doelstem te isoleren;
-- `GET /api/analysis/{id}/audio?variant=original|denoised|isolated`;
+- `POST /api/analysis/{id}/process` om asynchroon ruis te onderdrukken;
+- `GET /api/analysis/{id}/audio?variant=original|denoised`;
 - `GET/PATCH /api/pipeline-policy`;
 - `GET/POST/DELETE /api/calibration`;
 - routes voor personen, Voice-satellieten en eenmalige Voice-opnamen.
@@ -107,8 +107,8 @@ Iedere gebruiker met beheerrechten voor deze App kan opgeslagen stemopnamen belu
 ## Bekende beperkingen
 
 - Alleen `amd64` is ondersteund.
-- Verhoog de Home Assistant-VM bij voorkeur naar 6 GB RAM. De release-smoketest begrenst de volledige container op 2 GB; bij onvoldoende beschikbaar cgroup-geheugen valt isolatie automatisch terug.
-- De reproduceerbare modelmetingen en de SepFormer-WHAMR-vergelijking staan in [MODEL_BENCHMARK.md](MODEL_BENCHMARK.md).
+- Verhoog de Home Assistant-VM bij voorkeur naar 6 GB RAM. De release-smoketest begrenst de volledige container op 2 GB.
+- De reproduceerbare DeepFilterNet2-metingen staan in [MODEL_BENCHMARK.md](MODEL_BENCHMARK.md).
 - Browsermicrofoon vereist browsertoestemming en ondersteuning in het Ingress-frame; upload blijft beschikbaar.
 - Voice-enrollment vereist de Speaker Recognition STT-proxy in de pipeline van het Voice-apparaat.
 - Stemherkenning blijft probabilistisch en kan bij ruis, galm, ziekte of overlappende stemmen fouten maken.

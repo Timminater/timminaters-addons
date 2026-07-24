@@ -46,35 +46,39 @@ def main() -> None:
         target + competing + 0.01 * rng.normal(size=sample_count),
         dtype=np.float32,
     )
-    reference = np.asarray(target, dtype=np.float32)
-
     processor = TargetAudioProcessor()
     started = time.perf_counter()
-    result = processor.process(mixture, reference, timeout_seconds=30)
+    cold = processor.process(mixture, timeout_seconds=30)
+    warm = processor.process(mixture, timeout_seconds=30)
     elapsed = time.perf_counter() - started
     hold_seconds = float(os.environ.get("MODEL_SMOKE_HOLD_SECONDS", "0"))
     if hold_seconds:
         time.sleep(hold_seconds)
     processor.close()
 
-    if result.denoised_pcm is None or result.isolated_pcm is None:
+    if cold.denoised_pcm is None or warm.denoised_pcm is None:
         raise SystemExit(
             "Model pipeline failed: "
-            f"{result.stages} ({result.fallback_reason}); quality={result.quality}"
+            f"cold={cold.stages}/{cold.fallback_reason}; "
+            f"warm={warm.stages}/{warm.fallback_reason}"
         )
     expected_bytes = sample_count * 2
-    if abs(len(result.denoised_pcm) - expected_bytes) > CANONICAL_RATE * 2 * 0.05:
+    if abs(len(warm.denoised_pcm) - expected_bytes) > CANONICAL_RATE * 2 * 0.05:
         raise SystemExit("Denoised audio differs by more than 50 ms")
-    if abs(len(result.isolated_pcm) - expected_bytes) > CANONICAL_RATE * 2 * 0.05:
-        raise SystemExit("Isolated audio differs by more than 50 ms")
+    if cold.isolated_pcm is not None or warm.isolated_pcm is not None:
+        raise SystemExit("Speaker isolation must not be available")
+    if "denoise_ms" in cold.timings or cold.quality.get("timing_comparable"):
+        raise SystemExit("Cold model timing was incorrectly marked comparable")
+    if "denoise_ms" not in warm.timings or not warm.quality.get("timing_comparable"):
+        raise SystemExit("Warm model timing was not marked comparable")
 
     peak_kib = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     print(
         "MODEL_PIPELINE_OK",
         f"seconds={elapsed:.3f}",
         f"peak_child_mib={peak_kib / 1024:.1f}",
-        f"stages={result.stages}",
-        f"timings={result.timings}",
+        f"cold_timings={cold.timings}",
+        f"warm_timings={warm.timings}",
     )
 
 

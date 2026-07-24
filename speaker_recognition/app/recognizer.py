@@ -304,115 +304,18 @@ class SpeakerRecognizer:
     def process_target_audio(
         self,
         audio_input: AudioInput,
-        speaker_id: str,
+        _speaker_id: str | None = None,
         *,
         timeout_seconds: float = 12,
         priority: str = "live",
         min_margin: float | None = None,
     ) -> ProcessedAudioResult:
-        """Denoise and isolate one enrolled speaker, retaining safe fallbacks."""
-        with self._lock:
-            if speaker_id not in self._profiles:
-                raise KeyError(speaker_id)
-            original = self._canonicalize(
-                self._decode_audio(audio_input), audio_input.sample_rate
-            )
-            reference = self._reference_audio(speaker_id)
-            embeddings = {
-                key: np.asarray(value, dtype=np.float32).copy()
-                for key, value in self._embeddings.items()
-            }
-            threshold = self._threshold
-            required_margin = self._min_margin if min_margin is None else min_margin
-
-        result = self._audio_processor.process(
-            original,
-            reference,
+        """Compatibility alias for clients that still send a speaker ID."""
+        del min_margin
+        return self.denoise_audio(
+            audio_input,
             timeout_seconds=timeout_seconds,
             priority=priority,
-        )
-        quality = dict(result.quality)
-        denoised = self._pcm_array(result.denoised_pcm)
-        isolated = self._pcm_array(result.isolated_pcm)
-        fallback_reason = result.fallback_reason
-        stages = dict(result.stages)
-        original_scores = self._speaker_scores(original, embeddings)
-        original_target_score = original_scores.get(speaker_id, -1.0)
-        quality["original_target_score"] = round(original_target_score, 6)
-        denoised_target_score = -1.0
-
-        # Denoising may alter the embedding. A confident conflicting identity
-        # is never allowed to select or condition a different target speaker.
-        if denoised is not None:
-            denoised_scores = self._speaker_scores(denoised, embeddings)
-            target_score = denoised_scores.get(speaker_id, -1.0)
-            denoised_target_score = target_score
-            best_id = max(denoised_scores, key=denoised_scores.__getitem__)
-            runner_up = max(
-                (
-                    score
-                    for candidate_id, score in denoised_scores.items()
-                    if candidate_id != speaker_id
-                ),
-                default=-1.0,
-            )
-            quality["denoised_target_score"] = round(target_score, 6)
-            denoised_safe = not (
-                best_id != speaker_id and denoised_scores[best_id] >= threshold
-            ) and target_score - runner_up >= required_margin
-            quality["denoised_safe_for_stt"] = denoised_safe
-            if not denoised_safe:
-                isolated = None
-                stages["isolation"] = "rejected_identity_conflict"
-                fallback_reason = "denoised_identity_conflict"
-
-        if isolated is not None:
-            isolated_scores = self._speaker_scores(isolated, embeddings)
-            target_score = isolated_scores.get(speaker_id, -1.0)
-            best_id = max(isolated_scores, key=isolated_scores.__getitem__)
-            runner_up = max(
-                (
-                    score
-                    for candidate_id, score in isolated_scores.items()
-                    if candidate_id != speaker_id
-                ),
-                default=-1.0,
-            )
-            quality["isolated_target_score"] = round(target_score, 6)
-            quality["isolated_margin"] = round(target_score - runner_up, 6)
-            # Speaker separation changes the embedding more strongly than
-            # denoising. Require a modest score on the separated signal plus
-            # independent evidence for the requested profile in the source or
-            # denoised signal. This rejects an absent target without discarding
-            # otherwise clean SpEx+ output.
-            source_evidence = max(original_target_score, denoised_target_score)
-            minimum_source_evidence = max(0.50, threshold - 0.10)
-            quality["source_target_evidence"] = round(source_evidence, 6)
-            quality["source_evidence_required"] = round(
-                minimum_source_evidence, 6
-            )
-            if (
-                best_id != speaker_id
-                or target_score < 0.45
-                or target_score - runner_up < required_margin
-                or source_evidence < minimum_source_evidence
-            ):
-                isolated = None
-                stages["isolation"] = "rejected_speaker_validation"
-                fallback_reason = "isolated_speaker_validation_failed"
-
-        return ProcessedAudioResult(
-            denoised_pcm=result.denoised_pcm,
-            isolated_pcm=(
-                np.asarray(np.clip(isolated, -1, 0.9999695) * 32768, dtype="<i2").tobytes()
-                if isolated is not None
-                else None
-            ),
-            sample_rate=result.sample_rate,
-            stages=stages,
-            timings=result.timings,
-            quality=quality,
-            fallback_reason=fallback_reason,
         )
 
     def denoise_audio(
@@ -422,99 +325,26 @@ class SpeakerRecognizer:
         timeout_seconds: float = 12,
         priority: str = "live",
     ) -> ProcessedAudioResult:
-        """Run only the general enhancement stage for an unknown speaker."""
+        """Run the optional general enhancement stage."""
         original = self._canonicalize(
             self._decode_audio(audio_input), audio_input.sample_rate
         )
         result = self._audio_processor.process(
             original,
-            np.empty(0, dtype=np.float32),
             timeout_seconds=timeout_seconds,
             priority=priority,
         )
-        stages = dict(result.stages)
-        if stages.get("isolation") == "missing_reference":
-            stages["isolation"] = "not_requested"
         return ProcessedAudioResult(
             denoised_pcm=result.denoised_pcm,
             isolated_pcm=None,
             sample_rate=result.sample_rate,
-            stages=stages,
+            stages=result.stages,
             timings=result.timings,
             quality=result.quality,
             fallback_reason=(
                 None if result.denoised_pcm is not None else result.fallback_reason
             ),
         )
-
-    def _reference_audio(self, speaker_id: str) -> NDArray[np.float32]:
-        """Build a normalized, deterministic reference capped at 30 seconds."""
-        pieces: list[NDArray[np.float32]] = []
-        remaining = 30 * CANONICAL_RATE
-        for sample in reversed(self.catalog.list_samples(speaker_id, active_only=True)):
-            path = self.catalog.sample_path(sample["id"])
-            if not path or remaining <= 0:
-                continue
-            try:
-                with wave.open(str(path), "rb") as handle:
-                    if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
-                        continue
-                    raw = np.frombuffer(
-                        handle.readframes(handle.getnframes()), dtype="<i2"
-                    ).astype(np.float32) / 32768.0
-                    value = resample_audio(raw, handle.getframerate(), CANONICAL_RATE)
-            except (OSError, wave.Error, ValueError):
-                continue
-            speech_regions = [
-                value[start:end]
-                for start, end, kind in self._candidate_regions(value)
-                if kind == "vad"
-            ]
-            if speech_regions:
-                value = np.concatenate(
-                    [
-                        region
-                        if index == 0
-                        else np.concatenate(
-                            (np.zeros(1600, dtype=np.float32), region)
-                        )
-                        for index, region in enumerate(speech_regions)
-                    ]
-                )
-            value = value - float(np.mean(value))
-            peak = float(np.max(np.abs(value))) if value.size else 0.0
-            if value.size < CANONICAL_RATE or peak < 0.003:
-                continue
-            value = value * min(4.0, 0.85 / peak)
-            value = value[:remaining]
-            pieces.append(value)
-            remaining -= value.size
-            if remaining >= 1600:
-                pieces.append(np.zeros(min(1600, remaining), dtype=np.float32))
-                remaining -= min(1600, remaining)
-        if not pieces:
-            raise ValueError("No usable active enrollment WAV is available")
-        return np.concatenate(pieces)[: 30 * CANONICAL_RATE]
-
-    @staticmethod
-    def _pcm_array(pcm: bytes | None) -> NDArray[np.float32] | None:
-        if not pcm:
-            return None
-        return np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
-
-    def _speaker_scores(
-        self,
-        audio: NDArray[np.float32],
-        embeddings: dict[str, NDArray[np.float32]],
-    ) -> dict[str, float]:
-        try:
-            vector = self._embed_wav(self._require_encoder(), audio, CANONICAL_RATE)
-        except ValueError:
-            return {speaker_id: -1.0 for speaker_id in embeddings}
-        return {
-            speaker_id: float(np.dot(reference, vector))
-            for speaker_id, reference in embeddings.items()
-        }
 
     def recognize_detailed(
         self,

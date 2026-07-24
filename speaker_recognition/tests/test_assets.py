@@ -78,22 +78,23 @@ def test_version_two_ui_exposes_analysis_calibration_and_safe_audio_management()
     assert "URL.revokeObjectURL" in script
 
 
-def test_analysis_ui_exposes_real_target_speaker_variants_and_async_action():
+def test_analysis_ui_exposes_denoised_variant_and_async_action():
     document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
 
     for control in (
         "analysis-original-audio",
         "analysis-denoised-audio",
-        "analysis-isolated-audio",
         "extract-audio",
     ):
         assert f'id="{control}"' in document
-    assert "Doelstem isoleren" in document
+    assert 'id="analysis-isolated-audio"' not in document
+    assert "Ruis onderdrukken" in document
     assert "/process`" in script
     assert "pollProcessing" in script
     assert "Extra audiobewerking" in script
     assert "Totale pipeline" in script
+    assert "Koude start; timing uitgesloten" in script
 
 
 def test_primary_navigation_lives_in_the_sticky_topbar():

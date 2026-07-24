@@ -135,9 +135,9 @@ class SpeakerRecognitionApi:
             )
 
     async def async_process_analysis(
-        self, recording_id: str, speaker_id: str
+        self, recording_id: str, speaker_id: str | None = None
     ) -> dict[str, Any]:
-        """Start asynchronous target-speaker processing for a stored analysis.
+        """Start asynchronous denoising for a stored analysis.
 
         This is intentionally separate from ``async_analyze``: 2.0 backends do
         not expose the endpoint, while 2.1 backends can return a 202 job
@@ -146,7 +146,7 @@ class SpeakerRecognitionApi:
         return await self._request(
             "POST",
             f"/api/analysis/{recording_id}/process",
-            json={"speaker_id": speaker_id},
+            json=({"speaker_id": speaker_id} if speaker_id else {}),
             timeout=5,
         )
 
