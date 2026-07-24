@@ -463,6 +463,7 @@ class TargetAudioProcessor:
             payload = connection.recv()
             timings = dict(payload["timings"])
             timings["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+            timings["audio_processing_ms"] = timings["total_ms"]
             return ProcessedAudioResult(
                 denoised_pcm=payload["denoised_pcm"],
                 isolated_pcm=payload["isolated_pcm"],

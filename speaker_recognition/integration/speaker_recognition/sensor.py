@@ -112,6 +112,7 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
             "extraction_ms": result.get("extraction_ms"),
             "denoise_ms": result.get("denoise_ms"),
             "isolation_ms": result.get("isolation_ms"),
+            "audio_processing_ms": result.get("audio_processing_ms"),
             "stage_timings": result.get("stage_timings"),
             "stt_ms": result.get("stt_ms"),
             "total_ms": result.get("total_ms"),

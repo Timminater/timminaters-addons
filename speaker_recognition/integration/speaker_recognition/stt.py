@@ -700,6 +700,8 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                 "extract_ms",
             )
             or timings.get("extraction_ms"),
+            "audio_processing_ms": timings.get("audio_processing_ms")
+            or timings.get("processing_ms"),
             "stage_timings": timing_values.get("stages") or timing_values.get("stage_timings"),
             "processing_status": (
                 payload.get("processing_status")
@@ -759,6 +761,10 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             details.setdefault("timings", {})["denoise_ms"] = recognized["denoise_ms"]
         if recognized.get("isolation_ms") is not None:
             details.setdefault("timings", {})["isolation_ms"] = recognized["isolation_ms"]
+        if recognized.get("audio_processing_ms") is not None:
+            details.setdefault("timings", {})["audio_processing_ms"] = recognized[
+                "audio_processing_ms"
+            ]
         if recognized.get("quality") is not None:
             details["quality"] = recognized["quality"]
         if recognized.get("blocked"):

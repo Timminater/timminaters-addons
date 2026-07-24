@@ -227,6 +227,7 @@ def test_diagnostic_sensors_expose_recognition_and_forwarding_details():
         recognition_ms=31.0,
         extraction_ms=4.0,
         stt_ms=120.0,
+        audio_processing_ms=35.0,
         total_ms=155.0,
         extraction_mode="compare",
         audio_variant="original",
@@ -258,6 +259,7 @@ def test_diagnostic_sensors_expose_recognition_and_forwarding_details():
     assert recognition_sensor.extra_state_attributes["margin"] == 0.33
     assert recognition_sensor.extra_state_attributes["candidate_count"] == 5
     assert recognition_sensor.extra_state_attributes["total_ms"] == 155.0
+    assert recognition_sensor.extra_state_attributes["audio_processing_ms"] == 35.0
     assert "transcript" not in recognition_sensor.extra_state_attributes
     assert "audio_url" not in recognition_sensor.extra_state_attributes
     assert context_sensor.native_value == "person.alice"

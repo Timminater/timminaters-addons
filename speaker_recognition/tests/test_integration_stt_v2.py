@@ -357,6 +357,7 @@ def test_before_stt_prefers_isolated_then_denoised_before_original():
             },
             timings={
                 "recognition_ms": 25.0,
+                "audio_processing_ms": 42.0,
             },
             processing_stages={"denoise": {"ms": 10}, "isolation": {"ms": 20}},
             processing_quality={"passed": True},
@@ -371,6 +372,7 @@ def test_before_stt_prefers_isolated_then_denoised_before_original():
     assert result["audio_variant"] == "isolated"
     assert result["denoise_ms"] == 10.0
     assert result["isolation_ms"] == 20.0
+    assert result["audio_processing_ms"] == 42.0
     assert result["quality"] == {"passed": True}
 
 

@@ -92,6 +92,8 @@ def test_analysis_ui_exposes_real_target_speaker_variants_and_async_action():
     assert "Doelstem isoleren" in document
     assert "/process`" in script
     assert "pollProcessing" in script
+    assert "Extra audiobewerking" in script
+    assert "Totale pipeline" in script
 
 
 def test_primary_navigation_lives_in_the_sticky_topbar():
