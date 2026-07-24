@@ -36,6 +36,29 @@ def test_speech_prompts_are_varied_and_easy_to_read():
     assert all(18 <= len(prompt.split()) <= 45 for prompt in prompts)
 
 
+def test_web_ui_has_dutch_and_english_language_catalogs():
+    assets = ROOT / "web" / "assets"
+    document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (assets / "app.js").read_text(encoding="utf-8")
+    i18n = (assets / "i18n.js").read_text(encoding="utf-8")
+    dutch = json.loads((assets / "languages" / "nl.json").read_text(encoding="utf-8"))
+    english = json.loads((assets / "languages" / "en.json").read_text(encoding="utf-8"))
+    english_prompts = json.loads((assets / "speech-prompts.en.json").read_text(encoding="utf-8"))
+
+    assert 'id="language-select"' in document
+    assert "assets/i18n.js" in document
+    assert dutch["locale"] == "nl-NL"
+    assert english["locale"] == "en-GB"
+    assert english["translations"]["Instellingen"] == "Settings"
+    assert english["translations"]["Wie spreekt er?"] == "Who is speaking?"
+    assert "navigator.languages" in i18n
+    assert "localStorage" in i18n
+    assert "window.i18nReady.then" in script
+    assert "window.currentLanguage" in script
+    assert len(english_prompts) >= 20
+    assert all(18 <= len(prompt.split()) <= 45 for prompt in english_prompts)
+
+
 def test_recognition_modal_supports_all_capture_sources():
     document = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "assets" / "app.js").read_text(encoding="utf-8")
