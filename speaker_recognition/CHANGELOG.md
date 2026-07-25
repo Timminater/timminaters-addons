@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.0
+
+- De Ingress-webinterface ondersteunt nu Nederlands en Engels via losse taalbestanden.
+- De browsertaal wordt automatisch gebruikt; een handmatige taalkeuze wordt lokaal onthouden en Nederlands blijft de fallback.
+- Statische en dynamische UI-teksten, meldingen, datums, toegankelijkheidslabels en enrollment-voorbeeldzinnen volgen de gekozen taal.
+
 ## 2.4.1
 
 - Persoonlijke voorbeeldnamen zijn vervangen door neutrale testdata en een generieke placeholder.
