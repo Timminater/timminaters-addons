@@ -49,6 +49,9 @@ def test_web_ui_has_dutch_and_english_language_catalogs():
     assert "assets/i18n.js" in document
     assert dutch["locale"] == "nl-NL"
     assert english["locale"] == "en-GB"
+    assert dutch["translations"]
+    assert dutch["translations"].keys() == english["translations"].keys()
+    assert all(key == value for key, value in dutch["translations"].items())
     assert english["translations"]["Instellingen"] == "Settings"
     assert english["translations"]["Wie spreekt er?"] == "Who is speaking?"
     assert "navigator.languages" in i18n
