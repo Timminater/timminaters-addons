@@ -12,7 +12,7 @@ from . import forecast_core
 
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
-MODEL_VERSION = "local-v4-quarter-adapter-3"
+MODEL_VERSION = "local-v4-quarter-adapter-4"
 STEP = timedelta(minutes=15)
 HOUR = timedelta(hours=1)
 
@@ -88,7 +88,8 @@ def _prepare_history(
         price = _number(row.get("price"))
         if start.second or start.microsecond or start.minute % 15 or end != start + STEP or price is None:
             continue
-        known[start] = {"start": start, "end": end, "price": price * price_scale, "published_at": published}
+        known[start] = {"start": start, "end": end, "price": price * price_scale,
+                        "published_at": published, "source": row.get("source")}
     return known
 
 
@@ -312,6 +313,9 @@ def forecast_quarters(
             source = "hour-v4-flat-quarter"
             reason = "onvoldoende echte kwartierbasis; vier vlakke kwartierwaarden uit complete geobserveerde uurgemiddelden"
             reasons.add("kwartierbasis heeft minder dan 2 vergelijkbare echte kwartierwaarnemingen")
+        if use_quarter and any(row.get("source") == "energy-charts-market-derived" for row in sample_rows):
+            source += "-market-backfill"
+            reason += "; historische marktprijsbasis naar tarief herleid"
 
         day_ahead = max(0, (target.date() - issue.astimezone(AMSTERDAM).date()).days)
         fc = forecast_core.forecast_one(

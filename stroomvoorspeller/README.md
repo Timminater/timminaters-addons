@@ -1,6 +1,6 @@
 # Stroomvoorspeller voor Home Assistant
 
-Een lokale Home Assistant App met een eigen Ingress-pagina voor bekende en voorspelde kwartierprijzen. De App leest alleen de Home Assistant Core API, kan weersverwachtingen van Open-Meteo ophalen en bewaart keuzes, prijsarchief, invoersnapshots en modeluitkomsten op de installatie zelf onder `/data`. Er is geen publieke feed en geen apparaatbediening.
+Een lokale Home Assistant App met een eigen Ingress-pagina voor bekende en voorspelde kwartierprijzen. De App leest de Home Assistant Core API, kan weersverwachtingen van Open-Meteo en historische Nederlandse marktprijzen van [Fraunhofer Energy-Charts](https://www.energy-charts.info/api.html?c=NL&l=en) ophalen, en bewaart keuzes, prijsarchief, invoersnapshots en modeluitkomsten op de installatie zelf onder `/data`. Er is geen apparaatbediening.
 
 ## Bron en status
 
@@ -10,7 +10,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.2`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.3`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -31,7 +31,7 @@ In productie verzorgt Supervisor de toegang via Ingress op containerpoort 8099. 
 
 Bij uitval toont de App bewaarde prijzen met een verouderingsmelding. Een entiteitswissel wist het oude archief niet; de reeksen blijven per entiteit gescheiden. Alleen werkelijk bekende kwartieren komen in het kwartierarchief. Uurgemiddelden worden nooit opgesplitst in vier zogenaamde waarnemingen.
 
-Bij een nieuw archief zonder weekendhistorie gebruikt het model voor weekendkwartieren een voorlopige basislijn uit minimaal twee vergelijkbare kwartieren van andere dagen. De pagina meldt deze proxy in het kwaliteitsblok. De uitkomst is geen gemeten weekendpatroon; bij onvoldoende invoer blijft het kwartier leeg.
+Bij een nieuw Zonneplan-archief zonder weekendhistorie kan het model de afgelopen 35 dagen Nederlandse marktkwartieren ophalen. Het leidt de tariefomrekening uitsluitend af wanneer minimaal 96 bestaande Zonneplan-kwartieren vrijwel exact op die marktprijzen aansluiten. De herleide oude prijzen voeden alleen het model: de grafiek en de nauwkeurigheidsmeting blijven echte HA-tarieven onderscheiden van deze aanvulling. De pagina vermeldt de herleiding als voorlopige modelbasis. Bij ontbrekende marktdata of een mislukte vergelijking blijft de eerdere, eveneens voorlopige dagtypeproxy actief. Historische contractwijzigingen zijn niet automatisch te verifiëren.
 
 ## Ontwikkelcontrole
 

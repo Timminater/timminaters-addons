@@ -20,10 +20,12 @@ try:
     from .ha_client import HAClient, HAError, collect_price_data, parse_dt
     from .storage import Store, price_archive_key, utc_iso
     from .weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
+    from .market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
 except ImportError:  # ``python app/backend.py`` in the container entrypoint
     from ha_client import HAClient, HAError, collect_price_data, parse_dt
     from storage import Store, price_archive_key, utc_iso
     from weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
+    from market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
 
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
@@ -399,6 +401,35 @@ class AppService:
         snapshot["entities"] = dict(settings.get("weather_entities") or {})
         return snapshot
 
+    def _market_model_history(self, entity: str, settings: Mapping[str, Any],
+                              actual: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+        """Add validated historical priors to model input, never the actual archive."""
+        if (not entity.lower().startswith("sensor.zonneplan_")
+                or settings.get("price_field") != "tax_included"
+                or settings.get("tariff_unit") != "EUR/kWh"):
+            return []
+        cache = self.store.latest_snapshot("market_history", successful_only=True)
+        if cache and now - parse_dt(cache["issued_at"]) < timedelta(hours=24):
+            market = cache["payload"]
+        else:
+            try:
+                market = fetch_market_history(now)
+                self.store.save_snapshot(now, "market_history", market)
+            except MarketHistoryError as exc:
+                LOG.warning("Historische marktprijzen niet beschikbaar: %s", exc)
+                market = cache["payload"] if cache and now - parse_dt(cache["issued_at"]) < timedelta(days=7) else None
+        if not market:
+            return []
+        try:
+            rows, calibration = derive_zonneplan_history(actual, market, now)
+        except MarketHistoryError as exc:
+            LOG.info("Historische marktprijzen niet gebruikt: %s", exc)
+            return []
+        if rows:
+            self.store.set_source_status("market_history", success=True, attempted_at=now,
+                                         detail={"source": market.get("source"), **calibration})
+        return rows
+
     def refresh(self, force_weather: bool = False, force_model: bool = False) -> dict[str, Any]:
         with self._lock:
             now = self.clock().astimezone(UTC)
@@ -476,9 +507,16 @@ class AppService:
                 return {"ok": False, "message": "Er zijn nog geen historische kwartierprijzen om het model op te starten"}
             try:
                 used_weather = model_weather(weather) if weather else None
+                try:
+                    derived_history = self._market_model_history(entity, settings, history, now)
+                except Exception:
+                    LOG.exception("Optionele historische marktaanvulling overgeslagen")
+                    derived_history = []
                 # Persist the exact point-in-time input rows used by this run.
                 input_rows = [{"start_utc": r["start_utc"], "end_utc": r["end_utc"], "price": r["price"],
-                               "published_at": r.get("published_at")} for r in history]
+                               "published_at": r.get("published_at"), "source": r.get("source")} for r in history]
+                input_rows.extend(derived_history)
+                input_rows.sort(key=lambda row: row["start_utc"])
                 signature_payload = {"tariff_entity": entity, "tariff_unit": settings.get("tariff_unit"),
                                      "model_version": _load_model_version(),
                                      "price_field": settings.get("price_field"), "history": input_rows,
@@ -503,6 +541,8 @@ class AppService:
                 model_version = str(_field(run, "model_version", "unknown"))
                 quality = str(_field(run, "quality", "provisional"))
                 reasons = list(_field(run, "reasons", []))
+                if derived_history:
+                    reasons.append(MARKET_HISTORY_REASON)
                 run_id = str(uuid.uuid4())
                 saved_inputs = {"tariff_entity": entity, "tariff_unit": settings.get("tariff_unit"),
                                 "price_field": settings.get("price_field"), "weather_snapshot": weather,

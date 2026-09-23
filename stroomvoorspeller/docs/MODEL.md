@@ -46,7 +46,23 @@ voorspelt rechtstreeks het gekozen tarief. Dat is een relatieve toepassing van
 de bronfactoren en bewijst niet dat de marktcomponent uit een Zonneplan-tarief
 kan worden geïsoleerd.
 
-De aanpassingen aan de uurmethode zijn:
+Voor `sensor.zonneplan_*` met all-intarief in EUR/kWh wordt tijdens de
+opstartfase optioneel de openbare Nederlandse kwartiermarktreeks van
+[Fraunhofer ISE Energy-Charts](https://www.energy-charts.info/api.html?c=NL&l=en)
+gebruikt (API meldt CC BY 4.0 met bronvermelding). De adapter
+past een lineaire markt-naar-tariefomrekening op minimaal 96 reeds bekende,
+overlappende Zonneplan-kwartieren en eist een maximale afwijking van
+€0,00015/kWh. In de gecontroleerde openbare overlap van 192 kwartieren was
+de formule `all-in = 1,21 × marktprijs + 0,130848 EUR/kWh`, met maximaal
+€0,0000001/kWh afrondingsverschil. Alleen oudere kwartieren binnen hetzelfde
+kalenderjaar worden herleid. Deze punten komen uitsluitend in de
+modelinvoer, met eigen herkomst en tijdstempel; zij komen niet in het
+HA-tariefarchief of de set gerealiseerde prijzen voor de evaluatie. Bij
+bronuitval of een afwijkende tariefomrekening wordt niets herleid. Een
+historische contract- of belastingwijziging kan ondanks de overlaptest
+onopgemerkt blijven; de prognose blijft daarom voorlopig.
+
+De overige aanpassingen aan de uurmethode zijn:
 
 1. **Kwartierbasis:** historische kwartierprijzen worden beperkt tot dezelfde
    lokale uur- en kwartierpositie en dezelfde UTC-offset als het doelkwartier.
