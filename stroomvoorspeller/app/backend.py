@@ -57,6 +57,14 @@ def _load_forecaster():
     return forecast_quarters
 
 
+def _load_model_version() -> str:
+    try:
+        from .model import MODEL_VERSION
+    except ImportError:
+        from model import MODEL_VERSION
+    return MODEL_VERSION
+
+
 def _parse_entity_state_price(state: Mapping[str, Any], selected_unit: str) -> float | None:
     if not state or state.get("state") in (None, "unknown", "unavailable", "none", ""):
         return None
@@ -472,6 +480,7 @@ class AppService:
                 input_rows = [{"start_utc": r["start_utc"], "end_utc": r["end_utc"], "price": r["price"],
                                "published_at": r.get("published_at")} for r in history]
                 signature_payload = {"tariff_entity": entity, "tariff_unit": settings.get("tariff_unit"),
+                                     "model_version": _load_model_version(),
                                      "price_field": settings.get("price_field"), "history": input_rows,
                                      "weather": weather}
                 signature = hashlib.sha256(json.dumps(signature_payload, sort_keys=True, separators=(",", ":"),

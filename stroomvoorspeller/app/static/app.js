@@ -106,8 +106,6 @@
       const unit = slot.unit || state.settings?.tariff_unit || 'EUR/kWh';
       const lines = [fmtFullDateTime.format(slot.startDate), `${statusNames[slot.status]} · ${fmtPrice(slot.value, unit)}`];
       if (slot.status === 'predicted' && Number.isFinite(Number(slot.lower)) && Number.isFinite(Number(slot.upper)) && slot.lower != null && slot.upper != null) lines.push(`Indicatieve marge: ${fmtPrice(slot.lower, unit)} tot ${fmtPrice(slot.upper, unit)}`);
-      lines.push(`Bron: ${slot.source || (slot.status === 'missing' ? 'geen' : 'tariefsensor')}`);
-      if (slot.reason) lines.push(slot.reason);
       tooltip.textContent = lines.join('\n'); show('chart-tooltip', true);
       tooltip.style.left = `${Math.max(4, Math.min(scroll.clientWidth - tooltip.offsetWidth - 4, x - scroll.scrollLeft + 12))}px`;
       tooltip.style.top = '12px';
@@ -136,9 +134,18 @@
       hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTooltip(s, center); } });
     });
     if (firstPredX !== null) { el('line', { x1: firstPredX, x2: firstPredX, y1: pad.t, y2: pad.t + plotH, stroke: '#c67925', 'stroke-width': 1.3, 'stroke-dasharray': '4 4' }); const t = el('text', { x: firstPredX + 5, y: pad.t + 10, fill: '#a86922', 'font-size': 9 }); t.textContent = 'prognose start'; }
+    const now = new Date();
+    const current = data.findIndex(s => s.startDate <= now && now < s.endDate);
+    if (current >= 0) {
+      const fraction = (now - data[current].startDate) / (data[current].endDate - data[current].startDate);
+      const nowX = pad.l + (current + fraction) * step;
+      el('line', { x1: nowX, x2: nowX, y1: pad.t, y2: pad.t + plotH, stroke: '#bb4e36', 'stroke-width': 2, 'stroke-dasharray': '5 4', 'pointer-events': 'none' });
+      const label = el('text', { x: nowX + 4, y: pad.t + 10, fill: '#a4402c', 'font-size': 10, 'font-weight': 800, 'pointer-events': 'none' });
+      label.textContent = 'NU';
+    }
     const boundary = slots.find(s => s.status === 'predicted'); setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
     setText('chart-unit', slots.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
-    if (!state.chartScrollInitialized) { const current = data.findIndex(s => s.endDate > new Date()); scroll.scrollLeft = Math.max(0, (current < 0 ? 0 : current) * step - 110); state.chartScrollInitialized = true; }
+    if (!state.chartScrollInitialized) { const next = data.findIndex(s => s.endDate > now); scroll.scrollLeft = Math.max(0, (next < 0 ? 0 : next) * step - 110); state.chartScrollInitialized = true; }
     else scroll.scrollLeft = oldScroll;
   }
   function renderWindows(windows, unit) {

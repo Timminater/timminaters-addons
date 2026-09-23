@@ -55,7 +55,13 @@ De aanpassingen aan de uurmethode zijn:
    valt de adapter terug op complete uren die uit vier echte kwartierprijzen
    zijn gemiddeld. Alle voorspelde kwartieren in zo'n uur krijgen dezelfde
    vlakke waarde. Uurgemiddelden worden dus nooit als vier gemeten
-   kwartierprijzen behandeld.
+   kwartierprijzen behandeld. Als de v4-basislijn uitsluitend ontbreekt omdat
+   de installatie nog geen waarnemingen van het doel-dagtype (bijvoorbeeld
+   weekend) heeft, gebruikt de adapter de mediaan van minstens twee eerder
+   gepubliceerde vergelijkbare kwartieren op andere dagen als voorlopige
+   basislijn. De weekendfactoren blijven op de doeldag toegepast. Deze proxy
+   is geen gemeten weekendpatroon en heeft extra modelonzekerheid. Met minder
+   dan twee vergelijkbare waarnemingen blijft het kwartier leeg.
 2. **Tijdidentiteit:** bronkalenderlogica blijft op Amsterdamse lokale tijd,
    maar kwartieren, invoersnapshots en voorspellingstijdstippen zijn
    offsetbewuste UTC-tijdstippen. Daarmee worden zomer-/wintertijdwissels niet

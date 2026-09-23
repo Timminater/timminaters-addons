@@ -10,7 +10,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.1`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.2`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -26,10 +26,12 @@ In productie verzorgt Supervisor de toegang via Ingress op containerpoort 8099. 
 2. Kies een tariefsensor. `sensor.zonneplan_current_quarter_hourly_electricity_tariff` is alleen een voorstel; de App controleert of de sensor op deze installatie bestaat.
 3. Controleer prijsveld en eenheid. Als de sensor geen eenheid meelevert, kies die expliciet. De App leidt de eenheid nooit uit de getalsgrootte af.
 4. Kies Open-Meteo of HA-weerentiteiten. De Home-locatie van deze HA-installatie wordt als voorstel ingevuld. Controleer die en sla Instellingen op voordat zij voor Open-Meteo wordt gebruikt; de App bewaart de bevestigde locatie lokaal.
-5. Bekijk de horizontaal scrollbare tijdlijn met alle bekende en voorspelde kwartieren, de kwartiertabel, goedkoopste aaneengesloten vensters en het kwaliteitsblok. De grafiek begint bij nul, behalve wanneer negatieve prijzen of modelmarges voorkomen. Wijs een balk aan, gebruik het toetsenbord of tik erop om prijs, bron en eventuele indicatieve marge te zien.
+5. Bekijk de horizontaal scrollbare tijdlijn met alle bekende en voorspelde kwartieren, de kwartiertabel, goedkoopste aaneengesloten vensters en het kwaliteitsblok. Een rode stippellijn markeert de huidige tijd. De grafiek begint bij nul, behalve wanneer negatieve prijzen of modelmarges voorkomen. Wijs een balk aan, gebruik het toetsenbord of tik erop om tijd, prijs en eventuele indicatieve marge te zien.
 6. Gebruik **Bereken nu** voor een directe nieuwe modelrun. Onder **Instellingen** kies je het automatische controle- en berekeninterval: 5, 15, 30, 60 of 120 minuten. Bij een automatische cyclus rekent het model alleen opnieuw wanneer de invoer is veranderd. De Open-Meteo-bron blijft maximaal één keer per uur bevraagd.
 
 Bij uitval toont de App bewaarde prijzen met een verouderingsmelding. Een entiteitswissel wist het oude archief niet; de reeksen blijven per entiteit gescheiden. Alleen werkelijk bekende kwartieren komen in het kwartierarchief. Uurgemiddelden worden nooit opgesplitst in vier zogenaamde waarnemingen.
+
+Bij een nieuw archief zonder weekendhistorie gebruikt het model voor weekendkwartieren een voorlopige basislijn uit minimaal twee vergelijkbare kwartieren van andere dagen. De pagina meldt deze proxy in het kwaliteitsblok. De uitkomst is geen gemeten weekendpatroon; bij onvoldoende invoer blijft het kwartier leeg.
 
 ## Ontwikkelcontrole
 

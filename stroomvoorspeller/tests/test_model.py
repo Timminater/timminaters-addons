@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from collections import Counter
 import unittest
 from zoneinfo import ZoneInfo
 
@@ -144,6 +145,29 @@ class ModelTests(unittest.TestCase):
         self.assertEqual([p.start_utc.minute for p in run.points], [15, 30, 45])
         self.assertTrue(all(p.source == "hour-v4-flat-quarter" for p in run.points))
         self.assertEqual(len({p.price for p in run.points}), 1)
+
+    def test_new_archive_forecasts_weekend_with_explicit_daytype_proxy(self):
+        issue = datetime(2026, 9, 23, 19, 15, tzinfo=UTC)
+        start = datetime(2026, 9, 22, 22, tzinfo=UTC)  # Wednesday, Amsterdam
+        history = [row(start + timedelta(minutes=15 * i), .20 + (i % 96) / 1000,
+                       issue - timedelta(hours=1)) for i in range(2 * 96)]
+        run = model.forecast_quarters(history, issue, max_points=672, price_scale=1000)
+        by_day = Counter(point.start_utc.astimezone(AMS).date().isoformat() for point in run.points)
+        self.assertEqual(by_day["2026-09-26"], 96)
+        self.assertEqual(by_day["2026-09-27"], 96)
+        self.assertEqual(by_day["2026-09-28"], 96)
+        weekend = [point for point in run.points
+                   if point.start_utc.astimezone(AMS).date().isoformat() in {"2026-09-26", "2026-09-27"}]
+        self.assertTrue(all(point.source == "quarter-v4-daytype-proxy" for point in weekend))
+        self.assertIn("dagtypehistorie ontbreekt; voorlopige proxy uit vergelijkbare kwartieren gebruikt", run.reasons)
+
+    def test_one_observation_does_not_invent_weekend_baseline(self):
+        issue = datetime(2026, 9, 25, 21, 45, tzinfo=UTC)
+        target = datetime(2026, 9, 25, 22, tzinfo=UTC)  # Saturday 00:00, Amsterdam
+        history = [row(target - timedelta(days=1), .2, issue - timedelta(hours=1))]
+        run = model.forecast_quarters(history, issue, max_points=1, price_scale=1000)
+        self.assertEqual(run.points, [])
+        self.assertIn("modelbasis ontbreekt voor een of meer toekomstige kwartieren", run.reasons)
 
     def test_repeated_autumn_hour_history_keeps_offsets_separate(self):
         first = datetime(2026, 10, 25, 0, 15, tzinfo=UTC)

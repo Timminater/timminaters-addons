@@ -175,8 +175,9 @@ def _factors(target: datetime, solar: float, wind: float, temperature: float,
 
 def forecast_one(target_dt: datetime, history: list[dict], shortwave_ratio: float,
                  wind_ms: float, temp_c: float, ttf_ratio: float, days_ahead: int,
-                 prior_day_price: float | None = None) -> Estimate | None:
-    level = baseline(target_dt, history)
+                 prior_day_price: float | None = None,
+                 baseline_override: float | None = None) -> Estimate | None:
+    level = baseline_override if baseline_override is not None else baseline(target_dt, history)
     if level is None:
         return None
     prior_ratio = None

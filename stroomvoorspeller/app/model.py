@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
+from statistics import median
 import math
 
 from . import forecast_core
 
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
-MODEL_VERSION = "local-v4-quarter-adapter-2"
+MODEL_VERSION = "local-v4-quarter-adapter-3"
 STEP = timedelta(minutes=15)
 HOUR = timedelta(hours=1)
 
@@ -295,6 +296,7 @@ def forecast_quarters(
         use_quarter = len(sample_rows) >= 2
         if use_quarter:
             source_rows = _source_history(sample_rows)
+            fallback_prices = [row["price"] for row in sample_rows if row["start"] < cursor]
             source = "quarter-v4"
             reason = "v4-factoren op dezelfde lokale kwartierpositie; voorlopige kwartierresolutie"
         else:
@@ -305,6 +307,8 @@ def forecast_quarters(
                 if not target_is_ambiguous or start.astimezone(AMSTERDAM).utcoffset() == target.utcoffset()
             ]
             source_rows = _source_history(aggregates)
+            fallback_prices = [row["price"] for row in aggregates
+                               if row["start"] < cursor and row["start"].astimezone(AMSTERDAM).hour == target.hour]
             source = "hour-v4-flat-quarter"
             reason = "onvoldoende echte kwartierbasis; vier vlakke kwartierwaarden uit complete geobserveerde uurgemiddelden"
             reasons.add("kwartierbasis heeft minder dan 2 vergelijkbare echte kwartierwaarnemingen")
@@ -319,6 +323,26 @@ def forecast_quarters(
             ttf_ratio=weather_values["ttf_ratio"],
             days_ahead=day_ahead,
         )
+        if fc is None and len(fallback_prices) >= 2:
+            # A new installation can have two weekday prices for the same
+            # quarter, but no prior weekend/holiday observations. Use their
+            # median as an explicitly provisional baseline while keeping the
+            # target day's v4 factor scores. No future or unpublished price is
+            # admitted by _prepare_history or the cursor bound above.
+            fc = forecast_core.forecast_one(
+                target_dt=target,
+                history=source_rows,
+                shortwave_ratio=weather_values["solar_ratio"],
+                wind_ms=weather_values["wind_ms"],
+                temp_c=weather_values["temp_c"],
+                ttf_ratio=weather_values["ttf_ratio"],
+                days_ahead=day_ahead,
+                baseline_override=median(fallback_prices),
+            )
+            if fc is not None:
+                source += "-daytype-proxy"
+                reason = "dagtypehistorie ontbreekt; mediaan van hetzelfde kwartier op andere dagen gebruikt"
+                reasons.add("dagtypehistorie ontbreekt; voorlopige proxy uit vergelijkbare kwartieren gebruikt")
         if fc is None or not math.isfinite(fc.predicted):
             reasons.add("modelbasis ontbreekt voor een of meer toekomstige kwartieren")
             # Do not manufacture a point when the source model has no baseline.
@@ -327,7 +351,7 @@ def forecast_quarters(
 
         # Flatten within the source-hour for the fallback: recalculate once at
         # the first target quarter and cache subsequent quarters in that hour.
-        if source == "hour-v4-flat-quarter":
+        if not use_quarter:
             base_hour = cursor.replace(minute=0)
             existing = next((p for p in points if p.source == source and p.start_utc.replace(minute=0) == base_hour), None)
             if existing is not None:
@@ -339,7 +363,7 @@ def forecast_quarters(
         # The source model's absolute hourly margin is an uncalibrated visual
         # guide here, not a confidence interval for quarter-hour tariffs.
         margin = fc.band_half / price_scale
-        if source == "hour-v4-flat-quarter" and existing is not None:
+        if not use_quarter and existing is not None:
             lower, upper = existing.lower, existing.upper
         else:
             lower, upper = float(price - margin), float(price + margin)
