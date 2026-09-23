@@ -1,0 +1,6 @@
+{
+  "cases": [
+    {"id": "same", "path": "one.wav", "expected": "unknown"},
+    {"id": "same", "path": "two.wav", "expected": "speaker_a"}
+  ]
+}

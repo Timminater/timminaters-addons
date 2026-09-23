@@ -25,7 +25,7 @@
         "data_description": {"min_confidence": "Below this confidence, no person context is added and the source agent is used normally."}
       }
     },
-    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
+    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend. Check that the app is running and the URL is correct.", "authentication_failed": "The backend rejected the token. Re-enter the companion token from the Speaker Recognition app.", "incompatible_api": "The backend does not expose the required Speaker Recognition API. Update the app and try again.", "backend_starting": "The Speaker Recognition app is still starting. Wait for it to become ready, then try again.", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
     "abort": {"already_configured": "This Speaker Recognition App is already configured", "discovery_error": "The discovery information is incomplete", "reconfigured": "The existing Speaker Recognition integration now uses the confirmed App"}
   },
   "options": {
@@ -36,11 +36,12 @@
         "data": {"url": "Recognition backend URL", "token": "Backend companion token", "stt_entity": "Source speech-to-text entity", "conversation_entity": "Source conversation agent", "min_confidence": "Minimum speaker confidence"}
       }
     },
-    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
+    "error": {"cannot_connect": "Cannot connect to the Speaker Recognition backend. Check that the app is running and the URL is correct.", "authentication_failed": "The backend rejected the token. Re-enter the companion token from the Speaker Recognition app.", "incompatible_api": "The backend does not expose the required Speaker Recognition API. Update the app and try again.", "backend_starting": "The Speaker Recognition app is still starting. Wait for it to become ready, then try again.", "recursive_proxy": "A Speaker Recognition proxy cannot wrap another Speaker Recognition proxy", "source_in_use": "This source is already wrapped by another Speaker Recognition proxy"},
     "abort": {"not_supported": "This entry type is not supported"}
   },
   "entity": {
     "sensor": {
+      "backend_info": {"name": "Backend information"},
       "last_recognition": {"name": "Last recognition"},
       "last_conversation_context": {"name": "Last conversation context"}
     }

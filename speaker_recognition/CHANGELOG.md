@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.0
+
+- Opnamen uit Analyse zijn direct te kiezen bij het maken van een nieuw stemprofiel, met afspelen en fragmentselectie.
+- Beoordelingsinbox en handmatige waarheidlabels voor onbekende of twijfelachtige herkenningen; correcties veranderen een profiel alleen na een aparte registratieactie.
+- Kwaliteitsfeedback en bruikbare spraakduur bij registratie, herstelbaar samenvoegen van profielen en gastprofielen met instelbaar verloop.
+- Apparaatstatistieken, proefruns op handmatig gelabelde opnamen en een vrijwillige experimentele sprekerstijdlijn voor bewaarde audio.
+- Verbeterde opslag- en persoonscontextveiligheid, versieerbare audio-API en uitgebreidere Home Assistant-diagnostiek.
+
 ## 2.5.0
 
 - De Ingress-webinterface ondersteunt nu Nederlands en Engels via losse taalbestanden.

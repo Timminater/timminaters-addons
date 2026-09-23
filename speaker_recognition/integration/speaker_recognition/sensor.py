@@ -21,6 +21,7 @@ async def async_setup_entry(
     """Set up diagnostic sensors on the backend entry."""
     async_add_entities(
         [
+            BackendInfoSensor(entry),
             LastRecognitionSensor(entry),
             LastConversationContextSensor(entry),
         ]
@@ -61,6 +62,46 @@ class SpeakerRecognitionDiagnosticSensor(SensorEntity):
         """Return the latest in-memory diagnostic record."""
         raise NotImplementedError
 
+
+class BackendInfoSensor(SpeakerRecognitionDiagnosticSensor):
+    """Expose a privacy-safe allowlist of backend capability metadata."""
+
+    _attr_translation_key = "backend_info"
+    _attr_icon = "mdi:information-outline"
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        super().__init__(entry, "backend_info")
+        self._entry = entry
+
+    @property
+    def signal(self) -> str:
+        return SIGNAL_RESULT_UPDATED
+
+    @property
+    def data(self) -> dict[str, Any] | None:
+        api = getattr(self._entry, "runtime_data", None)
+        info = api.server_info if api is not None else None
+        if info is None:
+            return None
+        return {
+            key: info[key]
+            for key in (
+                "api_version",
+                "capabilities",
+                "component_versions",
+                "configured_audio_processing_backend",
+            )
+            if key in info
+        }
+
+    @property
+    def native_value(self) -> str | None:
+        info = self.data
+        return str(info.get("api_version")) if info else "legacy"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.data or {}
 
 class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
     """Show the latest recognition result and all useful metadata."""
@@ -111,6 +152,7 @@ class LastRecognitionSensor(SpeakerRecognitionDiagnosticSensor):
             "speaker_names": result.get("speaker_names", []),
             "person_entity_ids": result.get("person_entity_ids", []),
             "satellite_id": result.get("satellite_id"),
+            "pipeline_run_id": result.get("pipeline_run_id"),
             "stt_entity_id": result.get("entity_id"),
             "scores": result.get("scores", {}),
             "margin": result.get("margin"),

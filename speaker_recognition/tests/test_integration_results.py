@@ -43,6 +43,7 @@ class ConversationInput:
     language: str
     agent_id: str
     extra_system_prompt: str | None = None
+    pipeline_run_id: str | None = None
 
 
 class ConversationResult:
@@ -108,6 +109,7 @@ sys.modules.setdefault("speaker_recognition", speaker_recognition_package)
 
 from speaker_recognition.const import SIGNAL_CONTEXT_UPDATED, SIGNAL_RESULT_UPDATED
 from speaker_recognition.results import (
+    claim_result_for_conversation,
     consume_result,
     listening_satellite,
     remember_conversation_context,
@@ -203,26 +205,41 @@ def multiple_speaker_result(**overrides):
 
 def test_result_matches_satellite_and_is_consumed_once():
     hass = fake_hass()
-    remember_result(hass, result())
-    assert consume_result(hass, "assist_satellite.kitchen", 0.8)[
+    remember_result(hass, result(pipeline_run_id="run-1"))
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1")[
         "person_entity_id"
     ] == "person.alice"
     assert hass.dispatched == [SIGNAL_RESULT_UPDATED, SIGNAL_RESULT_UPDATED]
     assert hass.data["speaker_recognition"]["last_result"]["consumed"] is True
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1") is None
+
+
+def test_new_unknown_result_blocks_older_personalization():
+    hass = fake_hass()
+    remember_result(hass, result(timestamp=98.0))
+    remember_result(hass, result(
+        timestamp=99.0, matched=False, outcome="unmatched",
+        person_entity_id=None, speaker_name=None,
+    ))
+
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-new") is None
+    diagnostic = claim_result_for_conversation(hass, "assist_satellite.kitchen")
+    assert diagnostic is not None and diagnostic["outcome"] == "unmatched"
     assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+    assert claim_result_for_conversation(hass, "assist_satellite.kitchen") is None
 
 
 def test_multiple_speakers_are_consumed_as_one_correlated_result():
     hass = fake_hass()
-    remember_result(hass, multiple_speaker_result())
+    remember_result(hass, multiple_speaker_result(pipeline_run_id="run-1"))
 
-    consumed = consume_result(hass, "assist_satellite.kitchen", 0.8)
+    consumed = consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1")
 
     assert consumed is not None
     assert consumed["outcome"] == "multiple_speakers"
     assert consumed["speaker_names"] == ["Alice", "Bob"]
     assert consumed["person_entity_ids"] == ["person.alice", "person.bob"]
-    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1") is None
 
 
 def test_conversation_context_is_stored_and_dispatched():
@@ -285,9 +302,10 @@ def test_diagnostic_sensors_expose_recognition_and_forwarding_details():
         audio_variant="original",
         fallback=False,
         blocked=False,
+        pipeline_run_id="run-1",
     )
     remember_result(hass, recognized)
-    consume_result(hass, "assist_satellite.kitchen", 0.8)
+    consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1")
     remember_conversation_context(
         hass,
         {
@@ -332,8 +350,8 @@ def test_result_fails_closed_for_wrong_source_stale_or_low_confidence():
     assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
 
     hass = fake_hass()
-    remember_result(hass, result(confidence=0.4))
-    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+    remember_result(hass, result(confidence=0.4, pipeline_run_id="run-1"))
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1") is None
 
     hass = fake_hass(person_exists=False)
     remember_result(hass, result())
@@ -342,14 +360,25 @@ def test_result_fails_closed_for_wrong_source_stale_or_low_confidence():
     hass = fake_hass()
     low_multiple = multiple_speaker_result()
     low_multiple["detected_speakers"][1]["confidence"] = 0.4
+    low_multiple["pipeline_run_id"] = "run-1"
     remember_result(hass, low_multiple)
-    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "run-1") is None
 
 
 def test_unattributed_conversation_never_receives_personalization():
     hass = fake_hass()
     remember_result(hass, result(satellite_id=None))
     assert consume_result(hass, None, 0.8) is None
+
+
+def test_no_explicit_matching_run_id_never_adds_person_context():
+    hass = fake_hass()
+    remember_result(hass, result(pipeline_run_id="stt-run"))
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8) is None
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "different-run") is None
+    assert consume_result(hass, "assist_satellite.kitchen", 0.8, "stt-run")[
+        "person_entity_id"
+    ] == "person.alice"
 
 
 def test_listening_satellite_requires_an_unambiguous_source():
@@ -370,7 +399,7 @@ def test_conversation_personalization_preserves_original_context_and_fields():
 
     hass = fake_hass()
     hass.agent = Source()
-    remember_result(hass, result())
+    remember_result(hass, result(pipeline_run_id="run-1"))
     proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
     proxy.hass = hass
     context = object()
@@ -383,6 +412,7 @@ def test_conversation_personalization_preserves_original_context_and_fields():
         language="nl",
         agent_id="conversation.proxy",
         extra_system_prompt="Existing prompt",
+        pipeline_run_id="run-1",
     )
 
     returned = asyncio.run(proxy.async_process(original))
@@ -406,6 +436,41 @@ def test_conversation_personalization_preserves_original_context_and_fields():
     assert forwarding["satellite_id"] == "assist_satellite.kitchen"
 
 
+def test_conversation_without_shared_run_id_forwards_without_person_context():
+    class Source:
+        supported_languages = "*"
+
+        async def async_process(self, user_input):
+            self.received = user_input
+            return ConversationResult()
+
+    hass = fake_hass()
+    hass.agent = Source()
+    remember_result(hass, result(pipeline_run_id="stt-run"))
+    proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
+    proxy.hass = hass
+    original = ConversationInput(
+        text="Hello",
+        context=object(),
+        conversation_id="conversation-no-run-id",
+        device_id="device-1",
+        satellite_id="assist_satellite.kitchen",
+        language="nl",
+        agent_id="conversation.proxy",
+    )
+
+    asyncio.run(proxy.async_process(original))
+
+    assert hass.agent.received.extra_system_prompt is None
+    context = hass.data["speaker_recognition"]["last_conversation_context"]
+    assert context["forwarded"] is False
+    assert context["person_entity_id"] is None
+    assert context["recording_id"] is None
+    assert hass.data["speaker_recognition"]["recognition_results"][0][
+        "conversation_claimed"
+    ] is True
+
+
 def test_multiple_speakers_reach_llm_and_diagnostic_entities():
     class Source:
         supported_languages = "*"
@@ -416,7 +481,7 @@ def test_multiple_speakers_reach_llm_and_diagnostic_entities():
 
     hass = fake_hass()
     hass.agent = Source()
-    remember_result(hass, multiple_speaker_result())
+    remember_result(hass, multiple_speaker_result(pipeline_run_id="run-multiple"))
     proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
     proxy.hass = hass
     original = ConversationInput(
@@ -427,6 +492,7 @@ def test_multiple_speakers_reach_llm_and_diagnostic_entities():
         satellite_id="assist_satellite.kitchen",
         language="nl",
         agent_id="conversation.proxy",
+        pipeline_run_id="run-multiple",
     )
 
     asyncio.run(proxy.async_process(original))
@@ -475,7 +541,7 @@ def test_conversation_finalizes_correlated_recording_without_changing_context():
     hass.main = SimpleNamespace(runtime_data=api)
     previous = getattr(speaker_recognition_package, "get_main_entry", None)
     speaker_recognition_package.get_main_entry = lambda value: value.main
-    remember_result(hass, result(recording_id="recording-1"))
+    remember_result(hass, result(recording_id="recording-1", pipeline_run_id="run-2"))
     proxy = SpeakerRecognitionConversation("conversation.source", 0.8, "proxy")
     proxy.hass = hass
     original_context = object()
@@ -487,6 +553,7 @@ def test_conversation_finalizes_correlated_recording_without_changing_context():
         satellite_id="assist_satellite.kitchen",
         language="nl",
         agent_id="conversation.proxy",
+        pipeline_run_id="run-2",
     )
     try:
         asyncio.run(proxy.async_process(original))

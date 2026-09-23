@@ -71,6 +71,19 @@ def listening_satellite(hass: HomeAssistant) -> str | None:
     return listening[0] if len(listening) == 1 else None
 
 
+def pipeline_run_id_from(value: object) -> str | None:
+    """Read a future HA pipeline execution ID when both stages expose it.
+
+    Current Home Assistant ``SpeechMetadata`` does not provide a run ID. In
+    that case the integration deliberately cannot attach person context.
+    """
+    run_id = getattr(value, "pipeline_run_id", None)
+    if not isinstance(run_id, str):
+        return None
+    run_id = run_id.strip()
+    return run_id if 0 < len(run_id) <= 128 else None
+
+
 def remember_result(hass: HomeAssistant, result: dict[str, Any]) -> None:
     """Store bounded recognition metadata; audio is never retained here."""
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -91,9 +104,12 @@ def remember_conversation_context(hass: HomeAssistant, context: dict[str, Any]) 
 
 
 def consume_result(
-    hass: HomeAssistant, satellite_id: str | None, min_confidence: float
+    hass: HomeAssistant,
+    satellite_id: str | None,
+    min_confidence: float,
+    pipeline_run_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Atomically consume one fresh result matching the conversation source."""
+    """Consume one fresh, explicitly same-run recognition result only."""
     results = hass.data.setdefault(DOMAIN, {}).setdefault(
         "recognition_results", deque(maxlen=MAX_RESULTS)
     )
@@ -129,18 +145,20 @@ def consume_result(
             and item.get("person_entity_id")
         )
 
-    candidates = [item for item in fresh if eligible(item)]
-    # A voice match is only safe personalization metadata when both pipeline
-    # stages identify the same Assist satellite. Browser/mobile conversations
-    # without a satellite id must never inherit a nearby voice result.
-    if not satellite_id:
+    # Current HA SpeechMetadata and ConversationInput have no shared execution
+    # ID, so satellite and time proximity alone are never enough for identity.
+    if not satellite_id or not pipeline_run_id:
         return None
     candidates = [
-        item for item in candidates if item.get("satellite_id") == satellite_id
+        item for item in fresh
+        if item.get("satellite_id") == satellite_id
+        and item.get("pipeline_run_id") == pipeline_run_id
     ]
     if not candidates:
         return None
     selected = max(candidates, key=lambda item: item["timestamp"])
+    if not eligible(selected):
+        return None
     if (
         selected.get("outcome") != "multiple_speakers"
         and hass.states.get(selected["person_entity_id"]) is None
@@ -167,10 +185,11 @@ def claim_result_for_conversation(
         for item in results
         if now - item["timestamp"] <= RESULT_TTL_SECONDS
         and item.get("satellite_id") == satellite_id
-        and not item.get("conversation_claimed")
     ]
     if not candidates:
         return None
     selected = max(candidates, key=lambda item: item["timestamp"])
+    if selected.get("conversation_claimed"):
+        return None
     selected["conversation_claimed"] = True
     return selected.copy()

@@ -6,6 +6,7 @@ import argparse
 import base64
 import io
 import json
+import statistics
 import time
 import urllib.error
 import urllib.request
@@ -13,6 +14,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import soxr
 
 
 def read_wav(path: Path) -> tuple[np.ndarray, int]:
@@ -28,12 +30,7 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
 def resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
     if source_rate == target_rate:
         return audio
-    length = round(audio.size * target_rate / source_rate)
-    return np.interp(
-        np.linspace(0, max(0, audio.size - 1), length),
-        np.arange(audio.size),
-        audio,
-    ).astype(np.float32)
+    return np.asarray(soxr.resample(audio, source_rate, target_rate, quality="HQ"), dtype=np.float32)
 
 
 class Api:
@@ -85,6 +82,10 @@ def correlation(left: np.ndarray, right: np.ndarray) -> float:
     )
 
 
+def percentile(values: list[float], percentile_value: float) -> float:
+    return round(float(np.percentile(values, percentile_value)), 3)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:18099")
@@ -92,7 +93,20 @@ def main() -> None:
     parser.add_argument("--speaker-name", required=True)
     parser.add_argument("--target", type=Path, required=True)
     parser.add_argument("--competitor", type=Path, required=True)
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument(
+        "--competitor-speaker",
+        help="Expected enrolled speaker name for competitor.wav",
+    )
+    identity.add_argument(
+        "--competitor-unknown",
+        action="store_true",
+        help="Declare competitor.wav as an independently verified unknown voice",
+    )
+    parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
+    if args.repeats < 1:
+        parser.error("--repeats must be at least 1")
 
     api = Api(args.url, args.token)
     speakers = api.request("GET", "/api/speakers")
@@ -120,40 +134,53 @@ def main() -> None:
         "clipping": np.clip(target * 8, -1, 0.9999695),
     }
     results: dict[str, dict] = {}
+    benchmark_latency: dict[str, list[float]] = {name: [] for name in cases}
     for name, audio in cases.items():
-        analyzed = api.request(
-            "POST",
-            "/api/analyze",
-            {
-                "audio": audio_document(audio),
-                "source": "test",
-                "extraction_mode": "off",
-            },
-        )
-        recording_id = analyzed["recording_id"]
-        api.request(
-            "POST",
-            f"/api/analysis/{recording_id}/process",
-            {},
-        )
-        deadline = time.monotonic() + 185
-        while True:
-            analyzed = api.request("GET", f"/api/analysis/{recording_id}")
-            if analyzed["processing_status"] not in {"queued", "running"}:
-                break
-            if time.monotonic() >= deadline:
-                raise TimeoutError(name)
-            time.sleep(0.25)
-        results[name] = {
-            "outcome": analyzed.get("outcome"),
-            "speaker": analyzed.get("speaker_name"),
-            "confidence": analyzed.get("confidence"),
-            "denoised": analyzed.get("denoised_available")
-            or bool(analyzed.get("denoised_audio")),
-            "stages": analyzed.get("processing_stages"),
-            "fallback": analyzed.get("processing_fallback_reason"),
-            "quality": analyzed.get("processing_quality"),
-            "timings": analyzed.get("timings"),
+        case_runs = []
+        for run_index in range(args.repeats):
+            request_started = time.monotonic()
+            analyzed = api.request(
+                "POST",
+                "/api/analyze",
+                {
+                    "audio": audio_document(audio),
+                    "source": "test",
+                    "extraction_mode": "off",
+                },
+            )
+            recording_id = analyzed["recording_id"]
+            api.request(
+                "POST",
+                f"/api/analysis/{recording_id}/process",
+                {},
+            )
+            deadline = request_started + 185
+            while True:
+                analyzed = api.request("GET", f"/api/analysis/{recording_id}")
+                if analyzed["processing_status"] not in {"queued", "running"}:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"{name} run {run_index + 1}")
+                time.sleep(0.25)
+            wall_seconds = time.monotonic() - request_started
+            benchmark_latency[name].append(wall_seconds * 1000)
+            case_runs.append({
+                "outcome": analyzed.get("outcome"),
+                "speaker": analyzed.get("speaker_name"),
+                "confidence": analyzed.get("confidence"),
+                "denoised": analyzed.get("denoised_available")
+                or bool(analyzed.get("denoised_audio")),
+                "stages": analyzed.get("processing_stages"),
+                "fallback": analyzed.get("processing_fallback_reason"),
+                "quality": analyzed.get("processing_quality"),
+                "timings": analyzed.get("timings"),
+                "end_to_end_ms": round(wall_seconds * 1000, 3),
+            })
+        results[name] = case_runs[-1] | {
+            "runs": case_runs,
+            "end_to_end_p50_ms": percentile(benchmark_latency[name], 50),
+            "end_to_end_p95_ms": percentile(benchmark_latency[name], 95),
+            "end_to_end_p99_ms": percentile(benchmark_latency[name], 99),
         }
     warm_started = time.monotonic()
     warm_live = api.request(
@@ -206,6 +233,44 @@ def main() -> None:
         raise AssertionError("Warm before_stt speech did not produce denoised audio")
     if results["warm_live_clean"]["wall_seconds"] > 12:
         raise AssertionError("Warm before_stt processing exceeded 12 seconds")
+    clean = results["clean"]
+    for index, run in enumerate(clean["runs"], start=1):
+        if run["outcome"] != "matched" or run["speaker"] != args.speaker_name:
+            raise AssertionError(
+                "Known target fixture must resolve to its enrolled identity; "
+                f"run={index}, outcome={run['outcome']!r}, speaker={run['speaker']!r}"
+            )
+    absent = results["absent_target"]
+    if args.competitor_unknown:
+        for index, run in enumerate(absent["runs"], start=1):
+            if run["outcome"] not in {"unmatched", "ambiguous"} or run["speaker"]:
+                raise AssertionError(
+                    "Declared unknown fixture was accepted as a known identity: "
+                    f"run={index}, outcome={run['outcome']!r}, speaker={run['speaker']!r}"
+                )
+    else:
+        for index, run in enumerate(absent["runs"], start=1):
+            if run["outcome"] != "matched" or run["speaker"] != args.competitor_speaker:
+                raise AssertionError(
+                    "Known competitor fixture must resolve to its enrolled identity; "
+                    f"run={index}, outcome={run['outcome']!r}, speaker={run['speaker']!r}"
+                )
+    results["benchmark"] = {
+        "repeats_per_case": args.repeats,
+        "end_to_end_latency_ms": {
+            name: {
+                "p50": percentile(values, 50),
+                "p95": percentile(values, 95),
+                "p99": percentile(values, 99),
+                "mean": round(statistics.mean(values), 3),
+            }
+            for name, values in benchmark_latency.items()
+        },
+        "identity_expectations": {
+            "target": args.speaker_name,
+            "competitor": "unknown" if args.competitor_unknown else args.competitor_speaker,
+        },
+    }
     print(json.dumps(results, indent=2, sort_keys=True))
 
 

@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
+import soxr
 from numpy.typing import NDArray
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,16 @@ class ProcessedAudioResult:
     quality: dict[str, float | bool | str]
     fallback_reason: str | None = None
 
+    @property
+    def output_variant(self) -> str:
+        return "denoised" if self.denoised_pcm is not None else "original"
+
+    @property
+    def status(self) -> str:
+        if self.denoised_pcm is not None:
+            return "processed"
+        return "failed" if self.stages.get("denoise") == "failed" else "original"
+
 
 def resample_audio(
     audio: NDArray[np.float32], source_rate: int, target_rate: int
@@ -44,13 +55,7 @@ def resample_audio(
     value = np.asarray(audio, dtype=np.float32)
     if source_rate == target_rate or not value.size:
         return value.copy()
-    target_count = max(1, round(value.size * target_rate / source_rate))
-    source_positions = np.arange(value.size, dtype=np.float64)
-    target_positions = np.linspace(0, max(0, value.size - 1), target_count)
-    return np.asarray(
-        np.interp(target_positions, source_positions, value),
-        dtype=np.float32,
-    )
+    return np.asarray(soxr.resample(value, source_rate, target_rate, quality="HQ"), dtype=np.float32)
 
 
 def _fixed_length(value: NDArray[np.float32], length: int) -> NDArray[np.float32]:
@@ -337,7 +342,7 @@ def _worker_main(
             stages["model"] = "warm" if model_was_loaded else "loaded_cold"
         except Exception as error:  # A model failure must be fail-open for Assist.
             _LOGGER.warning("DeepFilterNet2 failed: %s", error)
-            denoised = original.copy()
+            denoised = np.zeros_like(original)
             stages["denoise"] = "failed"
             stages["model"] = "warm" if model_was_loaded else "load_failed"
             fallback_reason = "denoise_failed"
@@ -354,8 +359,10 @@ def _worker_main(
         quality = _quality(original, denoised)
         quality["model_was_loaded"] = model_was_loaded
         quality["timing_comparable"] = model_was_loaded
-        denoised_output: NDArray[np.float32] | None = denoised
-        if quality["denoised_passed"] is not True:
+        denoised_output: NDArray[np.float32] | None = (
+            denoised if fallback_reason is None else None
+        )
+        if fallback_reason is None and quality["denoised_passed"] is not True:
             denoised_output = None
             stages["denoise"] = "rejected_quality"
             fallback_reason = "denoised_quality_failed"

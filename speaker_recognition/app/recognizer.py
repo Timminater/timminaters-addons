@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ import uuid
 import time
 import wave
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Iterable
 from typing import Callable, Protocol
@@ -30,6 +31,9 @@ from app.models import AudioInput, SpeakerInfo
 from app.storage import AudioCatalog
 
 _LOGGER = logging.getLogger(__name__)
+EMBEDDING_MODEL_VERSION = "resemblyzer-v1"
+PREPROCESS_VERSION = "resemblyzer-preprocess-v1"
+PROFILE_MERGE_JOURNAL_KEY = "speaker_profile_merge_journal"
 
 
 class Encoder(Protocol):
@@ -98,17 +102,84 @@ class SpeakerRecognizer:
     def ready(self) -> bool:
         return self._encoder is not None
 
+    @property
+    def speaker_count(self) -> int:
+        """Cheap health snapshot; never waits for a model operation."""
+        return len(self._profiles)
+
     def initialize(self) -> None:
         with self._lock:
             self._profiles_dir.mkdir(parents=True, exist_ok=True)
             self.catalog.initialize()
             self._load_profiles()
+            self._recover_profile_merge_journal()
             self._encoder = self._encoder_factory()
+            self._recover_profile_revisions()
             _LOGGER.info("Recognition engine ready with %d speaker(s)", len(self._profiles))
 
     def list_speakers(self) -> list[SpeakerInfo]:
         with self._lock:
             return sorted(self._profiles.values(), key=lambda item: item.name.casefold())
+
+    def profile_revision_snapshot(
+        self,
+        speaker_id: str,
+        *,
+        threshold: float | None = None,
+        margin: float | None = None,
+        settings: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Return a durable identity and decision snapshot for one profile."""
+        with self._lock:
+            profile = self._profiles.get(speaker_id)
+            if profile is None:
+                raise KeyError(speaker_id)
+            samples = self.catalog.list_samples(speaker_id, active_only=True, include_internal=True)
+            sample_versions = sorted(
+                (
+                    {
+                        "id": sample["id"],
+                        "model": (sample.get("metadata") or {}).get("embedding_model")
+                        or (sample.get("metadata") or {}).get("legacy_embedding_model")
+                        or "legacy-unknown",
+                        "preprocess": (sample.get("metadata") or {}).get("preprocess_version")
+                        or (sample.get("metadata") or {}).get("legacy_preprocess_version")
+                        or "legacy-unknown",
+                        "legacy_model": (sample.get("metadata") or {}).get("legacy_embedding_model"),
+                        "legacy_preprocess": (sample.get("metadata") or {}).get("legacy_preprocess_version"),
+                    }
+                    for sample in samples
+                ),
+                key=lambda item: item["id"],
+            )
+            legacy_fingerprint = None
+            if not samples:
+                embedding_path = self._profiles_dir / f"{speaker_id}.npy"
+                try:
+                    legacy_fingerprint = hashlib.sha256(embedding_path.read_bytes()).hexdigest()
+                except OSError:
+                    legacy_fingerprint = "unavailable"
+            identity = {
+                "speaker_id": speaker_id,
+                "samples": sample_versions,
+                "legacy_fingerprint": legacy_fingerprint,
+            }
+            canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+            snapshot: dict[str, object] = {
+                "revision_id": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                "speaker_id": speaker_id,
+                "sample_ids": [item["id"] for item in sample_versions],
+                "sample_versions": sample_versions,
+                "sample_count": profile.sample_count,
+                "threshold": self._threshold if threshold is None else float(threshold),
+                "margin": self._min_margin if margin is None else float(margin),
+            }
+            if legacy_fingerprint:
+                snapshot["legacy_fingerprint"] = legacy_fingerprint
+            if settings:
+                # Require JSON-compatible primitive configuration in history.
+                snapshot["settings"] = json.loads(json.dumps(settings, allow_nan=False))
+            return snapshot
 
     def close(self) -> None:
         """Release the optional model worker without affecting profile storage."""
@@ -129,15 +200,35 @@ class SpeakerRecognizer:
         replace: bool = False,
         person_entity_id: str | None = None,
         update_person_mapping: bool = False,
+        profile_kind: str = "resident",
+        expires_at: datetime | None = None,
+        expiry_was_explicit: bool = False,
+        profile_kind_explicit: bool = False,
+        source_recording_id: str | None = None,
     ) -> SpeakerInfo:
         with self._lock:
+            if profile_kind not in {"resident", "guest"}:
+                raise ValueError("Invalid profile kind")
+            if profile_kind == "guest" and person_entity_id is not None:
+                raise ValueError("Guest profiles cannot be linked to a Home Assistant person")
+            if profile_kind == "resident" and expires_at is not None:
+                raise ValueError("Only guest profiles can have an expiry")
+            if expires_at is not None:
+                if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+                    raise ValueError("Guest expiry must include a timezone")
+                expires_at = expires_at.astimezone(timezone.utc)
             encoder = self._require_encoder()
             existing = next(
                 (profile for profile in self._profiles.values() if profile.name.casefold() == speaker_name.casefold()),
                 None,
             )
+            if existing is not None and not profile_kind_explicit:
+                profile_kind = existing.profile_kind
+            if existing is not None and profile_kind == "guest" and not expiry_was_explicit:
+                expires_at = existing.expires_at
+            elif existing is None and profile_kind == "guest" and expires_at is None and not expiry_was_explicit:
+                expires_at = datetime.now(timezone.utc) + timedelta(days=30)
             embeddings = [self._embed(encoder, audio) for audio in audio_inputs]
-            new_embedding = self._normalized_mean(embeddings)
             now = datetime.now(timezone.utc)
 
             if existing is None:
@@ -149,13 +240,11 @@ class SpeakerRecognizer:
                     created_at=now,
                     updated_at=now,
                     person_entity_id=person_entity_id,
+                    profile_kind=profile_kind,
+                    expires_at=expires_at,
                 )
             else:
                 speaker_id = existing.id
-                if not replace:
-                    old_weight = existing.sample_count
-                    combined = (self._embeddings[speaker_id] * old_weight) + (new_embedding * len(embeddings))
-                    new_embedding = self._normalize(combined)
                 profile = SpeakerInfo(
                     id=speaker_id,
                     name=speaker_name,
@@ -163,20 +252,65 @@ class SpeakerRecognizer:
                     created_at=existing.created_at,
                     updated_at=now,
                     person_entity_id=(
-                        person_entity_id
-                        if update_person_mapping
-                        else existing.person_entity_id
+                        None if profile_kind == "guest" else (
+                            person_entity_id
+                            if update_person_mapping
+                            else existing.person_entity_id
+                        )
                     ),
+                    profile_kind=profile_kind,
+                    expires_at=expires_at if profile_kind == "guest" else None,
                 )
 
             previous_profile = self._profiles.get(speaker_id)
             previous_embedding = self._embeddings.get(speaker_id)
-            self._write_embedding(speaker_id, new_embedding)
-            self._profiles[speaker_id] = profile
-            self._embeddings[speaker_id] = new_embedding
+            staged: list[str] = []
+            old_active = self.catalog.list_samples(speaker_id, active_only=True)
             try:
+                for index, (audio, vector) in enumerate(zip(audio_inputs, embeddings)):
+                    metadata = {
+                        "source": "enroll",
+                        "embedding": vector.tolist(),
+                        "embedding_model": EMBEDDING_MODEL_VERSION,
+                        "preprocess_version": PREPROCESS_VERSION,
+                    }
+                    if existing and not replace and not old_active and index == 0:
+                        metadata["legacy_embedding"] = previous_embedding.tolist()
+                        metadata["legacy_sample_count"] = existing.sample_count
+                        metadata["legacy_embedding_model"] = EMBEDDING_MODEL_VERSION
+                        metadata["legacy_preprocess_version"] = PREPROCESS_VERSION
+                    sample = self.catalog.add_sample(
+                        speaker_id, self._decode_pcm_bytes(audio), audio.sample_rate,
+                        source_recording_id=source_recording_id,
+                        metadata=metadata,
+                        active=False,
+                    )
+                    staged.append(sample["id"])
+                active_ids = staged if replace else [sample["id"] for sample in old_active] + staged
+                sample_vectors = self._active_sample_vectors(speaker_id, active_ids)
+                # Profiles predating per-sample vectors may have no permanent
+                # WAVs. Preserve their existing reference when appending.
+                new_embedding = self._normalized_mean(sample_vectors)
+                profile = profile.model_copy(update={"sample_count": len(sample_vectors)})
+                self._write_embedding(speaker_id, new_embedding)
+                self._profiles[speaker_id] = profile
+                self._embeddings[speaker_id] = new_embedding
                 self._write_registry()
-            except OSError:
+                self.catalog.replace_active_samples(speaker_id, active_ids)
+            except Exception:
+                if staged:
+                    try:
+                        self.catalog.replace_active_samples(
+                            speaker_id,
+                            [item["id"] for item in old_active],
+                        )
+                    except Exception:
+                        pass
+                    for sample_id in staged:
+                        try:
+                            self.catalog.delete_sample(sample_id, remove_audio=True)
+                        except Exception:
+                            pass
                 if previous_profile is None or previous_embedding is None:
                     (self._profiles_dir / f"{speaker_id}.npy").unlink(missing_ok=True)
                     self._profiles.pop(speaker_id, None)
@@ -185,16 +319,148 @@ class SpeakerRecognizer:
                     self._write_embedding(speaker_id, previous_embedding)
                     self._profiles[speaker_id] = previous_profile
                     self._embeddings[speaker_id] = previous_embedding
+                try:
+                    self._write_registry()
+                except OSError:
+                    _LOGGER.exception("Could not restore speaker registry after failed enrollment")
                 raise
-            # Raw samples are intentionally permanent.  Old profiles from
-            # 1.x stay valid even though they have no reconstructable WAV.
-            if replace:
-                for sample in self.catalog.list_samples(speaker_id, active_only=True):
-                    self.catalog.set_sample_active(sample["id"], False)
-            for audio in audio_inputs:
-                pcm = self._decode_pcm_bytes(audio)
-                self.catalog.add_sample(speaker_id, pcm, audio.sample_rate, metadata={"source": "enroll"})
             return profile
+
+    def merge_profiles(self, source_id: str, target_id: str) -> SpeakerInfo:
+        """Merge source samples into target and rebuild target from its active WAVs."""
+        with self._lock:
+            if source_id == target_id:
+                raise ValueError("Choose two different profiles")
+            source = self._profiles.get(source_id)
+            target = self._profiles.get(target_id)
+            if source is None or target is None:
+                raise KeyError(source_id if source is None else target_id)
+            source_samples = self.catalog.list_samples(source_id)
+            target_samples = self.catalog.list_samples(target_id)
+            active = [item for item in source_samples + target_samples if item["active"]]
+            missing = [item["id"] for item in active if self.catalog.sample_path(item["id"]) is None]
+            if missing:
+                raise ValueError(f"Cannot merge: active enrollment WAV is missing ({missing[0]})")
+            if not active:
+                raise ValueError("Cannot merge profiles without active enrollment samples")
+
+            source_vector = self._embeddings[source_id].copy()
+            target_vector = self._embeddings[target_id].copy()
+            target_embedding_path = self._profiles_dir / f"{target_id}.npy"
+            source_embedding_path = self._profiles_dir / f"{source_id}.npy"
+            target_file = target_embedding_path.read_bytes()
+            source_file = source_embedding_path.read_bytes()
+            journal = {
+                "source_id": source_id,
+                "target_id": target_id,
+                "source_sample_ids": [item["id"] for item in source_samples],
+            }
+            self.catalog.set_setting(PROFILE_MERGE_JOURNAL_KEY, journal)
+            try:
+                self.catalog.move_samples(source_id, target_id)
+                vectors = self._active_sample_vectors(target_id, [item["id"] for item in active])
+                embedding = self._normalized_mean(vectors)
+                merged = target.model_copy(update={"sample_count": len(vectors), "updated_at": datetime.now(timezone.utc)})
+                self._write_embedding(target_id, embedding)
+                self._profiles[target_id] = merged
+                self._embeddings[target_id] = embedding
+                self._profiles.pop(source_id)
+                self._embeddings.pop(source_id)
+                self._write_registry()
+            except Exception:
+                self._profiles[target_id] = target
+                self._embeddings[target_id] = target_vector
+                self._profiles[source_id] = source
+                self._embeddings[source_id] = source_vector
+                target_embedding_path.write_bytes(target_file)
+                source_embedding_path.write_bytes(source_file)
+                try:
+                    self.catalog.restore_sample_ownership(
+                        journal["source_sample_ids"], source_id, target_id
+                    )
+                except Exception:
+                    _LOGGER.exception("Could not restore enrollment ownership after failed profile merge")
+                    raise
+                try:
+                    self._write_registry()
+                except Exception:
+                    _LOGGER.exception("Could not restore profile registry after failed merge")
+                    raise
+                self.catalog.delete_setting(PROFILE_MERGE_JOURNAL_KEY)
+                raise
+            self.catalog.delete_setting(PROFILE_MERGE_JOURNAL_KEY)
+            source_embedding_path.unlink(missing_ok=True)
+            return merged
+
+    def _recover_profile_merge_journal(self) -> None:
+        """Resolve an interrupted merge against the atomically replaced registry."""
+        journal = self.catalog.get_setting(PROFILE_MERGE_JOURNAL_KEY)
+        if journal is None:
+            return
+        try:
+            source_id = journal["source_id"]
+            target_id = journal["target_id"]
+            sample_ids = journal["source_sample_ids"]
+            if (
+                not isinstance(source_id, str)
+                or not isinstance(target_id, str)
+                or source_id == target_id
+                or not isinstance(sample_ids, list)
+                or not sample_ids
+                or any(not isinstance(sample_id, str) for sample_id in sample_ids)
+            ):
+                raise ValueError("Malformed profile merge journal")
+        except (KeyError, TypeError) as error:
+            raise ValueError("Malformed profile merge journal") from error
+
+        if source_id not in self._profiles:
+            # Registry replacement committed: target is authoritative. The
+            # journal may only have survived the final setting deletion.
+            self.catalog.delete_setting(PROFILE_MERGE_JOURNAL_KEY)
+            return
+        if target_id not in self._profiles:
+            raise RuntimeError("Cannot recover profile merge: target is absent from registry")
+
+        # Old registry is still authoritative. Restore only rows recorded as
+        # belonging to source before merge; target's original samples stay put.
+        self.catalog.restore_sample_ownership(sample_ids, source_id, target_id)
+        self.catalog.delete_setting(PROFILE_MERGE_JOURNAL_KEY)
+
+    def expire_guest_profiles(self, now: datetime | None = None) -> list[str]:
+        """Delete expired guest profiles and registration WAVs, scrubbing history labels."""
+        moment = now or datetime.now(timezone.utc)
+        if moment.tzinfo is None or moment.utcoffset() is None:
+            raise ValueError("Expiry cleanup time must include a timezone")
+        moment = moment.astimezone(timezone.utc)
+        with self._lock:
+            expired = [profile for profile in self._profiles.values()
+                       if profile.profile_kind == "guest" and profile.expires_at is not None
+                       and profile.expires_at <= moment]
+            removed: list[str] = []
+            for profile in expired:
+                # Keep the profile indexed until registration files and rows are
+                # gone. An interrupted cleanup can then safely retry on startup.
+                self.catalog.scrub_guest_history(profile.id, profile.name)
+                self.catalog.archive_or_delete_speaker_samples(profile.id, delete_audio=True)
+                previous_embedding = self._embeddings[profile.id]
+                del self._profiles[profile.id]
+                del self._embeddings[profile.id]
+                try:
+                    self._write_registry()
+                except Exception:
+                    self._profiles[profile.id] = profile
+                    self._embeddings[profile.id] = previous_embedding
+                    try:
+                        self._write_registry()
+                    except Exception:
+                        _LOGGER.exception("Could not restore guest profile registry after failed expiry")
+                    raise
+                try:
+                    (self._profiles_dir / f"{profile.id}.npy").unlink(missing_ok=True)
+                except OSError:
+                    _LOGGER.exception("Could not remove expired guest embedding %s", profile.id)
+                removed.append(profile.id)
+            return removed
 
     def delete(self, speaker_id: str, delete_audio: bool = True) -> bool:
         with self._lock:
@@ -232,12 +498,60 @@ class SpeakerRecognizer:
                 except (OSError, wave.Error):
                     _LOGGER.warning("Skipping unreadable enrollment sample %s", sample["id"])
             if not inputs: raise ValueError("No readable active enrollment samples")
-            embedding = self._normalized_mean([self._embed(self._require_encoder(), item) for item in inputs])
-            updated = SpeakerInfo(id=profile.id, name=profile.name, sample_count=len(inputs), created_at=profile.created_at, updated_at=datetime.now(timezone.utc), person_entity_id=profile.person_entity_id)
+            vectors = self._active_sample_vectors(speaker_id, [sample["id"] for sample in samples])
+            embedding = self._normalized_mean(vectors)
+            updated = profile.model_copy(update={"sample_count": len(vectors), "updated_at": datetime.now(timezone.utc)})
+            previous_embedding = self._embeddings[speaker_id]
             self._write_embedding(speaker_id, embedding)
-            self._profiles[speaker_id] = updated; self._embeddings[speaker_id] = embedding
-            self._write_registry()
+            self._profiles[speaker_id] = updated
+            self._embeddings[speaker_id] = embedding
+            try:
+                self._write_registry()
+            except Exception:
+                self._profiles[speaker_id] = profile
+                self._embeddings[speaker_id] = previous_embedding
+                self._write_embedding(speaker_id, previous_embedding)
+                try:
+                    self._write_registry()
+                except OSError:
+                    _LOGGER.exception("Could not restore profile registry after failed retraining")
+                raise
             return updated
+
+    def set_sample_active_and_retrain(
+        self, speaker_id: str, sample_id: str, active: bool,
+    ) -> tuple[dict, SpeakerInfo]:
+        """Serialize sample activation and profile revision as one operation."""
+        with self._lock:
+            sample = self.catalog.get_sample(sample_id)
+            if not sample or sample["speaker_id"] != speaker_id:
+                raise KeyError(sample_id)
+            was_active = bool(sample["active"])
+            updated = self.catalog.set_sample_active(sample_id, active)
+            if was_active == active:
+                return updated, self._profiles[speaker_id]
+            try:
+                profile = self.retrain_from_samples(speaker_id)
+            except Exception:
+                self.catalog.set_sample_active(sample_id, was_active)
+                raise
+            return updated, profile
+
+    def delete_sample_and_retrain(self, speaker_id: str, sample_id: str) -> bool:
+        """Publish a profile without an active sample before deleting its WAV."""
+        with self._lock:
+            sample = self.catalog.get_sample(sample_id)
+            if not sample or sample["speaker_id"] != speaker_id:
+                raise KeyError(sample_id)
+            was_active = bool(sample["active"])
+            if was_active:
+                self.catalog.set_sample_active(sample_id, False)
+                try:
+                    self.retrain_from_samples(speaker_id)
+                except Exception:
+                    self.catalog.set_sample_active(sample_id, True)
+                    raise
+            return self.catalog.delete_sample(sample_id)
 
     def calibration_preview(self) -> dict[str, object]:
         """Estimate a conservative threshold from permanent labeled samples.
@@ -313,6 +627,45 @@ class SpeakerRecognizer:
     def recognize(self, audio_input: AudioInput) -> tuple[SpeakerInfo | None, float, dict[str, float]]:
         detailed = self.recognize_detailed(audio_input)
         return detailed.speaker, detailed.confidence, detailed.scores
+
+    def recognize_detailed_with_snapshot(
+        self,
+        audio_input: AudioInput,
+        *,
+        threshold: float | None = None,
+        min_margin: float | None = None,
+    ) -> tuple[RecognitionAnalysis, dict[str, object]]:
+        """Recognize and capture the exact profile revisions under one lock."""
+        with self._lock:
+            detailed = self.recognize_detailed(
+                audio_input, threshold=threshold, min_margin=min_margin
+            )
+            effective_margin = self._min_margin if min_margin is None else float(min_margin)
+            profile_revisions = [
+                self.profile_revision_snapshot(
+                    speaker_id, threshold=detailed.threshold, margin=effective_margin
+                )
+                for speaker_id in sorted(self._profiles)
+            ]
+            identity = {
+                "profiles": [
+                    {
+                        "speaker_id": item["speaker_id"],
+                        "revision_id": item["revision_id"],
+                    }
+                    for item in profile_revisions
+                ],
+                "threshold": detailed.threshold,
+                "margin": effective_margin,
+            }
+            canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+            snapshot: dict[str, object] = {
+                "revision_id": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                "profile_revisions": profile_revisions,
+                "threshold": detailed.threshold,
+                "margin": effective_margin,
+            }
+            return detailed, snapshot
 
     def process_target_audio(
         self,
@@ -418,8 +771,16 @@ class SpeakerRecognizer:
                 raise ValueError("Audio sample is too short; provide at least 0.1 seconds of speech")
             best_id = max(score_by_id, key=score_by_id.__getitem__)
             best_score = score_by_id[best_id]
-            sorted_scores = sorted(score_by_id.values(), reverse=True)
-            margin = best_score - (sorted_scores[1] if len(sorted_scores) > 1 else -1.0)
+            # Compare alternatives on the same audio region. Independent peak
+            # scores from different moments do not form a meaningful margin.
+            winning_region = best_by_id[best_id]
+            region_scores = winning_region["scores"]
+            runner_up = max(
+                (float(value) for name, value in region_scores.items()
+                 if name != self._profiles[best_id].name),
+                default=-1.0,
+            )
+            margin = best_score - runner_up
             effective_threshold = self._threshold if threshold is None else threshold
             effective_margin = self._min_margin if min_margin is None else min_margin
             detected_speakers = self._detect_multiple_speakers(
@@ -578,9 +939,7 @@ class SpeakerRecognizer:
     def _canonicalize(wav: NDArray[np.float32], sample_rate: int) -> NDArray[np.float32]:
         if sample_rate == 16000:
             return np.asarray(wav, dtype=np.float32)
-        count = max(1, round(wav.size * 16000 / sample_rate))
-        positions = np.linspace(0, max(0, wav.size - 1), count)
-        return np.asarray(np.interp(positions, np.arange(wav.size), wav), dtype=np.float32)
+        return resample_audio(wav, sample_rate, 16000)
 
     @staticmethod
     def _candidate_regions(wav: NDArray[np.float32]) -> list[tuple[int, int, str]]:
@@ -618,11 +977,30 @@ class SpeakerRecognizer:
             for start in range(0, length - 1600, step):
                 candidates.append((start, min(length, start + window), "window"))
         unique: list[tuple[int, int, str]] = []
+        bounds: set[tuple[int, int]] = set()
         for candidate in candidates:
-            if candidate[1] - candidate[0] < 1600 or candidate in unique: continue
+            if candidate[1] - candidate[0] < 1600 or candidate[:2] in bounds: continue
             unique.append(candidate)
-            if len(unique) == 12: break
-        return unique
+            bounds.add(candidate[:2])
+        if len(unique) <= 12:
+            return unique
+        # Keep the full utterance and spread the remaining budget across time.
+        # An early burst of VAD regions must not hide a clean speaker at the end.
+        remaining = unique[1:]
+        chosen: list[tuple[int, int, str]] = []
+        for target in np.linspace(0, length, 11):
+            if not remaining:
+                break
+            best = min(
+                remaining,
+                key=lambda item: (
+                    abs((item[0] + item[1]) / 2 - target),
+                    item[2] == "window",
+                ),
+            )
+            chosen.append(best)
+            remaining.remove(best)
+        return [unique[0], *sorted(chosen, key=lambda item: item[0])]
 
     @staticmethod
     def _public_segment(item: dict[str, object] | None) -> dict[str, float] | None:
@@ -675,7 +1053,89 @@ class SpeakerRecognizer:
         return np.asarray(value / norm, dtype=np.float32)
 
     def _normalized_mean(self, embeddings: list[NDArray[np.float32]]) -> NDArray[np.float32]:
-        return self._normalize(np.mean(np.stack(embeddings), axis=0, dtype=np.float32))
+        if not embeddings:
+            raise ValueError("At least one valid voice embedding is required")
+        ordered = sorted((np.asarray(item, dtype=np.float32) for item in embeddings), key=lambda item: item.tobytes())
+        return self._normalize(np.mean(np.stack(ordered), axis=0, dtype=np.float64).astype(np.float32))
+
+    def _active_sample_vectors(self, speaker_id: str, sample_ids: list[str]) -> list[NDArray[np.float32]]:
+        """Load durable per-sample vectors, rebuilding legacy rows from WAV."""
+        vectors: list[NDArray[np.float32]] = []
+        legacy_vectors: list[NDArray[np.float32]] = []
+        encoder = self._require_encoder()
+        wanted = set(sample_ids)
+        for sample in self.catalog.list_samples(speaker_id, include_internal=True):
+            if sample["id"] not in wanted:
+                continue
+            metadata = sample.get("metadata") or {}
+            if metadata.get("legacy_embedding") is not None:
+                if (metadata.get("legacy_embedding_model") != EMBEDDING_MODEL_VERSION or
+                        metadata.get("legacy_preprocess_version") != PREPROCESS_VERSION):
+                    raise ValueError("Legacy profile vector uses a different model; new enrollment is required")
+                vector = self._validate_embedding(np.asarray(metadata["legacy_embedding"], dtype=np.float32))
+                count = metadata.get("legacy_sample_count", 1)
+                if isinstance(count, int) and 1 <= count <= 10000:
+                    legacy_vectors.extend([vector] * count)
+                else:
+                    raise ValueError("Stored legacy sample count is invalid")
+            raw = metadata.get("embedding")
+            if raw is not None and metadata.get("embedding_model") == EMBEDDING_MODEL_VERSION and metadata.get("preprocess_version") == PREPROCESS_VERSION:
+                vector = self._validate_embedding(np.asarray(raw, dtype=np.float32))
+            else:
+                path = self.catalog.sample_path(sample["id"])
+                if not path:
+                    raise ValueError(f"Enrollment sample {sample['id']} has no readable audio or compatible vector")
+                with wave.open(str(path), "rb") as handle:
+                    if handle.getnchannels() != 1 or handle.getsampwidth() != 2:
+                        raise ValueError("Enrollment audio must be mono 16-bit PCM")
+                    pcm = handle.readframes(handle.getnframes())
+                    vector = self._embed(encoder, AudioInput(audio_data=base64.b64encode(pcm).decode(), sample_rate=handle.getframerate()))
+                self.catalog.store_sample_embedding(
+                    sample["id"], vector.tolist(), EMBEDDING_MODEL_VERSION, PREPROCESS_VERSION
+                )
+            vectors.append(vector)
+        if len(vectors) != len(wanted):
+            raise ValueError("An enrollment sample is missing")
+        if len(legacy_vectors) > 1:
+            raise ValueError("Enrollment data contains duplicate legacy vectors")
+        return legacy_vectors + vectors
+
+    def _recover_profile_revisions(self) -> None:
+        """Reconcile the cached profile against the last committed sample set."""
+        changed = False
+        for speaker_id, profile in list(self._profiles.items()):
+            all_samples = self.catalog.list_samples(speaker_id, include_internal=True)
+            active = [sample for sample in all_samples if sample["active"]]
+            if not active and all_samples:
+                # A newly staged first revision can be interrupted after its
+                # profile files are written but before the SQLite activation.
+                active = all_samples
+                try:
+                    self.catalog.replace_active_samples(speaker_id, [item["id"] for item in active])
+                except (OSError, ValueError):
+                    _LOGGER.exception("Could not recover staged profile revision %s", speaker_id)
+                    continue
+            if not active:
+                continue  # Older profile without recoverable WAVs remains valid.
+            try:
+                vectors = self._active_sample_vectors(speaker_id, [item["id"] for item in active])
+                embedding = self._normalized_mean(vectors)
+                corrected = profile.model_copy(update={"sample_count": len(vectors)})
+                if corrected.sample_count != profile.sample_count or not np.allclose(embedding, self._embeddings[speaker_id], rtol=0, atol=1e-7):
+                    self._write_embedding(speaker_id, embedding)
+                    self._profiles[speaker_id] = corrected
+                    self._embeddings[speaker_id] = embedding
+                    changed = True
+            except (OSError, ValueError, wave.Error):
+                _LOGGER.exception("Could not reconcile profile %s from enrollment samples", speaker_id)
+        if changed:
+            self._write_registry()
+
+    @classmethod
+    def _validate_embedding(cls, value: NDArray[np.float32]) -> NDArray[np.float32]:
+        if value.ndim != 1 or not 1 <= value.size <= 4096 or not np.all(np.isfinite(value)):
+            raise ValueError("Stored voice vector is invalid")
+        return cls._normalize(value)
 
     def _require_encoder(self) -> Encoder:
         if self._encoder is None:
@@ -696,8 +1156,7 @@ class SpeakerRecognizer:
             try:
                 profile = SpeakerInfo.model_validate(entry)
                 embedding_path = self._profiles_dir / f"{profile.id}.npy"
-                embedding = np.asarray(np.load(embedding_path, allow_pickle=False), dtype=np.float32)
-                embedding = self._normalize(embedding)
+                embedding = self._validate_embedding(np.asarray(np.load(embedding_path, allow_pickle=False), dtype=np.float32))
                 self._profiles[profile.id] = profile
                 self._embeddings[profile.id] = embedding
             except (OSError, ValueError, json.JSONDecodeError) as error:

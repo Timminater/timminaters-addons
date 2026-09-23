@@ -32,7 +32,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from . import get_main_entry
 from .api import SpeakerRecognitionApiError
 from .const import CONF_STT_ENTITY, DOMAIN, EVENT_DETECTED, EVENT_ENROLLMENT_COMPLETED
-from .results import listening_satellite, remember_result
+from .results import listening_satellite, pipeline_run_id_from, remember_result
 
 _LOGGER = logging.getLogger(__name__)
 MAX_CAPTURE_BYTES = 4 * 1024 * 1024
@@ -314,7 +314,10 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         active_streams = self.hass.data.setdefault(DOMAIN, {}).setdefault(
             "active_stt_streams", []
         )
-        stream_token = {"ambiguous": bool(active_streams)}
+        stream_token = {
+            "ambiguous": bool(active_streams),
+            "pipeline_run_id": pipeline_run_id_from(metadata),
+        }
         if active_streams:
             for active_stream in active_streams:
                 active_stream["ambiguous"] = True
@@ -417,7 +420,11 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             if not audio or api is None:
                 return None, 0.0
             try:
-                pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+                # Audio can be several megabytes and stereo downmixing is a
+                # Python loop. Keep it off Home Assistant's event loop.
+                pcm, sample_rate = await self.hass.async_add_executor_job(
+                    _pcm16_mono, bytes(audio), metadata
+                )
                 result = await api.async_analyze(
                     pcm,
                     sample_rate,
@@ -530,7 +537,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                         raise ValueError("STT audio exceeds the analysis limit")
                 if not audio:
                     return SpeechResult(None, SpeechResultState.ERROR)
-                pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+                pcm, sample_rate = await self.hass.async_add_executor_job(
+                    _pcm16_mono, bytes(audio), metadata
+                )
             except ValueError as error:
                 _LOGGER.warning(
                     "Could not buffer audio for pre-STT analysis: %s", error
@@ -684,7 +693,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
         pcm = b""
         sample_rate = int(metadata.sample_rate)
         parser = _StreamingPcm16Mono(metadata)
-        pcm_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        # Bound queued audio while the backend is busy. The producer then
+        # applies backpressure instead of retaining an unbounded PCM copy.
+        pcm_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=8)
         finished_at = self.hass.loop.time()
 
         async def produce() -> None:
@@ -696,13 +707,21 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                         raise ValueError(
                             "STT audio exceeds the analysis limit"
                         )
-                    pcm = parser.feed(chunk)
+                    pcm = await self.hass.async_add_executor_job(parser.feed, chunk)
                     if pcm:
-                        pcm_queue.put_nowait(pcm)
-                parser.finish()
+                        while not request_task.done():
+                            try:
+                                await asyncio.wait_for(
+                                    pcm_queue.put(pcm), timeout=0.1
+                                )
+                                break
+                            except TimeoutError:
+                                continue
+                await self.hass.async_add_executor_job(parser.finish)
             finally:
                 finished_at = self.hass.loop.time()
-                pcm_queue.put_nowait(None)
+                if not request_task.done():
+                    await pcm_queue.put(None)
 
         async def pcm_stream():
             while True:
@@ -756,7 +775,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                 request_error,
             )
             try:
-                pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+                pcm, sample_rate = await self.hass.async_add_executor_job(
+                    _pcm16_mono, bytes(audio), metadata
+                )
                 fallback_started = self.hass.loop.time()
                 result = await asyncio.wait_for(
                     api.async_analyze(
@@ -777,7 +798,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                 )
                 result = None
         else:
-            pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+            pcm, sample_rate = await self.hass.async_add_executor_job(
+                _pcm16_mono, bytes(audio), metadata
+            )
         return audio, pcm, sample_rate, result, recognition_ms
 
     @staticmethod
@@ -945,6 +968,7 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
             "entity_id": self.entity_id,
             "source_entity_id": self._source_entity_id,
             "satellite_id": None if stream_token["ambiguous"] else satellite_id,
+            "pipeline_run_id": stream_token.get("pipeline_run_id"),
         }
         if fallback and not recognized["fallback_reason"]:
             recognized["fallback_reason"] = "processed_audio_unavailable"
@@ -1019,7 +1043,9 @@ class SpeakerRecognitionSTT(SpeechToTextEntity):
                     raise ValueError("De Voice-opname is te lang")
             if not audio:
                 raise ValueError("De Voice-opname bevat geen audio")
-            pcm, sample_rate = _pcm16_mono(bytes(audio), metadata)
+            pcm, sample_rate = await self.hass.async_add_executor_job(
+                _pcm16_mono, bytes(audio), metadata
+            )
             main = get_main_entry(self.hass)
             if main is None:
                 raise SpeakerRecognitionApiError("Speaker Recognition backend is not loaded")

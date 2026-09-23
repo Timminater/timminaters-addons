@@ -80,6 +80,52 @@ def test_policy_is_authenticated_validated_and_cached():
     assert kwargs["timeout"] == 3
 
 
+def test_info_capabilities_are_cached_and_404_keeps_legacy_compatibility():
+    session = Session()
+    session.responses.append(
+        {
+            "api_version": 2,
+            "capabilities": ["analyze_stream"],
+            "component_versions": {"app": "2.2"},
+            "configured_audio_processing_backend": "df3_streaming",
+            "token": "must-not-be-exposed",
+        }
+    )
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+
+    info = asyncio.run(api.async_info())
+    cached = api.server_info
+
+    assert info == cached
+    assert info["api_version"] == 2
+    assert len(session.calls) == 1
+    assert session.calls[0][1] == "http://app/api/info"
+
+
+def test_info_404_is_optional_but_other_statuses_remain_distinct():
+    class NotFound(Response):
+        status = 404
+
+    class Unauthorized(Response):
+        status = 401
+
+        async def text(self):
+            return "bad token"
+
+    session = Session()
+    session.responses.extend([NotFound(), Unauthorized()])
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+
+    assert asyncio.run(api.async_info()) is None
+    try:
+        asyncio.run(api.async_speakers())
+    except module.SpeakerRecognitionApiError as error:
+        assert error.code == "authentication_failed"
+        assert error.status == 401
+    else:
+        raise AssertionError("401 must be surfaced as an authentication error")
+
+
 def test_analysis_and_finalize_use_v2_contract():
     session = Session()
     session.responses.append({"recording_id": "rec-1", "matched": False})
@@ -134,6 +180,51 @@ def test_analysis_and_finalize_use_v2_contract():
     )
     assert session.calls[2][2]["json"]["person_entity_ids"] == []
     assert session.calls[2][2]["json"]["speaker_names"] == []
+
+
+def test_analyze_uses_binary_contract_when_advertised():
+    session = Session()
+    session.responses.extend(
+        [
+            {
+                "api_version": 2,
+                "capabilities": ["binary_analyze"],
+                "component_versions": {},
+            },
+            {"recording_id": "binary-1", "matched": False},
+        ]
+    )
+    api = SpeakerRecognitionApi(session, "http://app", "secret")
+    asyncio.run(api.async_info())
+
+    result = asyncio.run(
+        api.async_analyze(
+            b"\x01\x00\x02\x00",
+            16000,
+            source_entity_id="stt.source",
+            satellite_id="assist_satellite.voice",
+            extraction_mode="compare",
+        )
+    )
+
+    method, url, kwargs = session.calls[1]
+    assert result["recording_id"] == "binary-1"
+    assert (method, url) == ("POST", "http://app/api/analyze-binary")
+    assert kwargs["data"] == b"\x01\x00\x02\x00"
+    assert kwargs["params"] == {
+        "source": "pipeline",
+        "stt_entity_id": "stt.source",
+        "satellite_id": "assist_satellite.voice",
+        "extraction_mode": "compare",
+    }
+    assert kwargs["headers"] == {
+        "Authorization": "Bearer secret",
+        "Content-Type": "application/octet-stream",
+        "X-Sample-Rate": "16000",
+        "X-Channels": "1",
+        "X-Audio-Format": "pcm_s16le",
+    }
+    assert "json" not in kwargs
 
 
 def test_enrollment_claim_sends_the_locally_observed_satellite():

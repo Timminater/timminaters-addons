@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AudioInput(BaseModel):
@@ -21,9 +21,30 @@ class EnrollmentRequest(BaseModel):
     speaker_name: str = Field(min_length=1, max_length=80)
     samples: list[VoiceSample] = Field(min_length=1, max_length=10)
     replace: bool = False
+    accept_quality_warnings: bool = False
+    profile_kind: Literal["resident", "guest"] = "resident"
+    expires_at: datetime | None = None
     person_entity_id: str | None = Field(
         default=None, pattern=r"^person\.[a-z0-9_]+$"
     )
+
+    @field_validator("expires_at")
+    @classmethod
+    def expiry_is_utc(cls, value: datetime | None) -> datetime | None:
+        if value is not None:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("expires_at must include a timezone")
+            return value.astimezone(timezone.utc)
+        return value
+
+    @field_validator("person_entity_id")
+    @classmethod
+    def guest_has_no_person(cls, value: str | None, info) -> str | None:
+        if info.data.get("profile_kind") == "resident" and info.data.get("expires_at") is not None:
+            raise ValueError("Only guest profiles can have an expiry")
+        if info.data.get("profile_kind") == "guest" and value is not None:
+            raise ValueError("Guest profiles cannot be linked to a Home Assistant person")
+        return value
 
     @field_validator("speaker_name")
     @classmethod
@@ -38,6 +59,11 @@ class RecognitionRequest(BaseModel):
     audio: AudioInput
 
 
+class AudioQualityRequest(BaseModel):
+    audio: AudioInput
+    purpose: Literal["analysis", "registration"] = "registration"
+
+
 class SpeakerInfo(BaseModel):
     id: str
     name: str
@@ -45,6 +71,8 @@ class SpeakerInfo(BaseModel):
     created_at: datetime
     updated_at: datetime
     person_entity_id: str | None = None
+    profile_kind: Literal["resident", "guest"] = "resident"
+    expires_at: datetime | None = None
 
 
 class HomeAssistantPersonInfo(BaseModel):
@@ -55,6 +83,7 @@ class HomeAssistantPersonInfo(BaseModel):
 class EnrollmentResult(BaseModel):
     status: str = "success"
     speaker: SpeakerInfo
+    quality_reports: list[dict] = Field(default_factory=list)
 
 
 class AssistSatelliteInfo(BaseModel):
@@ -125,6 +154,7 @@ class PipelinePolicy(BaseModel):
     max_storage_bytes: int = Field(default=2 * 1024 * 1024 * 1024, ge=1)
     calibration: dict | None = None
     audio_processing_backend: Literal["df2_batch", "df3_streaming"] = "df2_batch"
+    analysis_audio_retention: Literal["none", "errors", "all"] = "all"
 
 
 class PipelinePolicyPatch(BaseModel):
@@ -134,6 +164,7 @@ class PipelinePolicyPatch(BaseModel):
     retention_days: int | None = Field(default=None, ge=1, le=365)
     max_storage_bytes: int | None = Field(default=None, ge=1)
     audio_processing_backend: Literal["df2_batch", "df3_streaming"] | None = None
+    analysis_audio_retention: Literal["none", "errors", "all"] | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -201,9 +232,30 @@ class ProcessTargetAudioRequest(BaseModel):
 class PromoteRecordingRequest(BaseModel):
     speaker_id: str | None = Field(default=None, min_length=1, max_length=64)
     new_speaker_name: str | None = Field(default=None, min_length=1, max_length=80)
+    profile_kind: Literal["resident", "guest"] = "resident"
+    expires_at: datetime | None = None
     person_entity_id: str | None = Field(default=None, pattern=r"^person\.[a-z0-9_]+$")
     start_seconds: float = Field(default=0, ge=0)
     end_seconds: float | None = Field(default=None, gt=0)
+    accept_quality_warnings: bool = False
+
+    @field_validator("expires_at")
+    @classmethod
+    def expiry_is_utc(cls, value: datetime | None) -> datetime | None:
+        if value is not None:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError("expires_at must include a timezone")
+            return value.astimezone(timezone.utc)
+        return value
+
+    @field_validator("person_entity_id")
+    @classmethod
+    def guest_has_no_person(cls, value: str | None, info) -> str | None:
+        if info.data.get("profile_kind") == "resident" and info.data.get("expires_at") is not None:
+            raise ValueError("Only guest profiles can have an expiry")
+        if info.data.get("profile_kind") == "guest" and value is not None:
+            raise ValueError("Guest profiles cannot be linked to a Home Assistant person")
+        return value
 
 
 class BulkDeleteRequest(BaseModel):
@@ -212,12 +264,27 @@ class BulkDeleteRequest(BaseModel):
     all_filtered: bool = False
 
 
+class DeleteUnindexedAudioRequest(BaseModel):
+    paths: list[str] = Field(min_length=1, max_length=100)
+
+
 class SampleActiveRequest(BaseModel):
     active: bool
 
 
 class DeleteSpeakerRequest(BaseModel):
     audio_action: Literal["delete", "archive"] = "delete"
+
+
+class MergeProfilesRequest(BaseModel):
+    source_id: str = Field(min_length=1, max_length=64)
+    target_id: str = Field(min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def profiles_are_distinct(self) -> "MergeProfilesRequest":
+        if self.source_id == self.target_id:
+            raise ValueError("Choose two different profiles")
+        return self
 
 
 class CalibrationApplyRequest(BaseModel):

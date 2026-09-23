@@ -116,6 +116,21 @@ def test_worker_does_not_return_rejected_denoised_audio(monkeypatch):
     assert result["quality"]["denoised_passed"] is False
 
 
+def test_worker_failure_does_not_report_original_as_denoised(monkeypatch):
+    monkeypatch.setattr("app.audio_processor._Models.load", lambda _self: 0.0)
+    def fail(_self, _audio):
+        raise RuntimeError("model unavailable")
+    monkeypatch.setattr("app.audio_processor._Models.denoise", fail)
+    connection = FakeConnection()
+
+    _worker_main(connection, "unused")
+
+    result = connection.payloads[1]
+    assert result["denoised_pcm"] is None
+    assert result["stages"]["denoise"] == "failed"
+    assert result["fallback_reason"] == "denoise_failed"
+
+
 def test_analysis_yields_before_starting_when_live_audio_is_waiting():
     processor = TargetAudioProcessor()
     processor._waiting_live = 1

@@ -11,22 +11,32 @@ import queue
 import secrets
 import socket
 import time
+import uuid
 import wave
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import datetime
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from app import __version__
+from app.audio_quality import assess_pcm16_mono
 from app.config import Settings
+from app.diarization import TimelineStore, analyze_timeline
 from app.models import (
     AudioInput,
+    AudioQualityRequest,
     AssistSatelliteInfo,
     AnalyzeRequest,
     BulkDeleteRequest,
+    DeleteUnindexedAudioRequest,
     CalibrationApplyRequest,
     ConversationRecordingRequest,
     DeleteSpeakerRequest,
@@ -40,6 +50,7 @@ from app.models import (
     ProcessTargetAudioRequest,
     PromoteRecordingRequest,
     HomeAssistantPersonInfo,
+    MergeProfilesRequest,
     RecognitionRequest,
     RecognitionResult,
     SpeakerInfo,
@@ -51,7 +62,9 @@ from app.models import (
     SatelliteEnrollmentSession,
     SatelliteEnrollmentStartRequest,
 )
+from app.multipart_pcm import MultipartPcmError, read_multipart_pcm
 from app.recognizer import SpeakerRecognizer
+from app.review_features import device_quality, list_review_inbox, preview_experiment, set_review
 from app.satellite import (
     HomeAssistantApiError,
     HomeAssistantClient,
@@ -69,26 +82,53 @@ recognizer = SpeakerRecognizer(
     max_audio_seconds=settings.max_audio_seconds,
     audio_processing_backend=settings.audio_processing_backend,
 )
+timeline_store = TimelineStore(recognizer.catalog)
 home_assistant = HomeAssistantClient()
 satellite_enrollment = SatelliteEnrollmentCoordinator()
 satellite_tasks: set[asyncio.Task] = set()
 processing_tasks: dict[str, asyncio.Task] = {}
+timeline_tasks: dict[str, asyncio.Task] = {}
+timeline_slots = asyncio.Semaphore(1)
+experiment_tasks: dict[str, asyncio.Task] = {}
+experiment_results: dict[str, dict] = {}
 maintenance_task: asyncio.Task | None = None
 _policy: dict[str, object] = {
     "unknown_speaker_policy": "allow", "extraction_mode": "off",
     "min_margin": 0.0, "retention_days": 7,
     "max_storage_bytes": 2 * 1024 * 1024 * 1024,
     "audio_processing_backend": settings.audio_processing_backend,
+    "analysis_audio_retention": "all",
 }
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global maintenance_task
+    global maintenance_task, timeline_store
     await asyncio.to_thread(recognizer.initialize)
+    timeline_store = TimelineStore(recognizer.catalog)
+    await asyncio.to_thread(timeline_store.initialize)
+    await asyncio.to_thread(recognizer.expire_guest_profiles)
     saved_policy = recognizer.catalog.get_setting("pipeline_policy", {})
+    first_policy_load = not isinstance(saved_policy, dict) or not saved_policy
     if isinstance(saved_policy, dict):
-        _policy.update({key: value for key, value in saved_policy.items() if key in _policy})
+        candidate = {**_policy, **{key: value for key, value in saved_policy.items() if key in _policy}}
+        try:
+            validated = PipelinePolicy(
+                recognition_threshold=settings.recognition_threshold, **candidate
+            )
+        except ValueError:
+            _LOGGER.exception("Invalid saved pipeline policy; retaining safe defaults")
+        else:
+            _policy.update({key: getattr(validated, key) for key in _policy})
+    recognizer.catalog.retention_days = int(_policy["retention_days"])
+    recognizer.catalog.max_storage_bytes = int(_policy["max_storage_bytes"])
+    if first_policy_load:
+        recognizer.catalog.set_setting("pipeline_policy", _policy)
+    await asyncio.to_thread(
+        recognizer.catalog.reconcile_audio_retention,
+        str(_policy["analysis_audio_retention"]),
+    )
+    await asyncio.to_thread(recognizer.catalog.cleanup)
     recognizer.configure_audio_processing_backend(
         str(_policy["audio_processing_backend"])
     )
@@ -96,8 +136,6 @@ async def lifespan(_: FastAPI):
     # app accepts traffic. Forking it from asyncio's thread pool is unsafe on
     # Linux once other worker threads exist.
     recognizer.warm_audio_processor()
-    recognizer.catalog.retention_days = int(_policy["retention_days"])
-    recognizer.catalog.max_storage_bytes = int(_policy["max_storage_bytes"])
     maintenance_task = asyncio.create_task(_catalogue_maintenance(), name="speaker-recognition-catalogue-cleanup")
     try:
         yield
@@ -115,6 +153,16 @@ async def lifespan(_: FastAPI):
         if processing_tasks:
             await asyncio.gather(*processing_tasks.values(), return_exceptions=True)
             processing_tasks.clear()
+        for task in timeline_tasks.values():
+            task.cancel()
+        if timeline_tasks:
+            await asyncio.gather(*timeline_tasks.values(), return_exceptions=True)
+            timeline_tasks.clear()
+        for task in experiment_tasks.values():
+            task.cancel()
+        if experiment_tasks:
+            await asyncio.gather(*experiment_tasks.values(), return_exceptions=True)
+            experiment_tasks.clear()
         await asyncio.to_thread(recognizer.close)
 
 
@@ -122,10 +170,11 @@ async def _catalogue_maintenance() -> None:
     while True:
         await asyncio.sleep(3600)
         try:
+            await asyncio.to_thread(recognizer.expire_guest_profiles)
             await asyncio.to_thread(
                 recognizer.catalog.cleanup,
                 None,
-                set(processing_tasks),
+                set(processing_tasks) | set(timeline_tasks),
             )
         except Exception:  # cleanup must never take down recognition
             _LOGGER.exception("Could not clean up expired analysis recordings")
@@ -138,6 +187,27 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def structured_http_error(_request: Request, error: HTTPException) -> JSONResponse:
+    """Stable error codes without breaking clients that still read detail."""
+    detail = error.detail
+    code = detail.get("code") if isinstance(detail, dict) else None
+    message = detail.get("message") or detail.get("error") if isinstance(detail, dict) else detail
+    if not isinstance(message, str):
+        message = "The request could not be completed"
+    return JSONResponse(
+        status_code=error.status_code,
+        content={
+            "detail": detail,
+            "error": {
+                "code": code or f"http_{error.status_code}",
+                "message": message,
+            },
+        },
+        headers=error.headers,
+    )
 
 
 @app.middleware("http")
@@ -209,8 +279,39 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="healthy" if recognizer.ready else "starting",
         ready=recognizer.ready,
-        speakers=len(recognizer.list_speakers()),
+        speakers=recognizer.speaker_count,
     )
+
+
+@app.get("/api/info", dependencies=[Depends(authorize_api)])
+async def api_info() -> dict:
+    """Version handshake and effective configuration for the companion."""
+    return {
+        "api_version": 2,
+        "app_version": __version__,
+        "capabilities": ["analysis_v2", "binary_analyze", "multipart_enroll", "audio_quality", "df3_streaming", "processing_status", "review_inbox", "guest_profiles", "profile_merge", "device_quality", "experiment_preview", "offline_diarization_experimental"],
+        "configured_audio_processing_backend": _policy["audio_processing_backend"],
+        "component_versions": {
+            "app": __version__,
+            "integration": __version__,
+            "recognizer": _installed_version("resemblyzer"),
+            "denoiser": _installed_version("deepfilternet"),
+            "torch": _installed_version("torch"),
+            "torchaudio": _installed_version("torchaudio"),
+            "soxr": _installed_version("soxr"),
+        },
+        "recognition_model": "resemblyzer",
+        "recognition_runtime": "pytorch_cpu",
+        "max_audio_seconds": settings.max_audio_seconds,
+    }
+
+
+@lru_cache(maxsize=16)
+def _installed_version(package: str) -> str | None:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return None
 
 
 @app.get("/api/speakers", response_model=list[SpeakerInfo], dependencies=[Depends(authorize_api)])
@@ -218,9 +319,66 @@ async def list_speakers() -> list[SpeakerInfo]:
     return recognizer.list_speakers()
 
 
+@app.post("/api/speakers/merge", response_model=SpeakerInfo, dependencies=[Depends(authorize_api)])
+async def merge_speakers(request: MergeProfilesRequest) -> SpeakerInfo:
+    try:
+        return await asyncio.to_thread(recognizer.merge_profiles, request.source_id, request.target_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail={"code": "speaker_not_found", "message": "Speaker profile not found"}) from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail={"code": "profile_merge_failed", "message": str(error)}) from error
+
+
+def _registration_quality_reports(samples: list[AudioInput], accept_warnings: bool) -> list[dict]:
+    reports = [
+        assess_pcm16_mono(
+            recognizer._decode_pcm_bytes(sample), sample.sample_rate,
+            purpose="registration",
+        )
+        for sample in samples
+    ]
+    if any(not report["accepted"] for report in reports):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "registration_audio_rejected",
+                "message": "Recording rejected: add at least 0.6 seconds of clear speech and avoid clipping.",
+                "quality_reports": reports,
+            },
+        )
+    if not accept_warnings and any(report["decision"] == "review" for report in reports):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "registration_quality_review_required",
+                "message": "Review the recording quality warnings before adding this voice sample.",
+                "quality_reports": reports,
+            },
+        )
+    return reports
+
+
+@app.post("/api/audio-quality", dependencies=[Depends(authorize_api)])
+async def audio_quality(request: AudioQualityRequest) -> dict:
+    try:
+        return await asyncio.to_thread(
+            assess_pcm16_mono,
+            recognizer._decode_pcm_bytes(request.audio),
+            request.audio.sample_rate,
+            purpose=request.purpose,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
 @app.post("/api/enroll", response_model=EnrollmentResult, dependencies=[Depends(authorize_api)])
 async def enroll(request: EnrollmentRequest) -> EnrollmentResult:
     try:
+        quality_reports = await asyncio.to_thread(
+            _registration_quality_reports,
+            [sample.audio for sample in request.samples],
+            request.accept_quality_warnings,
+        )
         speaker = await asyncio.to_thread(
             recognizer.enroll,
             request.speaker_name,
@@ -228,8 +386,86 @@ async def enroll(request: EnrollmentRequest) -> EnrollmentResult:
             request.replace,
             request.person_entity_id,
             "person_entity_id" in request.model_fields_set,
+            request.profile_kind,
+            request.expires_at,
+            "expires_at" in request.model_fields_set,
+            "profile_kind" in request.model_fields_set,
         )
-        return EnrollmentResult(speaker=speaker)
+        return EnrollmentResult(speaker=speaker, quality_reports=quality_reports)
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/enroll-multipart", response_model=EnrollmentResult, dependencies=[Depends(authorize_api)])
+async def enroll_multipart(
+    request: Request,
+    speaker_name: str,
+    x_sample_rate: int = Header(),
+    x_channels: int = Header(),
+    x_audio_format: str = Header(),
+    replace_existing: bool = False,
+    accept_quality_warnings: bool = False,
+    person_entity_id: str | None = None,
+    profile_kind: Literal["resident", "guest"] = "resident",
+    expires_at: datetime | None = None,
+    never_expires: bool = False,
+) -> EnrollmentResult:
+    """Enroll multiple bounded PCM clips without JSON/base64 transport."""
+    if x_channels != 1 or x_audio_format != "pcm_s16le":
+        raise HTTPException(status_code=415, detail="Expected mono pcm_s16le audio")
+    try:
+        recordings = await read_multipart_pcm(
+            request.stream(), request.headers.get("content-type"), x_sample_rate,
+        )
+        enrollment_fields = dict(
+            speaker_name=speaker_name,
+            samples=[{"audio": {
+                "audio_data": base64.b64encode(item.pcm).decode("ascii"),
+                "sample_rate": item.sample_rate,
+            }} for item in recordings],
+            replace=replace_existing,
+            accept_quality_warnings=accept_quality_warnings,
+            person_entity_id=person_entity_id,
+            profile_kind=profile_kind,
+        )
+        if never_expires:
+            enrollment_fields["expires_at"] = None
+        elif expires_at is not None:
+            enrollment_fields["expires_at"] = expires_at
+        validated = EnrollmentRequest(**enrollment_fields)
+    except MultipartPcmError as error:
+        code = str(error)
+        raise HTTPException(
+            status_code=413 if code in {"request_too_large", "recording_too_large", "recording_too_long"} else 400,
+            detail=code,
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    try:
+        quality_reports = await asyncio.to_thread(
+            _registration_quality_reports,
+            [sample.audio for sample in validated.samples],
+            validated.accept_quality_warnings,
+        )
+        speaker = await asyncio.to_thread(
+            recognizer.enroll,
+            validated.speaker_name,
+            [sample.audio for sample in validated.samples],
+            validated.replace,
+            validated.person_entity_id,
+            "person_entity_id" in request.query_params,
+            validated.profile_kind,
+            validated.expires_at,
+            "expires_at" in validated.model_fields_set,
+            "profile_kind" in request.query_params,
+        )
+        return EnrollmentResult(speaker=speaker, quality_reports=quality_reports)
+    except HTTPException:
+        raise
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except RuntimeError as error:
@@ -280,12 +516,14 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
     extracted_path = result.pop("extracted_path", None)
     denoised_path = result.pop("denoised_path", None)
     isolated_path = result.pop("isolated_path", None)
-    result["original_available"] = bool(original_path)
-    result["denoised_available"] = bool(denoised_path)
-    result["isolated_available"] = bool(isolated_path)
-    result["legacy_extracted_available"] = bool(extracted_path)
+    result["original_available"] = bool(original_path and Path(original_path).is_file())
+    result["denoised_available"] = bool(denoised_path and Path(denoised_path).is_file())
+    result["isolated_available"] = bool(isolated_path and Path(isolated_path).is_file())
+    result["legacy_extracted_available"] = bool(extracted_path and Path(extracted_path).is_file())
     # Compatibility flag: legacy clients still request the extracted player.
-    result["extracted_available"] = bool(isolated_path or extracted_path)
+    result["extracted_available"] = (
+        result["isolated_available"] or result["legacy_extracted_available"]
+    )
     result["available_audio_variants"] = [
         variant
         for variant, available in (
@@ -296,6 +534,7 @@ def _analysis_payload(recording: dict, detailed=None, *, include_audio: bool = F
         if available
     ]
     labels = result.get("labels") if isinstance(result.get("labels"), dict) else {}
+    result["audio_quality"] = labels.get("audio_quality")
     for key in (
         "audio_variant", "fallback", "conversation_reason", "person_entity_id",
         "person_entity_ids", "speaker_names",
@@ -493,7 +732,7 @@ async def _run_target_processing(
                 if isinstance(result, dict):
                     result["quality"] = quality
                 else:
-                    result.quality = quality
+                    result = replace(result, quality=quality)
         else:
             result = await asyncio.to_thread(
                 recognizer.denoise_audio,
@@ -520,7 +759,7 @@ async def _run_target_processing(
         await asyncio.to_thread(
             recognizer.catalog.update_recording,
             recording_id,
-            processing_status="complete",
+            processing_status="complete" if denoised else "failed",
             processing_backend=backend,
             processing_stages=_processing_value(result, "stages", {}),
             processing_quality=_processing_value(result, "quality", {}),
@@ -549,6 +788,14 @@ async def _run_target_processing(
                 processing_fallback_reason=str(error), labels=labels,
             )
     finally:
+        current = await asyncio.to_thread(recognizer.catalog.get_recording, recording_id)
+        policy = str((current or {}).get("labels", {}).get("retention_policy", _policy.get("analysis_audio_retention", "all")))
+        if policy != "all":
+            if current and (policy == "none" or (
+                current.get("outcome") == "matched"
+                and current.get("processing_status") == "complete"
+            )):
+                await asyncio.to_thread(recognizer.catalog.remove_analysis_audio, recording_id)
         processing_tasks.pop(recording_id, None)
 
 
@@ -569,7 +816,20 @@ async def analyze_stream(
         raise HTTPException(status_code=400, detail="Unsupported sample rate")
 
     sentinel = object()
-    chunks: queue.Queue[bytes | object] = queue.Queue()
+    # Cap producer memory while a slow model drains a long utterance. Keep
+    # individual queue items small even when the HTTP server emits a large part.
+    chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=16)
+    upload_deadline = time.perf_counter() + settings.max_audio_seconds + STREAM_FINALIZE_TIMEOUT_SECONDS
+
+    async def enqueue(item: bytes | object, *, deadline: float | None = None) -> bool:
+        until = min(upload_deadline, deadline) if deadline is not None else upload_deadline
+        while time.perf_counter() < until and not processor_task.done():
+            try:
+                chunks.put_nowait(item)
+                return True
+            except queue.Full:
+                await asyncio.sleep(0.005)
+        return False
 
     def incoming():
         while True:
@@ -610,16 +870,39 @@ async def analyze_stream(
                         detail="Streaming audio exceeds the configured limit",
                     )
                     break
-                chunks.put(pcm)
+                for offset in range(0, len(pcm), 32 * 1024):
+                    if not await enqueue(pcm[offset:offset + 32 * 1024]):
+                        body_error = HTTPException(
+                            status_code=503, detail="Streaming processor could not keep up",
+                        )
+                        break
+                if body_error is not None:
+                    break
         if pending and body_error is None:
             body_error = HTTPException(
                 status_code=400,
                 detail="Streaming audio ended with an incomplete PCM16 sample",
             )
     finally:
-        chunks.put(sentinel)
+        if not processor_task.done():
+            sent = await enqueue(sentinel, deadline=time.perf_counter() + 1.0)
+            if not sent:
+                # A wedged consumer must not leave an unbounded producer wait.
+                try:
+                    chunks.get_nowait()
+                    chunks.put_nowait(sentinel)
+                except queue.Empty:
+                    pass
+                body_error = body_error or HTTPException(
+                    status_code=503, detail="Streaming processor stalled",
+                )
 
-    processed = await processor_task
+    try:
+        processed = await asyncio.wait_for(
+            processor_task, timeout=STREAM_FINALIZE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as error:
+        raise HTTPException(status_code=503, detail="Streaming processor timed out") from error
     if body_error is not None:
         raise body_error
     if not original:
@@ -675,8 +958,8 @@ async def analyze_stream(
             audio_data=base64.b64encode(processed.denoised_pcm).decode(),
             sample_rate=processed.sample_rate,
         )
-        detailed = await asyncio.to_thread(
-            recognizer.recognize_detailed,
+        detailed, stream_revision = await asyncio.to_thread(
+            recognizer.recognize_detailed_with_snapshot,
             denoised_input,
             threshold=threshold,
             min_margin=margin,
@@ -703,7 +986,21 @@ async def analyze_stream(
                 margin=detailed.margin,
                 scores=detailed.scores,
                 segments=detailed.candidates,
+                profile_revision=stream_revision,
                 labels=labels,
+            )
+            await asyncio.to_thread(
+                recognizer.catalog.record_recognition_run,
+                recording_id, stream_revision,
+                {
+                    "outcome": detailed.outcome,
+                    "speaker_id": detailed.speaker.id if detailed.speaker else None,
+                    "confidence": detailed.confidence,
+                    "scores": detailed.scores,
+                    "threshold": detailed.threshold,
+                    "margin": detailed.margin,
+                    "settings": {"recognition_audio": "denoised", "requested_backend": "df3_streaming"},
+                },
             )
 
     if processed.denoised_pcm:
@@ -763,6 +1060,13 @@ async def analyze_stream(
         },
         labels=labels,
     )
+    if (
+        _policy["analysis_audio_retention"] == "errors"
+        and (recording or current).get("outcome") == "matched"
+    ):
+        recording = await asyncio.to_thread(
+            recognizer.catalog.remove_analysis_audio, recording_id
+        ) or recording
     response = _analysis_payload(recording or current, detailed)
     if processed.denoised_pcm:
         response["denoised_audio"] = {
@@ -778,10 +1082,20 @@ async def analyze(request: AnalyzeRequest) -> dict:
     try:
         raw = recognizer._decode_pcm_bytes(request.audio)
         mode = request.extraction_mode or str(_policy["extraction_mode"])
+        audio_policy = str(_policy["analysis_audio_retention"])
+        quality_report = await asyncio.to_thread(
+            assess_pcm16_mono, raw, request.audio.sample_rate, purpose="analysis",
+        )
         recording = await asyncio.to_thread(
             recognizer.catalog.create_recording, raw, request.audio.sample_rate,
+            retain_audio=audio_policy == "all" or mode == "compare",
             source=request.source, satellite_id=request.satellite_id, stt_entity_id=request.stt_entity_id,
             extraction_mode=mode,
+            labels={
+                "audio_quality": quality_report,
+                "retention_pending": mode == "compare" and audio_policy != "all",
+                "retention_policy": audio_policy,
+            },
         )
         calibration = recognizer.catalog.calibration()
         threshold = float(calibration["threshold"]) if calibration else settings.recognition_threshold
@@ -791,19 +1105,25 @@ async def analyze(request: AnalyzeRequest) -> dict:
                 time.perf_counter() + 11.5 if mode == "before_stt" else None
             )
             recognition_call = asyncio.to_thread(
-                recognizer.recognize_detailed,
+                recognizer.recognize_detailed_with_snapshot,
                 request.audio,
                 threshold=threshold,
                 min_margin=margin,
             )
             if live_deadline is not None:
                 try:
-                    detailed = await asyncio.wait_for(
+                    detailed, revision_snapshot = await asyncio.wait_for(
                         recognition_call,
                         timeout=max(0.1, live_deadline - time.perf_counter()),
                     )
                 except asyncio.TimeoutError:
+                    if audio_policy == "errors":
+                        recording = await asyncio.to_thread(
+                            recognizer.catalog.save_original_audio,
+                            recording["id"], raw, request.audio.sample_rate,
+                        ) or recording
                     labels = {
+                        **(recording.get("labels") or {}),
                         "audio_variant": "original",
                         "fallback": True,
                         "fallback_reason": "live_budget_exhausted",
@@ -822,7 +1142,7 @@ async def analyze(request: AnalyzeRequest) -> dict:
                     ) or recording
                     return _analysis_payload(recording)
             else:
-                detailed = await recognition_call
+                detailed, revision_snapshot = await recognition_call
             processed = None
             if mode == "before_stt":
                 remaining = live_deadline - time.perf_counter()
@@ -847,7 +1167,7 @@ async def analyze(request: AnalyzeRequest) -> dict:
                         try:
                             denoised_result = await asyncio.wait_for(
                                 asyncio.to_thread(
-                                    recognizer.recognize_detailed,
+                                    recognizer.recognize_detailed_with_snapshot,
                                     denoised_input,
                                     threshold=threshold,
                                     min_margin=margin,
@@ -857,14 +1177,24 @@ async def analyze(request: AnalyzeRequest) -> dict:
                         except asyncio.TimeoutError:
                             denoised_result = None
                     # Enhancement may rescue an otherwise unknown recording.
-                    if denoised_result and denoised_result.speaker is not None:
-                        detailed = denoised_result
+                    if denoised_result and denoised_result[0].speaker is not None:
+                        detailed, revision_snapshot = denoised_result
             outcome = detailed.outcome
             if (
                 outcome not in {"matched", "multiple_speakers"}
                 and _policy["unknown_speaker_policy"] == "block"
             ):
                 outcome = "blocked"
+            processing_problem = mode == "before_stt" and (
+                processed is None or not processed.denoised_pcm
+            )
+            if audio_policy == "errors" and mode != "compare" and (
+                outcome != "matched" or processing_problem
+            ):
+                recording = await asyncio.to_thread(
+                    recognizer.catalog.save_original_audio,
+                    recording["id"], raw, request.audio.sample_rate,
+                ) or recording
             labels = dict(recording.get("labels") or {})
             labels["detected_speakers"] = detailed.detected_speakers
             updates = {
@@ -872,11 +1202,12 @@ async def analyze(request: AnalyzeRequest) -> dict:
                 "speaker_name": detailed.speaker.name if detailed.speaker else None, "confidence": detailed.confidence,
                 "threshold": detailed.threshold, "margin": detailed.margin, "scores": detailed.scores,
                 "segments": detailed.candidates, "timings": detailed.timings, "labels": labels,
+                "profile_revision": revision_snapshot,
                 "extraction_status": "disabled" if mode == "off" else "processing" if processed else "queued" if mode == "compare" else "not_processed",
             }
             if processed is not None:
                 updates.update({
-                    "processing_status": "complete",
+                    "processing_status": "complete" if processed.denoised_pcm else "failed",
                     "processing_backend": "df2_batch",
                     "processing_speaker_id": detailed.speaker.id if detailed.speaker else None,
                     "processing_stages": processed.stages,
@@ -895,8 +1226,25 @@ async def analyze(request: AnalyzeRequest) -> dict:
                     }
                 )
             recording = await asyncio.to_thread(recognizer.catalog.update_recording, recording["id"], **updates) or recording
+            await asyncio.to_thread(
+                recognizer.catalog.record_recognition_run,
+                recording["id"], revision_snapshot,
+                {
+                    "outcome": outcome,
+                    "speaker_id": detailed.speaker.id if detailed.speaker else None,
+                    "confidence": detailed.confidence,
+                    "scores": detailed.scores,
+                    "threshold": detailed.threshold,
+                    "margin": detailed.margin,
+                    "settings": {
+                        "unknown_speaker_policy": _policy["unknown_speaker_policy"],
+                        "extraction_mode": mode,
+                        "audio_processing_backend": _policy["audio_processing_backend"],
+                    },
+                },
+            )
             if processed is not None:
-                if processed.denoised_pcm:
+                if processed.denoised_pcm and audio_policy == "all":
                     recording = await asyncio.to_thread(
                         recognizer.catalog.save_audio_variant,
                         recording["id"], "denoised", processed.denoised_pcm,
@@ -905,7 +1253,7 @@ async def analyze(request: AnalyzeRequest) -> dict:
                 variant = "denoised" if processed.denoised_pcm else "original"
                 labels = dict(recording.get("labels") or {})
                 labels.update({
-                    "audio_variant": variant,
+                    "audio_variant": variant if audio_policy == "all" else "original",
                     "fallback": variant != "denoised",
                     "fallback_reason": processed.fallback_reason,
                     "quality": processed.quality,
@@ -944,10 +1292,50 @@ async def analyze(request: AnalyzeRequest) -> dict:
                     }
             return payload
         except (ValueError, RuntimeError) as error:
-            recording = await asyncio.to_thread(recognizer.catalog.update_recording, recording["id"], outcome="error", labels={"error": str(error)}) or recording
+            if audio_policy == "errors" and mode != "compare":
+                await asyncio.to_thread(
+                    recognizer.catalog.save_original_audio,
+                    recording["id"], raw, request.audio.sample_rate,
+                )
+            recording = await asyncio.to_thread(
+                recognizer.catalog.update_recording, recording["id"],
+                outcome="error", labels={**(recording.get("labels") or {}), "error": str(error)},
+            ) or recording
             raise HTTPException(status_code=409, detail={"recording_id": recording["id"], "error": str(error)}) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.post("/api/analyze-binary", dependencies=[Depends(authorize_api)])
+async def analyze_binary(
+    request: Request,
+    x_sample_rate: int = Header(),
+    x_channels: int = Header(),
+    x_audio_format: str = Header(),
+    source: str = "pipeline",
+    satellite_id: str | None = None,
+    stt_entity_id: str | None = None,
+    extraction_mode: str | None = None,
+) -> dict:
+    """Versioned binary transport; the existing analysis response is unchanged."""
+    if request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/octet-stream":
+        raise HTTPException(status_code=415, detail="Expected application/octet-stream")
+    if x_channels != 1 or x_audio_format != "pcm_s16le":
+        raise HTTPException(status_code=415, detail="Expected mono pcm_s16le audio")
+    pcm = await request.body()
+    if not pcm or len(pcm) % 2 or len(pcm) > x_sample_rate * settings.max_audio_seconds * 2:
+        raise HTTPException(status_code=400, detail="Invalid PCM length")
+    try:
+        payload = AnalyzeRequest(
+            audio=AudioInput(audio_data=base64.b64encode(pcm).decode("ascii"), sample_rate=x_sample_rate),
+            source=source,
+            satellite_id=satellite_id,
+            stt_entity_id=stt_entity_id,
+            extraction_mode=extraction_mode,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return await analyze(payload)
 
 
 @app.post("/api/recordings/{recording_id}/finalize", dependencies=[Depends(authorize_api)])
@@ -1212,7 +1600,142 @@ async def overview() -> dict:
         "retention_days": recognizer.catalog.retention_days,
         "profiles": [item.model_dump(mode="json") for item in recognizer.list_speakers()],
         "calibration": recognizer.catalog.calibration(),
+        "storage_breakdown": await asyncio.to_thread(recognizer.catalog.storage_breakdown),
     }
+
+
+@app.get("/api/storage", dependencies=[Depends(authorize_api)])
+async def storage_details() -> dict:
+    return {
+        "categories": await asyncio.to_thread(recognizer.catalog.storage_breakdown),
+        "orphans": await asyncio.to_thread(recognizer.catalog.scan_orphans),
+    }
+
+
+@app.post("/api/storage/orphans/delete", dependencies=[Depends(authorize_api)])
+async def delete_orphan_audio(request: DeleteUnindexedAudioRequest) -> dict:
+    try:
+        removed = await asyncio.to_thread(
+            recognizer.catalog.delete_unindexed_wav_files, request.paths,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return {"deleted": removed}
+
+
+@app.get("/api/diagnostics", dependencies=[Depends(authorize_api)])
+async def privacy_diagnostics() -> dict:
+    """A default export without tokens, audio, transcripts, or names."""
+    info = await api_info()
+    return {
+        "schema_version": 1,
+        "api_info": info,
+        "engine_ready": recognizer.ready,
+        "storage": await asyncio.to_thread(recognizer.catalog.storage_breakdown),
+        "policy": dict(_policy),
+    }
+
+
+@app.get("/api/archived-samples", dependencies=[Depends(authorize_api)])
+async def archived_samples() -> dict:
+    items = await asyncio.to_thread(recognizer.catalog.list_archived_samples)
+    return {"items": [{key: value for key, value in item.items() if key != "path"} for item in items]}
+
+
+@app.delete("/api/archived-samples/{sample_id}", status_code=204, dependencies=[Depends(authorize_api)])
+async def delete_archived_sample(sample_id: str) -> Response:
+    try:
+        deleted = await asyncio.to_thread(recognizer.catalog.delete_archived_sample, sample_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Archived sample not found")
+    return Response(status_code=204)
+
+
+class ReviewUpdateRequest(BaseModel):
+    status: Literal["pending", "resolved", "ignored"]
+    truth_speaker_id: str | None = Field(default=None, min_length=1, max_length=64)
+    truth_unknown: bool = False
+
+
+class ExperimentPreviewRequest(BaseModel):
+    threshold: float = Field(ge=0, le=1)
+    margin: float = Field(ge=0, le=2)
+
+
+@app.get("/api/review-inbox", dependencies=[Depends(authorize_api)])
+async def review_inbox(page: int = 1, page_size: int = 50, review_status: str | None = "pending") -> dict:
+    try:
+        return await asyncio.to_thread(
+            list_review_inbox, recognizer.catalog,
+            page=page, page_size=page_size, status=review_status,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+@app.patch("/api/analysis/{recording_id}/review", dependencies=[Depends(authorize_api)])
+async def review_recording(recording_id: str, request: ReviewUpdateRequest) -> dict:
+    if request.status == "resolved" and not (request.truth_unknown or request.truth_speaker_id):
+        raise HTTPException(status_code=400, detail={"code": "truth_required", "message": "Choose a speaker or unknown"})
+    if request.truth_speaker_id and request.truth_speaker_id not in {item.id for item in recognizer.list_speakers()}:
+        raise HTTPException(status_code=404, detail={"code": "speaker_not_found", "message": "Speaker profile not found"})
+    try:
+        updated = await asyncio.to_thread(
+            set_review, recognizer.catalog, recording_id, request.status,
+            request.truth_speaker_id, request.truth_unknown,
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Recording not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return _analysis_payload(updated)
+
+
+@app.get("/api/devices/quality", dependencies=[Depends(authorize_api)])
+async def device_quality_report(days: int = 30) -> dict:
+    try:
+        return await asyncio.to_thread(device_quality, recognizer.catalog, days)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+
+async def _run_experiment(job_id: str, threshold: float, margin: float) -> None:
+    experiment_results[job_id] = {"id": job_id, "status": "running"}
+    try:
+        result = await asyncio.to_thread(
+            preview_experiment, recognizer.catalog, recognizer, threshold, margin,
+        )
+        experiment_results[job_id] = {"id": job_id, "status": "complete", **result}
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        _LOGGER.warning("Recognition experiment failed: %s", error)
+        experiment_results[job_id] = {"id": job_id, "status": "failed", "reason": str(error)}
+    finally:
+        experiment_tasks.pop(job_id, None)
+
+
+@app.post("/api/experiments/preview", status_code=202, dependencies=[Depends(authorize_api)])
+async def start_experiment(request: ExperimentPreviewRequest) -> dict:
+    if any(not task.done() for task in experiment_tasks.values()):
+        raise HTTPException(status_code=429, detail={"code": "experiment_busy", "message": "Another experiment is still running"})
+    job_id = uuid.uuid4().hex
+    experiment_results.clear()
+    experiment_results[job_id] = {"id": job_id, "status": "queued"}
+    experiment_tasks[job_id] = asyncio.create_task(
+        _run_experiment(job_id, request.threshold, request.margin),
+        name=f"speaker-experiment-{job_id}",
+    )
+    return experiment_results[job_id]
+
+
+@app.get("/api/experiments/{job_id}", dependencies=[Depends(authorize_api)])
+async def get_experiment(job_id: str) -> dict:
+    if job_id not in experiment_results:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment_results[job_id]
 
 
 @app.get("/api/recordings", dependencies=[Depends(authorize_api)])
@@ -1222,6 +1745,33 @@ async def list_recordings(page: int = 1, page_size: int = 50, offset: int | None
         page_size = limit or page_size; page = offset // max(1, page_size) + 1
     items, total = await asyncio.to_thread(recognizer.catalog.list_recordings, page=page, page_size=page_size, outcome=outcome, source=source, speaker_id=speaker_id, query=q, since=since)
     return {"items": [_analysis_payload(item) for item in items], "total": total, "page": page, "page_size": page_size, "offset": (page-1)*page_size, "limit": page_size}
+
+
+@app.get("/api/analysis/available-for-enrollment", dependencies=[Depends(authorize_api)])
+async def recordings_available_for_enrollment(q: str = "", page: int = 1) -> dict:
+    """Search retained originals for the new-profile picker."""
+    if page < 1 or len(q) > 100:
+        raise HTTPException(status_code=400, detail="Invalid recording search")
+
+    def query() -> tuple[list[dict], bool]:
+        pattern = f"%{q.strip()}%"
+        with recognizer.catalog._lock, recognizer.catalog._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM recordings WHERE audio_retained=1 AND original_path<>'' "
+                "AND (COALESCE(transcript,'') LIKE ? OR COALESCE(satellite_id,'') LIKE ? "
+                "OR COALESCE(speaker_name,'') LIKE ?) "
+                "ORDER BY created_at DESC LIMIT 51 OFFSET ?",
+                (pattern, pattern, pattern, (page - 1) * 50),
+            ).fetchall()
+        items = []
+        for row in rows[:50]:
+            item = recognizer.catalog._row(row)
+            if recognizer.catalog.audio_path(item["id"], "original"):
+                items.append(item)
+        return items, len(rows) > 50
+
+    items, has_more = await asyncio.to_thread(query)
+    return {"items": [_analysis_payload(item) for item in items], "page": page, "has_more": has_more}
 
 
 @app.get("/api/recordings/{recording_id}", dependencies=[Depends(authorize_api)])
@@ -1266,8 +1816,8 @@ async def reanalyze_recording(recording_id: str) -> dict:
     )
     try:
         audio = await asyncio.to_thread(_read_recording_audio, path)
-        detailed = await asyncio.to_thread(
-            recognizer.recognize_detailed,
+        detailed, revision_snapshot = await asyncio.to_thread(
+            recognizer.recognize_detailed_with_snapshot,
             audio,
             threshold=threshold,
             min_margin=margin,
@@ -1300,10 +1850,105 @@ async def reanalyze_recording(recording_id: str) -> dict:
         segments=detailed.candidates,
         timings=timings,
         labels=labels,
+        profile_revision=revision_snapshot,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Recording not found")
+    await asyncio.to_thread(
+        recognizer.catalog.record_recognition_run,
+        recording_id, revision_snapshot,
+        {
+            "outcome": outcome,
+            "speaker_id": detailed.speaker.id if detailed.speaker else None,
+            "confidence": detailed.confidence,
+            "scores": detailed.scores,
+            "threshold": detailed.threshold,
+            "margin": detailed.margin,
+            "settings": {
+                "unknown_speaker_policy": _policy["unknown_speaker_policy"],
+                "extraction_mode": recording.get("extraction_mode"),
+                "audio_processing_backend": _policy["audio_processing_backend"],
+            },
+        },
+    )
     return _analysis_payload(updated, detailed)
+
+
+@app.get("/api/analysis/{recording_id}/runs", dependencies=[Depends(authorize_api)])
+async def analysis_runs(recording_id: str) -> dict:
+    if not await asyncio.to_thread(recognizer.catalog.get_recording, recording_id):
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return {"items": await asyncio.to_thread(recognizer.catalog.list_recognition_runs, recording_id)}
+
+
+def _public_timeline(result: dict) -> dict:
+    profiles = {item.id: item.name for item in recognizer.list_speakers()}
+    public = dict(result)
+    public_segments = []
+    for stored in result.get("segments", []):
+        segment = dict(stored)
+        speaker_id = segment.get("speaker_id")
+        if speaker_id in profiles:
+            segment["speaker_name"] = profiles[speaker_id]
+        else:
+            segment.update(speaker_id=None, speaker_name=None, status="unknown")
+        public_segments.append(segment)
+    public["segments"] = public_segments
+    return public
+
+
+@app.get("/api/analysis/{recording_id}/diarization", dependencies=[Depends(authorize_api)])
+async def get_diarization(recording_id: str) -> dict:
+    if not await asyncio.to_thread(recognizer.catalog.get_recording, recording_id):
+        raise HTTPException(status_code=404, detail="Recording not found")
+    result = await asyncio.to_thread(timeline_store.get, recording_id)
+    return _public_timeline(result) if result else {
+        "recording_id": recording_id, "status": "idle", "experimental": True,
+        "segments": [],
+    }
+
+
+async def _run_diarization(recording_id: str, path: Path) -> None:
+    try:
+        async with timeline_slots:
+            await asyncio.to_thread(timeline_store.set, recording_id, "running", {"experimental": True})
+            calibration = recognizer.catalog.calibration()
+            threshold = float(calibration["threshold"]) if calibration else settings.recognition_threshold
+            margin = float(calibration["margin"]) if calibration else float(_policy["min_margin"])
+            audio = await asyncio.to_thread(_read_recording_audio, path)
+            result = await asyncio.to_thread(analyze_timeline, recognizer, audio, threshold, margin)
+            await asyncio.to_thread(timeline_store.set, recording_id, "complete", result)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        _LOGGER.warning("Offline speaker timeline failed for %s: %s", recording_id, error)
+        try:
+            await asyncio.to_thread(timeline_store.set, recording_id, "failed", {
+                "experimental": True, "reason": str(error), "segments": [],
+            })
+        except KeyError:
+            pass
+    finally:
+        timeline_tasks.pop(recording_id, None)
+
+
+@app.post("/api/analysis/{recording_id}/diarization", status_code=202, dependencies=[Depends(authorize_api)])
+async def start_diarization(recording_id: str) -> dict:
+    if not await asyncio.to_thread(recognizer.catalog.get_recording, recording_id):
+        raise HTTPException(status_code=404, detail="Recording not found")
+    path = await asyncio.to_thread(recognizer.catalog.audio_path, recording_id, "original")
+    if not path:
+        raise HTTPException(status_code=409, detail={"code": "audio_not_retained", "message": "Original audio is no longer available"})
+    existing = timeline_tasks.get(recording_id)
+    if existing and not existing.done():
+        return await get_diarization(recording_id)
+    if len(timeline_tasks) >= 2:
+        raise HTTPException(status_code=429, detail={"code": "timeline_queue_full", "message": "Try again after another timeline finishes"})
+    result = await asyncio.to_thread(timeline_store.set, recording_id, "queued", {"experimental": True, "segments": []})
+    timeline_tasks[recording_id] = asyncio.create_task(
+        _run_diarization(recording_id, path), name=f"speaker-timeline-{recording_id}",
+    )
+    return result
 
 
 @app.get("/api/recordings/{recording_id}/audio", dependencies=[Depends(authorize_api)])
@@ -1411,13 +2056,30 @@ async def promote_recording(recording_id: str, request: PromoteRecordingRequest)
     if not path: raise HTTPException(status_code=404, detail="Recording not found")
     try:
         audio = await asyncio.to_thread(_trim_wav, path, request.start_seconds, request.end_seconds)
+        quality_reports = await asyncio.to_thread(
+            _registration_quality_reports,
+            [audio], request.accept_quality_warnings,
+        )
         if request.speaker_id:
             profile = next((item for item in recognizer.list_speakers() if item.id == request.speaker_id), None)
             if not profile: raise HTTPException(status_code=404, detail="Speaker not found")
-            speaker = await asyncio.to_thread(recognizer.enroll, profile.name, [audio], False, request.person_entity_id, request.person_entity_id is not None)
+            speaker = await asyncio.to_thread(
+                recognizer.enroll, profile.name, [audio], False,
+                profile.person_entity_id, False, profile.profile_kind,
+                profile.expires_at, True, True, recording_id,
+            )
         else:
-            speaker = await asyncio.to_thread(recognizer.enroll, request.new_speaker_name or "", [audio], False, request.person_entity_id, request.person_entity_id is not None)
-        return {"speaker": speaker.model_dump(mode="json")}
+            speaker = await asyncio.to_thread(
+                recognizer.enroll, request.new_speaker_name or "", [audio], False,
+                request.person_entity_id, request.person_entity_id is not None,
+                request.profile_kind, request.expires_at,
+                "expires_at" in request.model_fields_set,
+                "profile_kind" in request.model_fields_set,
+                recording_id,
+            )
+        return {"speaker": speaker.model_dump(mode="json"), "quality_reports": quality_reports}
+    except HTTPException:
+        raise
     except ValueError as error: raise HTTPException(status_code=400, detail=str(error)) from error
 
 
@@ -1472,17 +2134,14 @@ async def sample_audio(speaker_id: str, sample_id: str) -> FileResponse:
 
 @app.patch("/api/speakers/{speaker_id}/samples/{sample_id}", dependencies=[Depends(authorize_api)])
 async def set_sample_active(speaker_id: str, sample_id: str, request: SampleActiveRequest) -> dict:
-    sample = await asyncio.to_thread(recognizer.catalog.get_sample, sample_id)
-    if not sample or sample["speaker_id"] != speaker_id: raise HTTPException(status_code=404, detail="Sample not found")
-    if sample.get("active") and not request.active:
-        active = await asyncio.to_thread(recognizer.catalog.list_samples, speaker_id, True)
-        if len(active) <= 1:
-            raise HTTPException(status_code=409, detail="A profile needs at least one active sample")
-    updated = await asyncio.to_thread(recognizer.catalog.set_sample_active, sample_id, request.active)
     try:
-        speaker = await asyncio.to_thread(recognizer.retrain_from_samples, speaker_id)
+        updated, speaker = await asyncio.to_thread(
+            recognizer.set_sample_active_and_retrain,
+            speaker_id, sample_id, request.active,
+        )
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Sample not found") from error
     except (ValueError, OSError) as error:
-        await asyncio.to_thread(recognizer.catalog.set_sample_active, sample_id, bool(sample.get("active")))
         raise HTTPException(status_code=409, detail=str(error)) from error
     public_sample = {
         key: value for key, value in (updated or {}).items() if key != "path"
@@ -1492,15 +2151,12 @@ async def set_sample_active(speaker_id: str, sample_id: str, request: SampleActi
 
 @app.delete("/api/speakers/{speaker_id}/samples/{sample_id}", status_code=204, dependencies=[Depends(authorize_api)])
 async def delete_sample(speaker_id: str, sample_id: str) -> Response:
-    sample = await asyncio.to_thread(recognizer.catalog.get_sample, sample_id)
-    if not sample or sample["speaker_id"] != speaker_id: raise HTTPException(status_code=404, detail="Sample not found")
-    if sample.get("active"):
-        active = await asyncio.to_thread(recognizer.catalog.list_samples, speaker_id, True)
-        if len(active) <= 1:
-            raise HTTPException(status_code=409, detail="Delete the profile instead of its last active sample")
-    if not await asyncio.to_thread(recognizer.catalog.delete_sample, sample_id): raise HTTPException(status_code=404, detail="Sample not found")
-    try: await asyncio.to_thread(recognizer.retrain_from_samples, speaker_id)
-    except ValueError: pass  # A legacy embedding still makes the profile usable.
+    try:
+        await asyncio.to_thread(recognizer.delete_sample_and_retrain, speaker_id, sample_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Sample not found") from error
+    except (ValueError, OSError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return Response(status_code=204)
 
 

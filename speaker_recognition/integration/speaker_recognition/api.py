@@ -13,6 +13,17 @@ from aiohttp import ClientError, ClientSession
 class SpeakerRecognitionApiError(Exception):
     """Base API error."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.code = (
+            "authentication_failed"
+            if status in {401, 403}
+            else "endpoint_not_found"
+            if status == 404
+            else "api_error"
+        )
+
 
 class SpeakerRecognitionApi:
     """Small dependency-free App API client."""
@@ -23,6 +34,38 @@ class SpeakerRecognitionApi:
         self._headers = {"Authorization": f"Bearer {token}"}
         self._policy: dict[str, Any] | None = None
         self._policy_cached_at = 0.0
+        self._info: dict[str, Any] | None = None
+        self._info_checked = False
+
+    @property
+    def server_info(self) -> dict[str, Any] | None:
+        """Return cached optional capability metadata when supported."""
+        return dict(self._info) if self._info is not None else None
+
+    async def async_info(self) -> dict[str, Any] | None:
+        """Read the versioned capability document; older APIs remain supported."""
+        if self._info_checked:
+            return self.server_info
+        try:
+            info = await self._request("GET", "/api/info", timeout=3)
+        except SpeakerRecognitionApiError as error:
+            if error.status == 404:
+                self._info_checked = True
+                return None
+            raise
+        if not isinstance(info, dict) or not isinstance(info.get("api_version"), (str, int)):
+            raise SpeakerRecognitionApiError("Backend returned an invalid /api/info document")
+        try:
+            version = int(info["api_version"])
+        except (TypeError, ValueError) as error:
+            raise SpeakerRecognitionApiError(
+                "Backend returned an invalid API version"
+            ) from error
+        if version < 1:
+            raise SpeakerRecognitionApiError("Backend returned an invalid API version")
+        self._info = info
+        self._info_checked = True
+        return self.server_info
 
     @property
     def cached_pipeline_policy(self) -> dict[str, Any]:
@@ -88,6 +131,27 @@ class SpeakerRecognitionApi:
         extraction_mode: str,
     ) -> dict[str, Any]:
         """Persist and analyse one normal Assist utterance."""
+        if self._has_capability("binary_analyze"):
+            params = {
+                "source": "pipeline",
+                "stt_entity_id": source_entity_id,
+                "extraction_mode": extraction_mode,
+            }
+            if satellite_id:
+                params["satellite_id"] = satellite_id
+            return await self._request(
+                "POST",
+                "/api/analyze-binary",
+                data=pcm,
+                params=params,
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-Sample-Rate": str(sample_rate),
+                    "X-Channels": "1",
+                    "X-Audio-Format": "pcm_s16le",
+                },
+                timeout=45,
+            )
         return await self._request(
             "POST",
             "/api/analyze",
@@ -103,6 +167,14 @@ class SpeakerRecognitionApi:
             },
             timeout=45,
         )
+
+    def _has_capability(self, capability: str) -> bool:
+        """Read a capability from either supported `/api/info` shape."""
+        info = self._info or {}
+        capabilities = info.get("capabilities", [])
+        if isinstance(capabilities, dict):
+            return capabilities.get(capability) is True
+        return isinstance(capabilities, list) and capability in capabilities
 
     async def async_analyze_stream(
         self,
@@ -131,7 +203,8 @@ class SpeakerRecognitionApi:
                 if response.status >= 400:
                     detail = await response.text()
                     raise SpeakerRecognitionApiError(
-                        f"App returned HTTP {response.status}: {detail[:200]}"
+                        f"App returned HTTP {response.status}: {detail[:200]}",
+                        status=response.status,
                     )
                 return await response.json()
         except (ClientError, TimeoutError) as error:
@@ -254,21 +327,36 @@ class SpeakerRecognitionApi:
         *,
         authenticated: bool = True,
         json: dict | None = None,
+        data: bytes | None = None,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
         expect_json: bool = True,
         timeout: int = 30,
     ) -> Any:
         try:
+            request_headers = self._headers.copy() if authenticated else {}
+            if headers:
+                request_headers.update(headers)
+            request_kwargs: dict[str, Any] = {
+                "headers": request_headers or None,
+                "timeout": timeout,
+            }
+            if json is not None:
+                request_kwargs["json"] = json
+            if data is not None:
+                request_kwargs["data"] = data
+            if params is not None:
+                request_kwargs["params"] = params
             async with self._session.request(
                 method,
                 f"{self._url}{path}",
-                headers=self._headers if authenticated else None,
-                json=json,
-                timeout=timeout,
+                **request_kwargs,
             ) as response:
                 if response.status >= 400:
                     detail = await response.text()
                     raise SpeakerRecognitionApiError(
-                        f"App returned HTTP {response.status}: {detail[:200]}"
+                        f"App returned HTTP {response.status}: {detail[:200]}",
+                        status=response.status,
                     )
                 return await response.json() if expect_json else None
         except (ClientError, TimeoutError) as error:

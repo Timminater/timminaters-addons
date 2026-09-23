@@ -31,6 +31,73 @@ def mixed_speakers_audio():
     }
 
 
+def test_saved_recording_can_create_new_profile_and_is_excluded_from_trial(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "analysis_audio_retention", "all")
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        assert client.post("/api/enroll", json={
+            "speaker_name": "Alice", "samples": [{"audio": audio(12000).model_dump()}],
+        }).status_code == 200
+        recording = client.post("/api/analyze", json={
+            "audio": audio(-12000).model_dump(), "source": "test",
+        }).json()
+        recording_id = recording["recording_id"]
+        assert client.get("/api/review-inbox").json()["total"] == 1
+        available = client.get("/api/analysis/available-for-enrollment").json()["items"]
+        assert [item["recording_id"] for item in available] == [recording_id]
+        promoted = client.post(f"/api/analysis/{recording_id}/promote", json={
+            "new_speaker_name": "Bob", "start_seconds": 0, "end_seconds": 1,
+        })
+        assert promoted.status_code == 200
+        speaker_id = promoted.json()["speaker"]["id"]
+        assert api.recognizer.catalog.list_samples(speaker_id)[0]["source_recording_id"] == recording_id
+        reviewed = client.patch(f"/api/analysis/{recording_id}/review", json={
+            "status": "resolved", "truth_speaker_id": speaker_id,
+        })
+        assert reviewed.status_code == 200
+        trial = client.post("/api/experiments/preview", json={"threshold": .8, "margin": 0})
+        assert trial.status_code == 202
+        job_id = trial.json()["id"]
+        for _ in range(30):
+            result = client.get(f"/api/experiments/{job_id}").json()
+            if result["status"] in {"complete", "failed"}:
+                break
+            time.sleep(.02)
+        assert result["status"] == "complete"
+        assert result["sample_count"] == 0
+        assert result["excluded"]["enrollment_source"] == 1
+
+
+def test_guest_and_timeline_api_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "analysis_audio_retention", "all")
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        guest = client.post("/api/enroll", json={
+            "speaker_name": "Guest", "profile_kind": "guest", "expires_at": None,
+            "samples": [{"audio": audio(12000).model_dump()}],
+        })
+        assert guest.status_code == 200
+        assert guest.json()["speaker"]["profile_kind"] == "guest"
+        assert guest.json()["speaker"]["expires_at"] is None
+        recording = client.post("/api/analyze", json={
+            "audio": audio(12000).model_dump(), "source": "test",
+        }).json()
+        recording_id = recording["recording_id"]
+        assert client.post(f"/api/analysis/{recording_id}/diarization").status_code == 202
+        for _ in range(30):
+            result = client.get(f"/api/analysis/{recording_id}/diarization").json()
+            if result["status"] in {"complete", "failed"}:
+                break
+            time.sleep(.02)
+        assert result["status"] == "complete"
+        assert result["experimental"] is True
+        assert result["segments"]
+
+
 def test_api_contract_and_ingress_auth(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
     api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
@@ -55,6 +122,158 @@ def test_api_contract_and_ingress_auth(tmp_path, monkeypatch):
         assert cleared.status_code == 200
         assert cleared.json()["speaker"]["person_entity_id"] is None
         assert client.delete(f"/api/speakers/{speaker_id}").status_code == 204
+
+
+def test_binary_analysis_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {
+        "X-Ingress-Path": "/api/hassio_ingress/test",
+        "Content-Type": "application/octet-stream",
+        "X-Sample-Rate": "16000",
+        "X-Channels": "1",
+        "X-Audio-Format": "pcm_s16le",
+    }
+    with TestClient(api.app, headers=headers) as client:
+        assert "binary_analyze" in client.get("/api/info").json()["capabilities"]
+        enrolled = client.post("/api/enroll", headers={"Content-Type": "application/json"}, json={
+            "speaker_name": "Alice", "samples": [{"audio": audio(12000).model_dump()}]
+        })
+        assert enrolled.status_code == 200
+        pcm = base64.b64decode(audio(12000).audio_data)
+        response = client.post("/api/analyze-binary", params={"source": "test"}, content=pcm)
+        assert response.status_code == 200
+        assert response.json()["speaker_name"] == "Alice"
+        assert client.post("/api/analyze-binary", content=pcm, headers={**headers, "X-Channels": "2"}).status_code == 415
+
+
+def test_multipart_enrollment_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {
+        "X-Ingress-Path": "/api/hassio_ingress/test",
+        "X-Sample-Rate": "16000", "X-Channels": "1", "X-Audio-Format": "pcm_s16le",
+    }
+    with TestClient(api.app, headers=headers) as client:
+        assert "multipart_enroll" in client.get("/api/info").json()["capabilities"]
+        response = client.post("/api/enroll-multipart", params={"speaker_name": "Alice"}, files=[
+            ("recordings", ("a.pcm", base64.b64decode(audio(12000).audio_data), "application/octet-stream")),
+            ("recordings", ("b.pcm", base64.b64decode(audio(12000).audio_data), "application/octet-stream")),
+        ])
+        assert response.status_code == 200, response.text
+        assert response.json()["speaker"]["sample_count"] == 2
+
+
+def test_registration_audio_quality_requires_review_for_noise(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    rng = np.random.default_rng(44)
+    pcm = np.asarray(rng.normal(0, 0.09, 32_000) * 32767, dtype="<i2")
+    sample = {"audio_data": base64.b64encode(pcm.tobytes()).decode(), "sample_rate": 16_000}
+    with TestClient(api.app, headers=headers) as client:
+        quality = client.post("/api/audio-quality", json={"audio": sample, "purpose": "registration"})
+        assert quality.status_code == 200
+        assert quality.json()["decision"] == "review"
+        enrollment = {"speaker_name": "Alice", "samples": [{"audio": sample}]}
+        pending = client.post("/api/enroll", json=enrollment)
+        assert pending.status_code == 409
+        assert pending.json()["detail"]["code"] == "registration_quality_review_required"
+        approved = client.post("/api/enroll", json={**enrollment, "accept_quality_warnings": True})
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["quality_reports"][0]["decision"] == "review"
+
+
+def test_diagnostics_exclude_private_recording_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        api.recognizer.catalog.create_recording(
+            base64.b64decode(audio(12000).audio_data), 16_000,
+            transcript="PRIVATE_TRANSCRIPT", speaker_name="PRIVATE_PERSON",
+        )
+        report = client.get("/api/diagnostics")
+        assert report.status_code == 200
+        assert "analysis_original_bytes" in report.json()["storage"]
+        assert "PRIVATE_TRANSCRIPT" not in report.text
+        assert "PRIVATE_PERSON" not in report.text
+        assert str(tmp_path) not in report.text
+
+
+def test_archived_sample_api_rejects_active_and_removes_archived(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        pcm = base64.b64decode(audio(12000).audio_data)
+        active = api.recognizer.catalog.add_sample("speaker-a", pcm, 16_000)
+        archived = api.recognizer.catalog.add_sample("speaker-a", pcm, 16_000, active=False)
+        assert client.delete(f"/api/archived-samples/{active['id']}").status_code == 409
+        items = client.get("/api/archived-samples").json()["items"]
+        assert [item["id"] for item in items] == [archived["id"]]
+        assert "path" not in items[0]
+        assert client.delete(f"/api/archived-samples/{archived['id']}").status_code == 204
+        assert client.get("/api/archived-samples").json()["items"] == []
+
+
+def test_analysis_audio_retention_policy(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "analysis_audio_retention", api._policy["analysis_audio_retention"])
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        enrolled = client.post("/api/enroll", json={
+            "speaker_name": "Alice", "samples": [{"audio": audio(12000).model_dump()}]
+        })
+        assert enrolled.status_code == 200
+        assert client.patch("/api/pipeline-policy", json={"analysis_audio_retention": "none"}).status_code == 200
+        matched = client.post("/api/analyze", json={"audio": audio(12000).model_dump(), "source": "test"}).json()
+        assert matched["outcome"] == "matched"
+        assert matched["original_available"] is False
+        assert client.patch("/api/pipeline-policy", json={"analysis_audio_retention": "errors"}).status_code == 200
+        unmatched = client.post("/api/analyze", json={"audio": audio(-12000).model_dump(), "source": "test"}).json()
+        assert unmatched["outcome"] != "matched"
+        assert unmatched["original_available"] is True
+        assert client.get("/api/pipeline-policy").json()["analysis_audio_retention"] == "errors"
+
+
+def test_compare_audio_is_temporary_with_no_retention(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "_is_supervisor_request", lambda _request: True)
+    monkeypatch.setitem(api._policy, "analysis_audio_retention", api._policy["analysis_audio_retention"])
+    monkeypatch.setitem(api._policy, "extraction_mode", api._policy["extraction_mode"])
+    api.recognizer = SpeakerRecognizer(tmp_path, 0.8, 10, FakeEncoder, lambda wav, _rate: wav)
+
+    def denoise_audio(payload, *, timeout_seconds=180, priority="analysis"):
+        return {
+            "denoised_pcm": base64.b64decode(payload.audio_data),
+            "sample_rate": payload.sample_rate,
+            "stages": {"denoise": "complete"},
+            "quality": {}, "timings": {},
+        }
+
+    api.recognizer.denoise_audio = denoise_audio
+    headers = {"X-Ingress-Path": "/api/hassio_ingress/test"}
+    with TestClient(api.app, headers=headers) as client:
+        assert client.post("/api/enroll", json={
+            "speaker_name": "Alice", "samples": [{"audio": audio(12000).model_dump()}]
+        }).status_code == 200
+        assert client.patch("/api/pipeline-policy", json={
+            "analysis_audio_retention": "none", "extraction_mode": "compare",
+        }).status_code == 200
+        response = client.post("/api/analyze", json={
+            "audio": audio(12000).model_dump(), "source": "test",
+        })
+        assert response.status_code == 200, response.text
+        result = response.json()
+        for _ in range(50):
+            detail = client.get(f"/api/analysis/{result['recording_id']}").json()
+            if detail["processing_status"] == "complete" and not detail["original_available"]:
+                break
+            time.sleep(0.01)
+        assert detail["processing_status"] == "complete"
+        assert detail["original_available"] is False
+        assert detail["denoised_available"] is False
 
 
 def test_person_endpoint_uses_home_assistant_entities(tmp_path, monkeypatch):
@@ -361,9 +580,13 @@ def test_reanalyze_uses_current_profiles_and_preserves_pipeline_history(
         assert detail["timings"]["total_ms"] == 30.0
         assert detail["timings"]["recognition_ms"] >= 0
         assert detail["labels"]["conversation_reason"] == "oude context"
+        runs = client.get(f"/api/analysis/{recording['id']}/runs").json()["items"]
+        assert len(runs) == 1
+        assert runs[0]["profile_revision"]["revision_id"] == detail["profile_revision"]["revision_id"]
         assert client.post(
             f"/api/recordings/{recording['id']}/reanalyze"
         ).status_code == 200
+        assert len(client.get(f"/api/analysis/{recording['id']}/runs").json()["items"]) == 2
 
 
 def test_reanalyze_applies_block_policy_without_changing_other_metadata(

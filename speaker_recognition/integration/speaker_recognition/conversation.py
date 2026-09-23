@@ -21,6 +21,7 @@ from .const import (
 from .results import (
     claim_result_for_conversation,
     consume_result,
+    pipeline_run_id_from,
     remember_conversation_context,
 )
 
@@ -78,13 +79,21 @@ class SpeakerRecognitionConversation(ConversationEntity):
             await source.async_prepare(language)
 
     async def async_process(self, user_input: ConversationInput) -> ConversationResult:
-        """Delegate unchanged permissions, with optional safe personalization."""
+        """Delegate with person context only for an explicitly same-run ID.
+
+        Current HA SpeechMetadata and ConversationInput do not expose that
+        shared ID, so current versions forward no person context.
+        """
         source = self._source
         if source is None:
             raise HomeAssistantError("The selected conversation agent is unavailable")
 
+        pipeline_run_id = pipeline_run_id_from(user_input)
         recognition = consume_result(
-            self.hass, user_input.satellite_id, self._min_confidence
+            self.hass,
+            user_input.satellite_id,
+            self._min_confidence,
+            pipeline_run_id,
         )
         correlated = recognition or claim_result_for_conversation(
             self.hass, user_input.satellite_id
@@ -169,6 +178,7 @@ class SpeakerRecognitionConversation(ConversationEntity):
                 ),
                 "confidence": recognition.get("confidence") if recognition else None,
                 "satellite_id": user_input.satellite_id,
+                "pipeline_run_id": pipeline_run_id,
                 "source_conversation_entity": self._source_entity_id,
                 "minimum_confidence": self._min_confidence,
                 "observed_at": datetime.now(timezone.utc).isoformat(),

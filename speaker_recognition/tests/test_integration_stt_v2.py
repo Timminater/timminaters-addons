@@ -56,6 +56,9 @@ class SpeechMetadata:
     bit_rate: AudioBitRates = AudioBitRates.BITRATE_16
     sample_rate: int = 16000
     channel: int = 1
+    # Test-only optional contract for a future HA version. Official metadata
+    # currently has no pipeline execution ID.
+    pipeline_run_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -280,6 +283,9 @@ def make_proxy(api):
         dispatched=[],
         timers=[],
         async_create_task=asyncio.create_task,
+        async_add_executor_job=lambda function, *args: asyncio.to_thread(
+            function, *args
+        ),
     )
     proxy = SpeakerRecognitionSTT("stt.source", "proxy")
     proxy.hass = hass
@@ -355,6 +361,24 @@ def test_off_and_compare_keep_original_audio_and_finalize_recording():
         result = hass.data["speaker_recognition"]["last_result"]
         assert result["recording_id"] == "rec-1"
         assert result["audio_variant"] == "original"
+
+
+def test_stt_diagnostic_carries_only_explicit_pipeline_run_id():
+    api = Api(mode="compare")
+    proxy, hass, _source = make_proxy(api)
+
+    asyncio.run(
+        proxy.async_process_audio_stream(
+            SpeechMetadata(pipeline_run_id="pipeline-42"), chunks(wav())
+        )
+    )
+    assert hass.data["speaker_recognition"]["last_result"]["pipeline_run_id"] == "pipeline-42"
+
+    proxy, hass, _source = make_proxy(Api(mode="compare"))
+    asyncio.run(
+        proxy.async_process_audio_stream(SpeechMetadata(), chunks(wav()))
+    )
+    assert hass.data["speaker_recognition"]["last_result"]["pipeline_run_id"] is None
 
 
 def test_voice_enrollment_claim_uses_pre_round_trip_satellite_snapshot():

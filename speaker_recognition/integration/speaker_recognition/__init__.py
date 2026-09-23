@@ -44,9 +44,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api = SpeakerRecognitionApi(async_get_clientsession(hass), url, token)
         try:
             health = await api.async_health()
+            info = await api.async_info()
+            if info is not None and int(info["api_version"]) < 2:
+                raise SpeakerRecognitionApiError(
+                    f"Unsupported Speaker Recognition API version {info['api_version']}"
+                )
             await api.async_speakers()
         except SpeakerRecognitionApiError as error:
-            raise ConfigEntryNotReady(f"Speaker Recognition App is unavailable: {error}") from error
+            if error.code == "authentication_failed":
+                message = "Speaker Recognition credentials were rejected; re-enter the backend token in integration options"
+            else:
+                message = f"Speaker Recognition App is unavailable or incompatible: {error}"
+            raise ConfigEntryNotReady(message) from error
         if not health.get("ready"):
             raise ConfigEntryNotReady("Speaker Recognition App is still starting")
         entry.runtime_data = api

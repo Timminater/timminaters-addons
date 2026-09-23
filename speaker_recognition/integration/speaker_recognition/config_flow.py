@@ -48,14 +48,22 @@ def _main_entry(flow: ConfigFlow) -> ConfigEntry | None:
     )
 
 
-async def _can_connect(flow, url: str, token: str) -> bool:
+async def _connection_error(flow, url: str, token: str) -> str | None:
+    """Return a localized error key, or None when the configured API works."""
     try:
         api = SpeakerRecognitionApi(async_get_clientsession(flow.hass), url, token)
         health = await api.async_health()
+        info = await api.async_info()
+        if info is not None and int(info["api_version"]) < 2:
+            return "incompatible_api"
         await api.async_speakers()
-    except SpeakerRecognitionApiError:
-        return False
-    return bool(health.get("ready"))
+    except SpeakerRecognitionApiError as error:
+        if error.code == "authentication_failed":
+            return "authentication_failed"
+        if error.status == 404:
+            return "incompatible_api"
+        return "cannot_connect"
+    return None if health.get("ready") else "backend_starting"
 
 
 def _is_own_proxy(hass, entity_id: str) -> bool:
@@ -139,12 +147,13 @@ class SpeakerRecognitionConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="discovery_error")
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await _can_connect(self, self._discovery[CONF_URL], self._discovery[CONF_TOKEN]):
+            connection_error = await _connection_error(self, self._discovery[CONF_URL], self._discovery[CONF_TOKEN])
+            if connection_error is None:
                 if self._existing_entry is not None:
                     self._update_discovered_entry(self._existing_entry, self._discovery)
                     return self.async_abort(reason="reconfigured")
                 return self.async_create_entry(title="Speaker Recognition App", data=self._discovery)
-            errors["base"] = "cannot_connect"
+            errors["base"] = connection_error
         return self.async_show_form(step_id="confirm", data_schema=vol.Schema({}), errors=errors)
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -155,14 +164,15 @@ class SpeakerRecognitionConfigFlow(ConfigFlow, domain=DOMAIN):
             )
         errors: dict[str, str] = {}
         if user_input is not None:
-            if await _can_connect(self, user_input[CONF_URL], user_input[CONF_TOKEN]):
+            connection_error = await _connection_error(self, user_input[CONF_URL], user_input[CONF_TOKEN])
+            if connection_error is None:
                 await self.async_set_unique_id("speaker_recognition_manual")
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
                     title="Speaker Recognition App",
                     data={CONF_ENTRY_TYPE: ENTRY_TYPE_MAIN, **user_input},
                 )
-            errors["base"] = "cannot_connect"
+            errors["base"] = connection_error
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -329,12 +339,16 @@ class SpeakerRecognitionOptionsFlow(OptionsFlowWithReload):
         else:
             return self.async_abort(reason="not_supported")
         if user_input is not None:
-            if entry_type == ENTRY_TYPE_MAIN and not await _can_connect(
-                self, user_input[CONF_URL], user_input[CONF_TOKEN]
-            ):
-                return self.async_show_form(
-                    step_id="init", data_schema=schema, errors={"base": "cannot_connect"}
+            if entry_type == ENTRY_TYPE_MAIN:
+                connection_error = await _connection_error(
+                    self, user_input[CONF_URL], user_input[CONF_TOKEN]
                 )
+                if connection_error is not None:
+                    return self.async_show_form(
+                        step_id="init",
+                        data_schema=schema,
+                        errors={"base": connection_error},
+                    )
             source_key = (
                 CONF_STT_ENTITY
                 if entry_type == ENTRY_TYPE_STT

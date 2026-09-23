@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -37,6 +38,24 @@ def mixed_speakers_audio() -> AudioInput:
         audio_data=base64.b64encode(pcm.tobytes()).decode(),
         sample_rate=16_000,
     )
+
+
+def test_decision_margin_uses_same_time_region(tmp_path, fake_factory, identity_preprocess, monkeypatch):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    recognizer.enroll("Alice", [audio(12000)])
+    recognizer.enroll("Bob", [audio(-12000)])
+    pcm = np.concatenate((
+        np.full(16_000, 12_000, dtype="<i2"),
+        np.full(16_000, -12_000, dtype="<i2"),
+    ))
+    payload = AudioInput(audio_data=base64.b64encode(pcm.tobytes()).decode(), sample_rate=16_000)
+    monkeypatch.setattr(recognizer, "_candidate_regions", lambda _: [
+        (0, 16_000, "speech"), (16_000, 32_000, "speech"),
+    ])
+    monkeypatch.setattr(recognizer, "_detect_multiple_speakers", lambda *_: [])
+    result = recognizer.recognize_detailed(payload, threshold=0.8, min_margin=0.2)
+    assert result.outcome == "matched"
+    assert result.margin > 0.2
 
 
 def test_detects_multiple_known_speakers_in_separate_regions(
@@ -182,3 +201,116 @@ def test_corrupt_profile_does_not_hide_other_profiles(tmp_path, fake_factory, id
 
     restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
     assert [profile.id for profile in restarted.list_speakers()] == [alice.id]
+
+
+def test_profile_mean_is_independent_of_enrollment_order(tmp_path, fake_factory, identity_preprocess):
+    first = make_recognizer(tmp_path / "first", fake_factory, identity_preprocess)
+    first_profile = first.enroll("Alice", [audio(12000), audio(-12000), audio(6000)])
+    second = make_recognizer(tmp_path / "second", fake_factory, identity_preprocess)
+    second_profile = second.enroll("Alice", [audio(6000)])
+    second.enroll("Alice", [audio(-12000)])
+    second_profile = second.enroll("Alice", [audio(12000)])
+
+    np.testing.assert_allclose(
+        first._embeddings[first_profile.id], second._embeddings[second_profile.id],
+        rtol=0, atol=1e-7,
+    )
+    assert len(first.catalog.list_samples(first_profile.id, active_only=True)) == 3
+    assert len(second.catalog.list_samples(second_profile.id, active_only=True)) == 3
+    assert all(
+        item["metadata"]["embedding_model"] == "resemblyzer-v1"
+        and item["metadata"]["preprocess_version"] == "resemblyzer-preprocess-v1"
+        for item in first.catalog.list_samples(first_profile.id, active_only=True, include_internal=True)
+    )
+
+
+def test_failed_first_profile_commit_removes_staged_sample_audio(
+    tmp_path, fake_factory, identity_preprocess, monkeypatch
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    monkeypatch.setattr(
+        recognizer, "_write_registry", lambda: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    with pytest.raises(OSError, match="disk full"):
+        recognizer.enroll("Alice", [audio(12000)])
+
+    assert recognizer.list_speakers() == []
+    assert list((tmp_path / "enrollment").rglob("*.wav")) == []
+
+
+def test_sample_vectors_are_private_and_unactivated_revision_recovers(
+    tmp_path, fake_factory, identity_preprocess
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    profile = recognizer.enroll("Alice", [audio(12000)])
+    sample = recognizer.catalog.list_samples(profile.id)[0]
+    assert "embedding" not in sample["metadata"]
+    assert "legacy_embedding" not in sample["metadata"]
+    internal = recognizer.catalog.get_sample(sample["id"], include_internal=True)
+    assert internal["metadata"]["embedding"]
+
+    recognizer.catalog.replace_active_samples(profile.id, [])
+    restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    assert len(restarted.catalog.list_samples(profile.id, active_only=True)) == 1
+    assert restarted.list_speakers()[0].sample_count == 1
+
+
+def test_profile_revision_identity_is_stable_and_tracks_active_sample_set(
+    tmp_path, fake_factory, identity_preprocess
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    profile = recognizer.enroll("Alice", [audio(12000), audio(-12000)])
+    first = recognizer.profile_revision_snapshot(profile.id, threshold=0.81, margin=0.12)
+    restarted = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    after_restart = restarted.profile_revision_snapshot(profile.id, threshold=0.81, margin=0.12)
+    assert first["revision_id"] == after_restart["revision_id"]
+    assert first["sample_ids"] == after_restart["sample_ids"]
+
+    sample = restarted.catalog.list_samples(profile.id, active_only=True)[0]
+    restarted.catalog.set_sample_active(sample["id"], False)
+    changed = restarted.profile_revision_snapshot(profile.id, threshold=0.81, margin=0.12)
+    assert changed["revision_id"] != first["revision_id"]
+
+
+def test_parallel_sample_deactivation_keeps_one_active_profile_sample(
+    tmp_path, fake_factory, identity_preprocess,
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    profile = recognizer.enroll("Alice", [audio(12000), audio(-12000)])
+    sample_ids = [item["id"] for item in recognizer.catalog.list_samples(profile.id)]
+
+    def deactivate(sample_id):
+        try:
+            recognizer.set_sample_active_and_retrain(profile.id, sample_id, False)
+            return "ok"
+        except ValueError:
+            return "last_active"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(deactivate, sample_ids))
+    assert sorted(results) == ["last_active", "ok"]
+    assert len(recognizer.catalog.list_samples(profile.id, active_only=True)) == 1
+    assert recognizer.list_speakers()[0].sample_count == 1
+
+
+def test_recognition_with_snapshot_captures_all_profiles_for_unmatched_result(
+    tmp_path, fake_factory, identity_preprocess
+):
+    recognizer = make_recognizer(tmp_path, fake_factory, identity_preprocess)
+    alice = recognizer.enroll("Alice", [audio(12000)])
+    bob = recognizer.enroll("Bob", [audio(-12000)])
+
+    detailed, snapshot = recognizer.recognize_detailed_with_snapshot(
+        audio(12000), threshold=1.1, min_margin=0.25
+    )
+
+    assert detailed.outcome == "unmatched"
+    assert snapshot["threshold"] == 1.1
+    assert snapshot["margin"] == 0.25
+    assert {item["speaker_id"] for item in snapshot["profile_revisions"]} == {
+        alice.id, bob.id
+    }
+    changed_threshold = recognizer.recognize_detailed_with_snapshot(
+        audio(12000), threshold=1.05, min_margin=0.25
+    )[1]
+    assert changed_threshold["revision_id"] != snapshot["revision_id"]
