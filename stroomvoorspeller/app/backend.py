@@ -21,11 +21,13 @@ try:
     from .storage import Store, price_archive_key, utc_iso
     from .weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
     from .market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
+    from .mqtt_export import MQTTExporter
 except ImportError:  # ``python app/backend.py`` in the container entrypoint
     from ha_client import HAClient, HAError, collect_price_data, parse_dt
     from storage import Store, price_archive_key, utc_iso
     from weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
     from market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
+    from mqtt_export import MQTTExporter
 
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
@@ -125,7 +127,8 @@ def _non_overlapping(items: list[dict[str, Any]], limit: int = 3) -> list[dict[s
 
 class AppService:
     def __init__(self, store: Store | None = None, ha: HAClient | None = None,
-                 open_meteo_fetcher=fetch_open_meteo, clock=lambda: datetime.now(UTC)):
+                 open_meteo_fetcher=fetch_open_meteo, clock=lambda: datetime.now(UTC),
+                 mqtt_exporter: MQTTExporter | None = None):
         self.store = store or Store()
         self.ha = ha or HAClient()
         self.open_meteo_fetcher = open_meteo_fetcher
@@ -138,6 +141,9 @@ class AppService:
         self._last_weather_error: str | None = None
         self._last_model_error: str | None = None
         self._maturity_cache: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
+        self._analysis_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
+        self._mqtt_exporter = mqtt_exporter or MQTTExporter(
+            enabled=bool(self.get_settings()["mqtt_enabled"]), clock=self.clock)
 
     @staticmethod
     def _archive_entity(entity: str, settings: Mapping[str, Any]) -> str:
@@ -159,10 +165,11 @@ class AppService:
         value.setdefault("weather_entities", {"solar": "", "wind": "", "temperature": ""})
         value.setdefault("latitude", None); value.setdefault("longitude", None)
         value.setdefault("calculation_interval_minutes", DEFAULT_INTERVAL_MINUTES)
+        value.setdefault("mqtt_enabled", False)
         return value
 
     def put_settings(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        allowed = {"tariff_entity", "tariff_unit", "price_field", "weather_source", "weather_entities", "latitude", "longitude", "calculation_interval_minutes"}
+        allowed = {"tariff_entity", "tariff_unit", "price_field", "weather_source", "weather_entities", "latitude", "longitude", "calculation_interval_minutes", "mqtt_enabled"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
@@ -170,6 +177,8 @@ class AppService:
         interval = merged.get("calculation_interval_minutes")
         if type(interval) is not int or interval not in VALID_INTERVAL_MINUTES:
             raise ValueError("Berekeninterval moet 5, 15, 30, 60 of 120 minuten zijn")
+        if type(merged.get("mqtt_enabled")) is not bool:
+            raise ValueError("Home Assistant-entiteiten moeten aan of uit staan")
         entity = merged.get("tariff_entity") or ""
         if entity and not re.fullmatch(r"sensor\.[a-z0-9_]+", entity):
             raise ValueError("Kies een sensor-entiteit uit Home Assistant")
@@ -201,10 +210,13 @@ class AppService:
                 raise ValueError("Coördinaten vallen buiten het geldige bereik")
         new = {"tariff_entity": entity, "tariff_unit": unit, "price_field": price_field,
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
-               "calculation_interval_minutes": interval}
+               "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
         if any(new[key] != current.get(key) for key in ("tariff_entity", "price_field", "tariff_unit")):
             new["history_cursor_utc"] = None
         saved = self.store.set_settings(new)
+        if current.get("mqtt_enabled") and not saved.get("mqtt_enabled"):
+            self._mqtt_exporter.stop(remove_entities=True)
+        self._mqtt_exporter.enabled = saved["mqtt_enabled"]
         if any(new[key] != current.get(key) for key in new if key != "history_cursor_utc"):
             self._wake.set()
         return saved
@@ -258,12 +270,16 @@ class AppService:
             "metrics": None, "daily": [], "reasons": ["Kies eerst een tariefentiteit"]}
         reasons = list(run.get("reasons", [])) if run else ["Nog geen modelrun"]
         reasons.extend(maturity["reasons"])
-        reasons.append("Kwartieronzekerheidsband is niet gekalibreerd")
+        calibration = self.analysis().get("calibration", {}) if entity else {}
+        reasons.append("Empirische kwartierband lokaal geëvalueerd" if calibration.get("ready")
+                       else "Kwartieronzekerheidsband is niet gekalibreerd")
         quality = {"label": "geëvalueerd" if maturity["ready"] else "voorlopig",
                    "reasons": sorted(set(reasons)),
                    "missing_inputs": missing_inputs, "coverage": archive.get("coverage_days", 0),
                    "coverage_ratio": archive.get("coverage_ratio", 0), "maturity": maturity}
         return {"ok": True, "configured": bool(entity), "stale": stale, "errors": errors,
+                "mqtt": {"enabled": settings["mqtt_enabled"],
+                         "connected": self._mqtt_exporter.transport is not None},
                 "last_price_update": price_last_success, "last_weather_update": ws.get("last_success"),
                 "last_model_update": run.get("issued_at") if run else None,
                 "model_version": run.get("model_version") if run else None,
@@ -612,6 +628,7 @@ class AppService:
         forecast_quality = {"label": "geëvalueerd" if maturity["ready"] else "voorlopig",
                             "reasons": sorted(set(quality_reasons)),
                             "uncertainty": "Kwartieronzekerheidsband is niet gekalibreerd",
+                            "band_calibrated": False,
                             "maturity": maturity}
         return {"current": current, "slots": slots,
                 "windows": {"known": known_windows, "mixed": mixed_windows},
@@ -632,8 +649,54 @@ class AppService:
         for offset in range(1, 8):
             slots.extend(self.dashboard(today + timedelta(days=offset), 1)["slots"])
         known, mixed = _window_candidates(slots, window_hours)
+        calibration = self.analysis().get("calibration", {})
+        if calibration.get("ready") and overview.get("updated_at"):
+            band_widths = {row["horizon"]: row.get("half_width")
+                           for row in calibration.get("bands", [])}
+            issued = parse_dt(overview["updated_at"])
+            for slot in slots:
+                if slot["status"] != "predicted" or slot["price"] is None:
+                    continue
+                hours = (parse_dt(slot["start"]) - issued).total_seconds() / 3600
+                horizon = "0-24h" if hours < 24 else "24-48h" if hours < 48 else "48-168h"
+                radius = band_widths.get(horizon)
+                if radius is not None and math.isfinite(float(radius)):
+                    slot["lower"] = slot["price"] - radius
+                    slot["upper"] = slot["price"] + radius
+            nominal = round(100 * calibration["nominal_coverage"])
+            observed = round(100 * calibration["observed_coverage"])
+            holdout_n = sum(row.get("holdout_points", 0) for row in calibration["bands"])
+            note = (f"Empirische {nominal}%-band op oudere runs gekalibreerd; "
+                    f"op {holdout_n} latere kwartieren viel {observed}% binnen de band. "
+                    "Historische dekking biedt geen garantie voor toekomstige prijzen.")
+            overview["quality"]["uncertainty"] = note
+            overview["quality"]["band_calibrated"] = True
+            overview["quality"]["reasons"] = [reason for reason in overview["quality"]["reasons"]
+                                               if "band is niet gekalibreerd" not in reason]
         return {**overview, "slots": slots, "windows": {"known": known, "mixed": mixed},
                 "start_date": today.isoformat(), "end_date": (today + timedelta(days=7)).isoformat()}
+
+    def analysis(self) -> dict[str, Any]:
+        """Compare saved point-in-time forecasts with finalized local tariffs."""
+        from .analysis import build_analysis
+
+        settings = self.get_settings()
+        entity = settings.get("tariff_entity") or ""
+        if not entity:
+            return {"status": "not_configured", "unit": settings.get("tariff_unit"),
+                    "summary": {"days": 0, "points": 0}, "horizons": [],
+                    "comparisons": [], "calibration": {"ready": False,
+                    "reason": "Kies eerst een tariefentiteit"}}
+        now = self.clock().astimezone(UTC)
+        key = (entity, settings.get("price_field", "tax_included"),
+               settings.get("tariff_unit"), int(now.timestamp() // 900))
+        if self._analysis_cache and self._analysis_cache[0] == key:
+            return self._analysis_cache[1]
+        result = build_analysis(self.store, entity, self._archive_entity(entity, settings),
+                                settings.get("price_field", "tax_included"),
+                                settings.get("tariff_unit"), now)
+        self._analysis_cache = key, result
+        return result
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
@@ -646,10 +709,22 @@ class AppService:
         self._stop.set()
         self._wake.set()
         if self._thread: self._thread.join(timeout=5)
+        self._mqtt_exporter.stop()
+
+    def _publish_mqtt_snapshot(self) -> None:
+        if not self._mqtt_exporter.enabled or not self.get_settings().get("tariff_entity"):
+            return
+        try:
+            snapshot = self.timeline()
+            self._mqtt_exporter.publish(snapshot, snapshot, self.status())
+        except Exception:
+            LOG.exception("Optionele MQTT-publicatie mislukt")
 
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
-            try: self.refresh()
+            try:
+                self.refresh()
+                self._publish_mqtt_snapshot()
             except Exception: LOG.exception("Onverwachte fout in updatecyclus")
             interval = self.get_settings()["calculation_interval_minutes"] * 60
             self._wake.wait(interval)
@@ -701,6 +776,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if path == "/api/timeline":
                     hours = int((query.get("window_hours") or ["1"])[0])
                     return self._send(200, service.timeline(hours))
+                if path == "/api/analysis": return self._send(200, service.analysis())
                 if path == "/api/refresh": return self._send(200, service.refresh())
                 if path in {"/", "/index.html"}:
                     index = root / "index.html"
@@ -711,6 +787,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                         typ = "text/plain; charset=utf-8"
                         if candidate.suffix == ".js": typ = "application/javascript; charset=utf-8"
                         elif candidate.suffix == ".css": typ = "text/css; charset=utf-8"
+                        elif candidate.suffix == ".png": typ = "image/png"
                         elif candidate.suffix == ".svg": typ = "image/svg+xml"
                         return self._send(200, candidate.read_bytes(), typ)
                 return self._send(404, {"error": "not found"})
@@ -739,6 +816,8 @@ def make_handler(service: AppService, static_dir: str | None = None):
             if path != "/api/calculate": return self._send(404, {"error": "not found"})
             try:
                 result = service.refresh(force_model=True)
+                if result.get("ok") and hasattr(service, "_publish_mqtt_snapshot"):
+                    service._publish_mqtt_snapshot()
                 return self._send(200 if result.get("ok") else 503, result)
             except Exception as exc:
                 LOG.exception("Handmatige berekening mislukt")

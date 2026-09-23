@@ -16,6 +16,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
 RETENTION_DAYS = 180
@@ -294,6 +295,49 @@ class Store:
                 by_issue.setdefault(row["id"], []).append(dict(row))
         return [{**snapshots[run_id], "points": by_issue.get(run_id, [])}
                 for run_id in sorted(snapshots, key=lambda key: snapshots[key]["issued_at"])]
+
+    def daily_stored_forecasts(self, entity_id: str, since_issued: datetime, ended_by: datetime,
+                               price_field: str, tariff_unit: str,
+                               timezone_name: str = "Europe/Amsterdam") -> list[dict[str, Any]]:
+        """Return one point-in-time forecast per local day without inflating all snapshots.
+
+        Run selection needs only issue timestamps and the three namespace
+        fields. The compressed model history is deliberately not decoded.
+        Selected runs' points are then fetched in one bounded query.
+        """
+        zone = ZoneInfo(timezone_name)
+        with self._connect() as db:
+            candidates = db.execute("""SELECT id,issued_at FROM forecast_runs
+                WHERE issued_at>=? AND issued_at<=?
+                  AND json_extract(inputs_json,'$.tariff_entity')=?
+                  AND COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?
+                  AND json_extract(inputs_json,'$.tariff_unit')=?
+                ORDER BY issued_at""",
+                (utc_iso(since_issued), utc_iso(ended_by), entity_id, price_field, tariff_unit)).fetchall()
+            by_day: dict[Any, list[Any]] = {}
+            for row in candidates:
+                issued = datetime.fromisoformat(row["issued_at"].replace("Z", "+00:00"))
+                by_day.setdefault(issued.astimezone(zone).date(), []).append(row)
+            selected = []
+            for day, rows in sorted(by_day.items()):
+                noon = datetime.combine(day, datetime.min.time(), zone) + timedelta(hours=12)
+                selected.append(min(rows, key=lambda row: (
+                    abs((datetime.fromisoformat(row["issued_at"].replace("Z", "+00:00"))
+                         - noon.astimezone(UTC)).total_seconds()), row["issued_at"])))
+            if not selected:
+                return []
+            ids = [row["id"] for row in selected]
+            placeholders = ",".join("?" for _ in ids)
+            point_rows = db.execute(f"""SELECT run_id,start_utc,end_utc,price,lower_price,upper_price
+                FROM forecast_points WHERE run_id IN ({placeholders}) ORDER BY start_utc""", ids).fetchall()
+        points_by_run: dict[str, list[dict[str, Any]]] = {}
+        for row in point_rows:
+            point = dict(row)
+            point["lower"] = point.pop("lower_price")
+            point["upper"] = point.pop("upper_price")
+            points_by_run.setdefault(row["run_id"], []).append(point)
+        return [{"id": row["id"], "issued_at": row["issued_at"],
+                 "points": points_by_run.get(row["id"], [])} for row in selected]
 
     def actual_quarters(self, entity_id: str, ended_by: datetime) -> dict[str, float]:
         """Final locally archived quarter prices whose complete interval ended by time."""

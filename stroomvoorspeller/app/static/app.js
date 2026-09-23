@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const state = { settings: null, entities: [], dashboard: null, timer: null, promptedConfig: false, chartScrollInitialized: false };
+  const state = { settings: null, entities: [], dashboard: null, analysis: null, analysisLoaded: false, activeView: 'dashboard', timer: null, promptedConfig: false, chartScrollInitialized: false };
   const DEFAULT_TARIFF = 'sensor.zonneplan_current_quarter_hourly_electricity_tariff';
   const TZ = 'Europe/Amsterdam';
   const statusNames = { known: 'Bekend', predicted: 'Voorspeld', missing: 'Ontbreekt' };
@@ -33,7 +33,7 @@
   function metricText(metrics) {
     if (!metrics || !metrics.n) return '';
     const unit = state.settings?.tariff_unit || '';
-    return `Gemeten op ${metrics.n} kwartieren: MAE ${fmtPrice(metrics.mae, unit)}, bias ${fmtPrice(metrics.bias, unit)}, kwartierbasislijn MAE ${fmtPrice(metrics.baseline_mae, unit)}. Banddekking: niet meetbaar (geen gekalibreerde kwartierband).`;
+    return `Gemeten op ${metrics.n} kwartieren: MAE ${fmtPrice(metrics.mae, unit)}, bias ${fmtPrice(metrics.bias, unit)}, kwartierbasislijn MAE ${fmtPrice(metrics.baseline_mae, unit)}.`;
   }
   function updateStatus(data) {
     const configured = !!data.configured;
@@ -169,7 +169,7 @@
   function renderDashboard(data) {
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
     setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || state.settings?.tariff_entity || 'Tariefbron niet ingesteld'); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
-    const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
+    const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('band-note', q.uncertainty || 'De getoonde marge is een ongekalibreerde modelindicatie, geen betrouwbaarheidsinterval of vaste prijs.'); $('forecast-legend').lastChild.textContent = q.band_calibrated ? ' Voorspeld met empirische band' : ' Voorspeld met indicatieve marge'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
     const noteTitle = document.querySelector('.provisional-note strong');
     if (noteTitle) noteTitle.textContent = q.maturity?.ready ? 'Lokaal geëvalueerde prognose' : 'Voorlopige prognose';
     const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderTable(slots, unit); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
@@ -177,6 +177,44 @@
   async function loadDashboard() {
     try { show('load-error', false); const hours = Number($('window-duration').value) || 1; const data = await api(`api/timeline?window_hours=${hours}`); renderDashboard(data); setConnection(true); }
     catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); }
+  }
+  function appendCell(row, value) { const cell = document.createElement('td'); cell.textContent = value == null ? '—' : String(value); row.append(cell); }
+  function renderAnalysis(data) {
+    state.analysis = data; state.analysisLoaded = true;
+    const unit = data.unit || state.settings?.tariff_unit || '';
+    const summary = $('analysis-summary'); summary.replaceChildren();
+    const addMetric = (label, value) => { const card = document.createElement('div'); card.className = 'card analysis-metric'; const caption = document.createElement('span'); caption.textContent = label; const strong = document.createElement('strong'); strong.textContent = value; card.append(caption, strong); summary.append(card); };
+    addMetric('Evaluatieperiode', `${data.summary?.days ?? 0} dagen`); addMetric('Vergelijkbare meetpunten', String(data.summary?.points ?? 0));
+    const pointCount = Number(data.summary?.points) || 0;
+    setText('analysis-state', pointCount ? `Evaluatie van de afgelopen ${data.summary?.days ?? 0} dagen; de vergelijkingstabel toont maximaal 40 recente meetparen.` : 'Opstartfase: er zijn nog geen historische prognoses met bijbehorende metingen om te vergelijken.');
+    const horizons = $('analysis-horizons'); horizons.replaceChildren();
+    (Array.isArray(data.horizons) ? data.horizons : []).forEach(item => { const row = document.createElement('tr'); appendCell(row, item.horizon); appendCell(row, item.n ?? 0); appendCell(row, fmtPrice(item.mae, unit)); appendCell(row, fmtPrice(item.bias, unit)); horizons.append(row); });
+    if (!horizons.children.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = 4; cell.className = 'table-empty'; cell.textContent = 'Nog onvoldoende evaluatiepunten per horizon.'; row.append(cell); horizons.append(row); }
+    const calibration = $('analysis-calibration'), c = data.calibration || {}; calibration.replaceChildren();
+    const calibrated = c.ready === true && c.nominal_coverage != null && c.observed_coverage != null && Number.isFinite(Number(c.nominal_coverage)) && Number.isFinite(Number(c.observed_coverage));
+    $('analysis-band-heading').hidden = !calibrated;
+    if (calibrated) {
+      const p = document.createElement('p'); p.className = 'calibration-state'; p.textContent = 'Gekalibreerd interval'; calibration.append(p);
+      const detail = document.createElement('p'); detail.className = 'subtle'; detail.textContent = `Nominaal ${(Number(c.nominal_coverage) * 100).toFixed(1)}% · gemeten ${(Number(c.observed_coverage) * 100).toFixed(1)}% · ${c.points ?? 0} punten over ${c.days ?? 0} dagen.`; calibration.append(detail);
+    } else { const p = document.createElement('p'); p.textContent = c.reason || 'Nog niet gekalibreerd. Er wordt geen intervaldekking geclaimd.'; calibration.append(p); }
+    const comparisons = $('analysis-comparisons'); comparisons.replaceChildren(); const entries = Array.isArray(data.comparisons) ? data.comparisons : [];
+    entries.slice(0, 40).forEach(item => { const row = document.createElement('tr'); appendCell(row, humanTime(item.start, true)); appendCell(row, humanTime(item.issued_at, true)); appendCell(row, fmtPrice(item.forecast, unit)); appendCell(row, fmtPrice(item.actual, unit)); appendCell(row, fmtPrice(item.error, unit)); if (calibrated) appendCell(row, item.lower == null || item.upper == null ? '—' : `${fmtPrice(item.lower, unit)} – ${fmtPrice(item.upper, unit)}`); comparisons.append(row); });
+    show('comparison-empty', entries.length === 0);
+    if (!entries.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = calibrated ? 6 : 5; cell.className = 'table-empty'; cell.textContent = 'Nog geen overeenkomstige prognoses en metingen beschikbaar.'; row.append(cell); comparisons.append(row); }
+    show('analysis-error', false);
+  }
+  async function loadAnalysis() {
+    try { show('analysis-error', false); renderAnalysis(await api('api/analysis')); }
+    catch (error) { state.analysisLoaded = false; const box = $('analysis-error'); box.replaceChildren(); const text = document.createElement('span'); text.textContent = `Analyse kon niet worden geladen: ${error.message}`; box.append(text); show('analysis-error', true); }
+  }
+  function activateView(view, focus = false) {
+    state.activeView = view; const analysis = view === 'analysis';
+    $('dashboard-panel').hidden = analysis; $('analysis-panel').hidden = !analysis;
+    $('dashboard-tab').classList.toggle('is-active', !analysis); $('analysis-tab').classList.toggle('is-active', analysis);
+    $('dashboard-tab').setAttribute('aria-selected', String(!analysis)); $('analysis-tab').setAttribute('aria-selected', String(analysis));
+    $('dashboard-tab').tabIndex = analysis ? -1 : 0; $('analysis-tab').tabIndex = analysis ? 0 : -1;
+    if (focus) $(analysis ? 'analysis-tab' : 'dashboard-tab').focus();
+    if (analysis && !state.analysisLoaded) void loadAnalysis();
   }
   function optionFor(entity) { const o = document.createElement('option'); o.value = entity.entity_id; o.textContent = `${entity.friendly_name || entity.entity_id} · ${entity.entity_id}`; return o; }
   async function loadEntities() {
@@ -208,6 +246,7 @@
     const mode = s.weather_source === 'ha' || s.weather_source === 'home_assistant' ? 'ha' : 'open_meteo'; const radio = document.querySelector(`input[name="weather_mode"][value="${mode}"]`); if (radio) radio.checked = true;
     $('solar-entity').value = s.weather_entities?.solar || ''; $('wind-entity').value = s.weather_entities?.wind || ''; $('temperature-entity').value = s.weather_entities?.temperature || ''; $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
     $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
+    $('mqtt-enabled').checked = s.mqtt_enabled === true;
     const suggested = s.location_suggestion || {};
     $('latitude').value = s.latitude ?? suggested.latitude ?? '';
     $('longitude').value = s.longitude ?? suggested.longitude ?? '';
@@ -224,7 +263,7 @@
   async function saveSettings(event) {
     event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value;
     if (!tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
-    const settings = { tariff_entity: tariff, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value) };
+    const settings = { tariff_entity: tariff, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
     if (weatherSource === 'ha' && Object.values(settings.weather_entities).some(v => !v)) { show('settings-error', true); $('settings-error').textContent = 'Kies zon, wind en temperatuur om HA-weer te gebruiken.'; return; }
     const button = $('settings-save'); button.disabled = true; button.textContent = 'Opslaan…';
     try { state.settings = await api('api/settings', { method: 'PUT', body: JSON.stringify(settings) }); $('settings-dialog').close(); toast('Instellingen opgeslagen. De app haalt de bronnen opnieuw op.'); await loadAll(); }
@@ -241,10 +280,12 @@
   async function loadAll() {
     try { state.settings = await api('api/settings'); } catch (_) { state.settings = null; }
     try { updateStatus(await api('api/status')); } catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); return; }
-    await loadDashboard();
+    await loadDashboard(); if (state.activeView === 'analysis') await loadAnalysis();
   }
   function init() {
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
+    $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);
+    for (const [button, view] of [[$('dashboard-tab'), 'dashboard'], [$('analysis-tab'), 'analysis']]) button.addEventListener('keydown', event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); activateView(view === 'dashboard' ? 'analysis' : 'dashboard', true); } });
     window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); });
     loadAll(); state.timer = setInterval(loadAll, 60000);
   }

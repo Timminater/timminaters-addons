@@ -119,3 +119,20 @@ gebruikt opgeslagen point-in-time weerssnapshots en latere kwartieruitkomsten.
 Zij rapporteert per horizon MAE, bias, de gepaarde vergelijking met een causale
 kwartierbasislijn, en beide goedkoopste-vensterkeuzes op dezelfde gerealiseerde
 kwartieren. De banddekking blijft leeg zolang de getoonde marge niet voor kwartieren is gekalibreerd.
+
+## Analyse in de App
+
+Het Analyse-tabblad gebruikt daadwerkelijk bewaarde modeluitkomsten. Eén run per
+lokale dag voorkomt dat frequente automatische runs dezelfde dag kunstmatig
+zwaar laten wegen. De eerder uitgegeven kwartierprognose wordt alleen vergeleken
+met een later werkelijk bekend geworden tarief uit dezelfde entiteit-, prijsveld-
+en eenheidsreeks. Ontbrekende prijzen blijven ontbreken. Fouten worden per
+voorspelhorizon als MAE en getekende bias getoond.
+
+Een empirische kwartierband kan pas worden toegepast na voldoende afzonderlijke
+dagen en gerealiseerde kwartieren. De bandbreedte wordt uit oudere absolute
+voorspelfouten afgeleid; dekking wordt op latere runs gemeten. Zonder die basis
+blijft de oorspronkelijke v4-marge zichtbaar als ongekalibreerde indicatie.
+Ook een lokaal gekalibreerde historische band is geen garantie dat toekomstige
+prijzen binnen die band zullen vallen, bijvoorbeeld wanneer het tarief of de
+marktomstandigheden veranderen.

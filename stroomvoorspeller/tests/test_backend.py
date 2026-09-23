@@ -232,6 +232,30 @@ def test_timeline_shows_all_days_and_interval_is_saved(tmp_path):
     assert (point["status"], point["lower"], point["upper"]) == ("predicted", .2, .4)
 
 
+def test_timeline_uses_empirical_band_only_after_calibration_gate(tmp_path, monkeypatch):
+    issued = dt("2026-01-01T12:00:00Z")
+    target = issued + timedelta(hours=3)
+    service = AppService(store=Store(tmp_path), ha=HAClient("http://127.0.0.1", ""),
+                         clock=lambda: issued)
+    slot = {"start": utc_iso(target), "end": utc_iso(target + timedelta(minutes=15)),
+            "price": .30, "unit": "EUR/kWh", "status": "predicted",
+            "source": "model", "lower": .10, "upper": .50}
+    monkeypatch.setattr(service, "dashboard", lambda *_args: {
+        "slots": [dict(slot)] if _args[0] == issued.astimezone(service.clock().tzinfo).date() else [],
+        "quality": {"reasons": ["Kwartieronzekerheidsband is niet gekalibreerd"],
+                    "uncertainty": "ongekalibreerd"},
+        "updated_at": utc_iso(issued)})
+    monkeypatch.setattr(service, "analysis", lambda: {"calibration": {
+        "ready": True, "nominal_coverage": .9, "observed_coverage": .87,
+        "bands": [{"horizon": "0-24h", "half_width": .04, "holdout_points": 110}]}})
+    result = service.timeline()
+    predicted = next(row for row in result["slots"] if row["status"] == "predicted")
+    assert predicted["lower"] == pytest.approx(.26)
+    assert predicted["upper"] == pytest.approx(.34)
+    assert "110 latere kwartieren" in result["quality"]["uncertainty"]
+    assert result["quality"]["band_calibrated"] is True
+
+
 def test_calculate_endpoint_forces_model_run():
     class FakeService:
         def refresh(self, *, force_model=False):
@@ -247,6 +271,69 @@ def test_calculate_endpoint_forces_model_run():
             assert json.load(response)["points"] == 42
     finally:
         server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_analysis_endpoint_returns_local_comparison():
+    class FakeService:
+        def analysis(self):
+            return {"status": "insufficient_data", "summary": {"days": 0, "points": 0}}
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(FakeService()))
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/api/analysis") as response:
+            assert response.status == 200
+            assert json.load(response)["summary"]["points"] == 0
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_ingress_serves_logo_png_with_image_content_type(tmp_path):
+    payload = b"\x89PNG\r\n\x1a\npreview"
+    (tmp_path / "icon.png").write_bytes(payload)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(object(), str(tmp_path)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.server_port}/icon.png") as response:
+            assert response.headers["Content-Type"] == "image/png"
+            assert response.read() == payload
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=2)
+
+
+def test_mqtt_export_is_disabled_by_default_and_setting_requires_bool(tmp_path):
+    service = AppService(store=Store(tmp_path), ha=HAClient("http://127.0.0.1", ""))
+    assert service.get_settings()["mqtt_enabled"] is False
+    with pytest.raises(ValueError, match="Home Assistant-entiteiten"):
+        service.put_settings({"mqtt_enabled": "true"})
+    assert service.put_settings({"mqtt_enabled": True})["mqtt_enabled"] is True
+
+
+def test_enabled_mqtt_receives_current_timeline_and_status(tmp_path, monkeypatch):
+    sent = []
+
+    class FakeExporter:
+        enabled = False
+        transport = None
+
+        def publish(self, dashboard, timeline, status):
+            sent.append((dashboard, timeline, status))
+            return True
+
+        def stop(self, remove_entities=False):
+            pass
+
+    exporter = FakeExporter()
+    service = AppService(store=Store(tmp_path), ha=HAClient("http://127.0.0.1", ""),
+                         mqtt_exporter=exporter)
+    service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
+                          "mqtt_enabled": True})
+    monkeypatch.setattr(service, "timeline", lambda: {"slots": [{"start": "2026-01-01T00:15:00Z"}]})
+    monkeypatch.setattr(service, "status", lambda: {"stale": False})
+    service._publish_mqtt_snapshot()
+    assert sent == [({"slots": [{"start": "2026-01-01T00:15:00Z"}]},
+                     {"slots": [{"start": "2026-01-01T00:15:00Z"}]},
+                     {"stale": False})]
 
 
 def test_ha_weather_requires_three_usable_seven_day_forecasts():
