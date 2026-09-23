@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.1
+
+- De navigatie en status in de kop passen nu op brede en smalle schermen zonder overlap; op telefoonbreedte blijft de navigatie horizontaal bereikbaar.
+- Instellingen, registratie en kalibratie hebben geen overlappende velden of horizontale pagina-overloop meer.
+- Paginastructuur en Nederlandse en Engelse termen voor registratie, kalibratie en opslag zijn verduidelijkt.
+
 ## 2.6.0
 
 - Opnamen uit Analyse zijn direct te kiezen bij het maken van een nieuw stemprofiel, met afspelen en fragmentselectie.

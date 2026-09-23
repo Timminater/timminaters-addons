@@ -240,6 +240,7 @@
     "Ik wil deze gearchiveerde stemopname definitief verwijderen": "I want to permanently delete this archived voice recording",
     "Definitief verwijderen": "Delete permanently",
     "verweesde WAV-bestanden": "orphaned WAV files",
+    "Totaal:": "Total:",
     "Bestandslocaties worden niet getoond.": "File locations are not displayed.",
     "De bestandslocaties worden niet getoond.": "File locations are not displayed.",
     "Verweesde audio opruimen": "Clean up orphaned audio",
@@ -452,7 +453,19 @@
     "Fout aan andere bekende spreker toegewezen": "Wrongly assigned to another known speaker",
     "Onbekende stem fout herkend": "Unknown speaker falsely accepted",
     "Bekende spreker gemist": "Known speaker missed",
-    "Gastprofielen kunnen niet aan een Home Assistant-persoon worden gekoppeld.": "Guest profiles cannot be linked to a Home Assistant person."
+    "Gastprofielen kunnen niet aan een Home Assistant-persoon worden gekoppeld.": "Guest profiles cannot be linked to a Home Assistant person.",
+    "Stemregistratie": "Voice enrolment",
+    "Geregistreerde stemmen": "Registered voices",
+    "Spreker": "Speaker",
+    "Alle sprekers": "All speakers",
+    "Gebruik actieve stemopnamen om de drempel en scoremarge voor jouw stemmen te bepalen.": "Use active voice recordings to set the threshold and score margin for your voices.",
+    "Zelfde spreker": "Same speaker",
+    "Andere spreker": "Different speaker",
+    "Zelfde versus andere spreker": "Same versus different speaker",
+    "Aanbevolen drempel": "Recommended threshold",
+    "Onterecht geaccepteerd": "False accepts",
+    "Onterecht afgewezen": "False rejects",
+    "Een verkeerde toewijzing telt vier keer zo zwaar als een gemiste herkenning.": "A wrong assignment counts four times more heavily than a missed recognition."
   },
   "patterns": [
     {
@@ -528,8 +541,8 @@
       "replace": "Delete profile and audio for “$1”?"
     },
     {
-      "match": "^Nog (\\d+) genuine en (\\d+) impostor-waarneming\\(en\\) nodig voordat je een advies kunt toepassen\\.$",
-      "replace": "$1 more genuine and $2 more impostor observations are required before you can apply a recommendation."
+      "match": "^Nog (\\d+) metingen van dezelfde spreker en (\\d+) metingen van andere sprekers nodig voordat je een advies kunt toepassen\\.$",
+      "replace": "$1 more same-speaker and $2 more different-speaker observations are required before you can apply a recommendation."
     },
     {
       "match": "^1 analyse-opname wordt definitief verwijderd\\. Permanente enrollment-WAV’s blijven behouden\\.$",
