@@ -1,0 +1,11 @@
+.pytest_cache/
+.pytest-tmp/
+.pytest-runtime/
+__pycache__/
+*.pyc
+*.sqlite3*
+data/
+tests/
+docs/
+README.md
+pytest.ini

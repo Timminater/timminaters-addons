@@ -1,0 +1,22 @@
+name: "Stroomvoorspeller"
+version: "0.1.0"
+slug: "stroomvoorspeller"
+description: "Lokale kwartierprijsprognose op basis van Home Assistant en het stroomvoorspeller v4-model"
+url: "https://github.com/Timminater/timminaters-addons/tree/main/stroomvoorspeller"
+image: "ghcr.io/timminater/addon-stroomvoorspeller"
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+backup: cold
+stage: experimental
+homeassistant_api: true
+ingress: true
+ingress_port: 8099
+panel_admin: true
+panel_title: "Stroomvoorspeller"
+panel_icon: "mdi:chart-line"
+watchdog: "http://[HOST]:[PORT:8099]/api/health"
+ports: {}
+schema: false

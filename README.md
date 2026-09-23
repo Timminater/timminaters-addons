@@ -21,6 +21,7 @@ Repository URL:
 | LLM Proxy | `llm_proxy` | Ollama-compatible proxy for OpenAI/Ollama backends with logging and web UI. | [llm_proxy/README.md](llm_proxy/README.md) |
 | ESPHome MCP | `esphome_mcp` | Secure Streamable HTTP MCP server for ESPHome Device Builder 2026.6+. | [esphome_mcp/README.md](esphome_mcp/README.md) |
 | Speaker Recognition | `speaker_recognition` | Enroll and identify speakers locally through an Ingress web interface. | [speaker_recognition/README.md](speaker_recognition/README.md) |
+| Stroomvoorspeller | `stroomvoorspeller` | Lokale prognose voor kwartiertarieven met een Ingress-dashboard. | [stroomvoorspeller/README.md](stroomvoorspeller/README.md) |
 
 ## Notes
 

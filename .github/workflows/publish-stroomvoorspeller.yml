@@ -1,0 +1,50 @@
+name: Publish Stroomvoorspeller
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - stroomvoorspeller/**
+      - .github/workflows/publish-stroomvoorspeller.yml
+      - .github/workflows/build-app.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Stroomvoorspeller
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install test runner
+        run: python -m pip install pytest==8.4.2
+
+      - name: Run app tests
+        working-directory: stroomvoorspeller
+        run: python -m pytest -q -p no:cacheprovider --basetemp .pytest-runtime tests
+
+      - name: Check JavaScript syntax
+        run: node --check stroomvoorspeller/app/static/app.js
+
+  publish:
+    name: Build and publish Stroomvoorspeller
+    needs: validate
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    uses: ./.github/workflows/build-app.yml
+    with:
+      app: stroomvoorspeller
+      publish: true
+    secrets: inherit
