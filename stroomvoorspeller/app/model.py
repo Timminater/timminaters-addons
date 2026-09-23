@@ -21,8 +21,8 @@ class ForecastPoint:
     start_utc: datetime
     end_utc: datetime
     price: float
-    lower: None = None
-    upper: None = None
+    lower: float | None = None
+    upper: float | None = None
     source: str = "quarter-v4"
     quality: str = "voorlopig"
     reason: str = "Kwartiermethode is nog niet gekalibreerd."
@@ -336,7 +336,15 @@ def forecast_quarters(
                 price = fc.predicted / price_scale
         else:
             price = fc.predicted / price_scale
-        points.append(ForecastPoint(cursor, cursor + STEP, float(price), source=source, reason=reason))
+        # The source model's absolute hourly margin is an uncalibrated visual
+        # guide here, not a confidence interval for quarter-hour tariffs.
+        margin = fc.band_half / price_scale
+        if source == "hour-v4-flat-quarter" and existing is not None:
+            lower, upper = existing.lower, existing.upper
+        else:
+            lower, upper = float(price - margin), float(price + margin)
+        points.append(ForecastPoint(cursor, cursor + STEP, float(price), lower, upper,
+                                    source=source, reason=reason))
         cursor += STEP
 
     quality_reasons = sorted(reasons | {"kwartierfout en banddekking zijn niet operationeel gekalibreerd"})

@@ -4,7 +4,7 @@ import json
 import threading
 from datetime import date, datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -201,6 +201,52 @@ def test_dashboard_separates_known_predicted_and_missing_at_first_forecast_bound
     board = service.dashboard(date(2026, 1, 1), 1)
     assert [s["status"] for s in board["slots"][:3]] == ["known", "predicted", "missing"]
     assert board["slots"][0]["source"] == "ha_forecast"
+
+
+def test_timeline_shows_all_days_and_interval_is_saved(tmp_path):
+    now = dt("2026-01-01T12:00:00Z")
+    store = Store(tmp_path)
+    service = AppService(store=store, ha=HAClient("http://127.0.0.1", ""), clock=lambda: now)
+    service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
+                          "calculation_interval_minutes": 30})
+    assert service.get_settings()["calculation_interval_minutes"] == 30
+    assert service.status()["calculation_interval_minutes"] == 30
+    assert service._wake.is_set()
+    with pytest.raises(ValueError, match="Berekeninterval"):
+        service.put_settings({"calculation_interval_minutes": 7})
+    archive_entity = service._archive_entity("sensor.tariff", service.get_settings())
+    day_start, _ = _amsterdam_day_utc_bounds(date(2026, 1, 1))
+    store.upsert_quarters([{"entity_id": archive_entity, "start_utc": day_start,
+        "end_utc": day_start + timedelta(minutes=15), "price": .2,
+        "unit": "EUR/kWh", "source": "ha_forecast", "observed_at": now, "published_at": now}])
+    forecast_start, _ = _amsterdam_day_utc_bounds(date(2026, 1, 4))
+    store.save_forecast("timeline", now, "model", "voorlopig", [],
+                        {"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
+                         "price_field": "tax_included"}, [{"start_utc": forecast_start,
+                         "end_utc": forecast_start + timedelta(minutes=15), "price": .3,
+                         "lower": .2, "upper": .4, "source": "model", "quality": "voorlopig"}])
+    timeline = service.timeline()
+    assert len(timeline["slots"]) == 8 * 96
+    assert timeline["slots"][0]["status"] == "known"
+    point = next(s for s in timeline["slots"] if s["start"] == utc_iso(forecast_start))
+    assert (point["status"], point["lower"], point["upper"]) == ("predicted", .2, .4)
+
+
+def test_calculate_endpoint_forces_model_run():
+    class FakeService:
+        def refresh(self, *, force_model=False):
+            assert force_model is True
+            return {"ok": True, "points": 42}
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(FakeService()))
+    thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+    try:
+        request = Request(f"http://127.0.0.1:{server.server_port}/api/calculate",
+                          data=b"", method="POST")
+        with urlopen(request) as response:
+            assert response.status == 200
+            assert json.load(response)["points"] == 42
+    finally:
+        server.shutdown(); server.server_close(); thread.join(timeout=2)
 
 
 def test_ha_weather_requires_three_usable_seven_day_forecasts():

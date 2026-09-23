@@ -28,7 +28,8 @@ except ImportError:  # ``python app/backend.py`` in the container entrypoint
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 LOG = logging.getLogger("stroomvoorspeller")
-POLL_SECONDS = 300
+DEFAULT_INTERVAL_MINUTES = 5
+VALID_INTERVAL_MINUTES = {5, 15, 30, 60, 120}
 WEATHER_MAX_AGE = timedelta(hours=1)
 VALID_UNITS = {"EUR/kWh", "EUR/MWh"}
 VALID_PRICE_FIELDS = {"tax_included", "tax_excluded"}
@@ -121,6 +122,7 @@ class AppService:
         self.clock = clock
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_price_error: str | None = None
         self._last_weather_error: str | None = None
@@ -146,14 +148,18 @@ class AppService:
         value.setdefault("weather_source", "open_meteo")
         value.setdefault("weather_entities", {"solar": "", "wind": "", "temperature": ""})
         value.setdefault("latitude", None); value.setdefault("longitude", None)
+        value.setdefault("calculation_interval_minutes", DEFAULT_INTERVAL_MINUTES)
         return value
 
     def put_settings(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        allowed = {"tariff_entity", "tariff_unit", "price_field", "weather_source", "weather_entities", "latitude", "longitude"}
+        allowed = {"tariff_entity", "tariff_unit", "price_field", "weather_source", "weather_entities", "latitude", "longitude", "calculation_interval_minutes"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        interval = merged.get("calculation_interval_minutes")
+        if type(interval) is not int or interval not in VALID_INTERVAL_MINUTES:
+            raise ValueError("Berekeninterval moet 5, 15, 30, 60 of 120 minuten zijn")
         entity = merged.get("tariff_entity") or ""
         if entity and not re.fullmatch(r"sensor\.[a-z0-9_]+", entity):
             raise ValueError("Kies een sensor-entiteit uit Home Assistant")
@@ -184,10 +190,14 @@ class AppService:
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
                 raise ValueError("Coördinaten vallen buiten het geldige bereik")
         new = {"tariff_entity": entity, "tariff_unit": unit, "price_field": price_field,
-               "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon}
+               "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
+               "calculation_interval_minutes": interval}
         if any(new[key] != current.get(key) for key in ("tariff_entity", "price_field", "tariff_unit")):
             new["history_cursor_utc"] = None
-        return self.store.set_settings(new)
+        saved = self.store.set_settings(new)
+        if any(new[key] != current.get(key) for key in new if key != "history_cursor_utc"):
+            self._wake.set()
+        return saved
 
     def entity_list(self) -> dict[str, Any]:
         try:
@@ -247,6 +257,7 @@ class AppService:
                 "last_price_update": price_last_success, "last_weather_update": ws.get("last_success"),
                 "last_model_update": run.get("issued_at") if run else None,
                 "model_version": run.get("model_version") if run else None,
+                "calculation_interval_minutes": settings["calculation_interval_minutes"],
                 "quality": quality, "archive": archive,
                 "sources": {"tariff_entity": entity or None, "weather_source": settings.get("weather_source")},
                 "location_suggestion": self._suggested_coordinates()}
@@ -380,7 +391,7 @@ class AppService:
         snapshot["entities"] = dict(settings.get("weather_entities") or {})
         return snapshot
 
-    def refresh(self, force_weather: bool = False) -> dict[str, Any]:
+    def refresh(self, force_weather: bool = False, force_model: bool = False) -> dict[str, Any]:
         with self._lock:
             now = self.clock().astimezone(UTC)
             settings = self.get_settings()
@@ -393,7 +404,7 @@ class AppService:
                                  price_detail.get("price_field", "tax_included") == settings.get("price_field", "tax_included") and
                                  price_detail.get("tariff_unit") == settings.get("tariff_unit"))
             last_attempt = price_status.get("last_attempt") if same_price_source else None
-            if last_attempt and now - parse_dt(last_attempt) < timedelta(minutes=1):
+            if not force_model and last_attempt and now - parse_dt(last_attempt) < timedelta(minutes=1):
                 return {"ok": True, "throttled": True, "message": "De prijsbron is zojuist bijgewerkt"}
             cursor_raw = settings.get("history_cursor_utc")
             cursor = parse_dt(cursor_raw) - timedelta(hours=1) if cursor_raw else now - timedelta(days=35)
@@ -467,7 +478,7 @@ class AppService:
                                              allow_nan=False, default=str).encode("utf-8")).hexdigest()
                 previous_run, _ = self.store.latest_forecast(entity, settings.get("price_field", "tax_included"),
                                                               settings.get("tariff_unit"))
-                if previous_run and previous_run.get("inputs", {}).get("signature") == signature:
+                if not force_model and previous_run and previous_run.get("inputs", {}).get("signature") == signature:
                     self.store.set_source_status("model", success=True, attempted_at=now,
                                                  detail={"model_version": previous_run["model_version"],
                                                          "unchanged_inputs": True})
@@ -562,21 +573,38 @@ class AppService:
                 "source": {"tariff_entity": entity, "price_field": settings.get("price_field"),
                            "weather_source": settings.get("weather_source")}}
 
+    def timeline(self, window_hours: int = 1) -> dict[str, Any]:
+        """One continuous local-day range, including the seventh forecast day."""
+        if window_hours not in VALID_WINDOWS:
+            raise ValueError("window_hours moet 1, 2, 3 of 5 zijn")
+        today = self.clock().astimezone(AMSTERDAM).date()
+        overview = self.dashboard(today, window_hours)
+        slots = list(overview["slots"])
+        for offset in range(1, 8):
+            slots.extend(self.dashboard(today + timedelta(days=offset), 1)["slots"])
+        known, mixed = _window_candidates(slots, window_hours)
+        return {**overview, "slots": slots, "windows": {"known": known, "mixed": mixed},
+                "start_date": today.isoformat(), "end_date": (today + timedelta(days=7)).isoformat()}
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._poll_loop, name="price-poller", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
         if self._thread: self._thread.join(timeout=5)
 
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
             try: self.refresh()
             except Exception: LOG.exception("Onverwachte fout in updatecyclus")
-            self._stop.wait(POLL_SECONDS)
+            interval = self.get_settings()["calculation_interval_minutes"] * 60
+            self._wake.wait(interval)
+            self._wake.clear()
 
 
 def make_handler(service: AppService, static_dir: str | None = None):
@@ -621,6 +649,9 @@ def make_handler(service: AppService, static_dir: str | None = None):
                     except ValueError: return self._send(400, {"error": "date moet YYYY-MM-DD zijn"})
                     hours = int((query.get("window_hours") or ["1"])[0])
                     return self._send(200, service.dashboard(day, hours))
+                if path == "/api/timeline":
+                    hours = int((query.get("window_hours") or ["1"])[0])
+                    return self._send(200, service.timeline(hours))
                 if path == "/api/refresh": return self._send(200, service.refresh())
                 if path in {"/", "/index.html"}:
                     index = root / "index.html"
@@ -655,7 +686,14 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 return self._send(503, {"error": str(exc)})
 
         def do_POST(self) -> None:
-            return self._send(405, {"error": "alleen PUT /api/settings is beschikbaar; HA wordt uitsluitend gelezen"})
+            path, _ = self._path()
+            if path != "/api/calculate": return self._send(404, {"error": "not found"})
+            try:
+                result = service.refresh(force_model=True)
+                return self._send(200 if result.get("ok") else 503, result)
+            except Exception as exc:
+                LOG.exception("Handmatige berekening mislukt")
+                return self._send(503, {"error": str(exc)})
 
         def do_DELETE(self) -> None:
             return self._send(405, {"error": "method not allowed"})

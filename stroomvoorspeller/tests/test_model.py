@@ -110,7 +110,7 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(run.quality, "voorlopig")
         self.assertEqual(run.points[0].start_utc, datetime(2026, 9, 23, 12, 30, tzinfo=UTC))
         self.assertEqual(run.points[0].source, "quarter-v4")
-        self.assertTrue(all(p.lower is None and p.upper is None for p in run.points))
+        self.assertTrue(all(p.lower < p.price < p.upper for p in run.points))
         self.assertIn("weerinput ontbreekt: ttf_ratio", run.reasons)
         without_future = model.forecast_quarters(history[:-1], issue, weather, max_points=4)
         self.assertEqual([p.price for p in run.points], [p.price for p in without_future.points])

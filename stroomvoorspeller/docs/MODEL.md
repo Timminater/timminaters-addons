@@ -19,10 +19,11 @@ De lokale rekenkern gebruikt vaste parameters:
   `scarcity` en `zomerschaarste`;
 - `POINT_WEIGHT=0.015`, `NONLINEAR_FLOOR=-3.0`, `SCARCITY_SCALE=1.5`,
   zomerregime aan en `SUMMER_SCARCITY_SCALE=1.0`;
-- de bron-v4 absolute uurband is berekend voor een EPEX-uurmodel. De adapter
-  retourneert daarom geen onder- of bovengrens.
+- de bron-v4 absolute uurmarge is berekend voor een EPEX-uurmodel. De adapter
+  schaalt die marge mee als visuele indicatie bij de kwartierprognose. Zij is
+  niet gekalibreerd voor dit tarief of voor kwartieren.
 
-De regressietests vergelijken de nieuwe kern met vooraf vastgelegde v4-uitkomsten voor normale, extreme en ontbrekende invoer. Een referentiegeval heeft basislijn 109,46, 11 factorpunten en uitkomst 127,52. De uurband wordt alleen voor rekenpariteit gecontroleerd; zij wordt niet als kwartierband getoond.
+De regressietests vergelijken de nieuwe kern met vooraf vastgelegde v4-uitkomsten voor normale, extreme en ontbrekende invoer. Een referentiegeval heeft basislijn 109,46, 11 factorpunten en uitkomst 127,52. De afgeleide marge is een ruwe modelschaal, geen gemeten dekking of statistisch betrouwbaarheidsinterval.
 
 ## Kwartieradapter
 
@@ -74,8 +75,9 @@ De aanpassingen aan de uurmethode zijn:
    analogie-/eventplausibiliteit worden niet toegepast. Hun uur-EPEX-data,
    drempels en foutgeschiedenis zijn niet aangetoond voor dit tarief en deze
    kwartierresolutie.
-5. **Onzekerheid:** er wordt geen kwartierband getoond of gekopieerd uit de
-   uurband. Runs blijven `voorlopig` totdat minimaal 35 dagen kwartierdekking
+5. **Onzekerheid:** de grafiek toont een indicatieve, meegeschaalde v4-uurmarge
+   bij elk voorspeld kwartier. Zij is niet gekalibreerd als kwartierband en
+   wordt niet als betrouwbaarheidsinterval gepresenteerd. Runs blijven `voorlopig` totdat minimaal 35 dagen kwartierdekking
    en zeven volwassen dagelijkse vergelijkingen beschikbaar zijn. Daarna toont
    de pagina `lokaal geëvalueerd` met de gemeten fout, zonder garantie voor
    toekomstige nauwkeurigheid of een gekalibreerde kwartierband.
@@ -94,4 +96,4 @@ implementatiebewijs, geen nauwkeurigheidsbewijs. De walk-forward backtest
 gebruikt opgeslagen point-in-time weerssnapshots en latere kwartieruitkomsten.
 Zij rapporteert per horizon MAE, bias, de gepaarde vergelijking met een causale
 kwartierbasislijn, en beide goedkoopste-vensterkeuzes op dezelfde gerealiseerde
-kwartieren. De banddekking blijft leeg zolang er geen kwartierband is.
+kwartieren. De banddekking blijft leeg zolang de getoonde marge niet voor kwartieren is gekalibreerd.

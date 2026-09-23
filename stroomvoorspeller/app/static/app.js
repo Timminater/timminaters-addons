@@ -1,7 +1,7 @@
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
-  const state = { settings: null, entities: [], dashboard: null, date: '', timer: null, promptedConfig: false };
+  const state = { settings: null, entities: [], dashboard: null, timer: null, promptedConfig: false, chartScrollInitialized: false };
   const DEFAULT_TARIFF = 'sensor.zonneplan_current_quarter_hourly_electricity_tariff';
   const TZ = 'Europe/Amsterdam';
   const statusNames = { known: 'Bekend', predicted: 'Voorspeld', missing: 'Ontbreekt' };
@@ -10,6 +10,7 @@
   const fmtTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   const fmtDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const fmtNumber = new Intl.NumberFormat('nl-NL', { minimumFractionDigits: 3, maximumFractionDigits: 5 });
+  const fmtFullDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   function setText(id, value, fallback = '—') { const e = $(id); if (e) e.textContent = value == null || value === '' ? fallback : String(value); }
   function show(id, visible) { const e = $(id); if (e) e.hidden = !visible; }
   function safeDate(value) { const d = new Date(value); return Number.isNaN(d.getTime()) ? null : d; }
@@ -23,12 +24,6 @@
     if (!response.ok) { let message = `Aanvraag mislukt (${response.status})`; if (type.includes('json')) { const body = await response.json().catch(() => ({})); message = body.error || body.message || message; } throw new Error(message); }
     if (!type.includes('json')) throw new Error('De lokale app gaf geen JSON-antwoord.');
     return response.json();
-  }
-  function setupDates() {
-    const select = $('day-select'); select.replaceChildren();
-    const now = new Date();
-    for (let i = 0; i < 7; i++) { const d = new Date(now.getTime() + i * 86400000); const key = dateKey(d); const option = document.createElement('option'); option.value = key; option.textContent = i === 0 ? `Vandaag · ${fmtDate.format(d)}` : fmtDate.format(d); select.append(option); }
-    state.date = select.value; select.addEventListener('change', () => { state.date = select.value; loadDashboard(); });
   }
   function reportErrors(errors = []) {
     const relevant = Array.isArray(errors) ? errors : [];
@@ -55,6 +50,7 @@
     setText('price-update', data.last_price_update ? `Bijgewerkt ${humanTime(data.last_price_update, true)}` : 'Nog geen update');
     setText('weather-update', data.last_weather_update ? `Bijgewerkt ${humanTime(data.last_weather_update, true)}` : 'Nog geen update');
     setText('model-update', data.last_model_update ? `Berekend ${humanTime(data.last_model_update, true)}` : 'Nog geen update');
+    setText('calculation-cadence', `Automatisch: elke ${data.calculation_interval_minutes || 5} min`);
     setText('price-source-state', data.stale ? 'Verouderd' : (data.last_price_update ? 'Actueel' : 'Wacht'));
     setText('weather-source-state', data.last_weather_update ? 'Beschikbaar' : 'Wacht');
     setText('model-source-state', data.last_model_update ? 'Gereed' : 'Wacht');
@@ -87,33 +83,63 @@
     return result;
   }
   function renderChart(slots) {
-    const svg = $('price-chart'); svg.replaceChildren();
+    const svg = $('price-chart'), axis = $('chart-axis'), scroll = svg.parentElement, tooltip = $('chart-tooltip');
+    const oldScroll = scroll.scrollLeft;
+    svg.replaceChildren(); axis.replaceChildren(); show('chart-tooltip', false);
     const data = fillGaps(slots);
     show('chart-empty', !data.length); svg.hidden = !data.length;
     if (!data.length) return;
-    const width = Math.max(700, svg.parentElement.clientWidth || 700), height = 255;
+    const step = 11, height = 265;
+    const pad = { l: 52, r: 18, t: 18, b: 43 }, width = Math.max(scroll.clientWidth, pad.l + data.length * step + pad.r), plotH = height - pad.t - pad.b;
+    svg.style.width = `${width}px`;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    const pad = { l: 52, r: 15, t: 15, b: 35 }, plotW = width - pad.l - pad.r, plotH = height - pad.t - pad.b;
-    const prices = data.filter(s => Number.isFinite(s.value)).map(s => s.value);
-    let min = prices.length ? Math.min(...prices) : 0, max = prices.length ? Math.max(...prices) : 1;
-    if (min === max) { min -= Math.max(.1, Math.abs(min) * .1); max += Math.max(.1, Math.abs(max) * .1); }
-    const margin = (max - min) * .12; min -= margin; max += margin;
+    const values = data.flatMap(s => [s.value, Number(s.lower), Number(s.upper)]).filter(Number.isFinite);
+    const low = Math.min(0, ...values), high = Math.max(0, ...values);
+    const span = Math.max(.05, high - low), min = low < 0 ? low - span * .07 : 0, max = high + span * .12;
     const el = (tag, attrs = {}, parent = svg) => { const n = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); parent.append(n); return n; };
     const y = v => pad.t + (max - v) / (max - min) * plotH;
-    for (let i = 0; i < 4; i++) { const value = min + (max - min) * i / 3, yy = y(value); el('line', { x1: pad.l, x2: width - pad.r, y1: yy, y2: yy, stroke: '#e8efed', 'stroke-width': 1 }); const label = el('text', { x: pad.l - 8, y: yy + 3, 'text-anchor': 'end', fill: '#849395', 'font-size': 9 }); label.textContent = fmtNumber.format(value); }
-    const count = data.length, step = plotW / count, barW = Math.max(1, step * .72); let firstPredX = null;
+    axis.setAttribute('viewBox', `0 0 ${pad.l} ${height}`);
+    for (let i = 0; i <= 4; i++) { const value = min + (max - min) * i / 4, yy = y(value); el('line', { x1: pad.l, x2: width - pad.r, y1: yy, y2: yy, stroke: Math.abs(value) < .0001 ? '#9ab1ac' : '#e8efed', 'stroke-width': 1 }); const label = el('text', { x: pad.l - 7, y: yy + 3, 'text-anchor': 'end', fill: '#647c7a', 'font-size': 9 }, axis); label.textContent = fmtNumber.format(value); }
+    if (min < 0) el('line', { x1: pad.l, x2: width - pad.r, y1: y(0), y2: y(0), stroke: '#8da9a2', 'stroke-width': 1.4 });
+    const count = data.length, barW = 7; let firstPredX = null, previousDay = '';
+    const showTooltip = (slot, x) => {
+      const unit = slot.unit || state.settings?.tariff_unit || 'EUR/kWh';
+      const lines = [fmtFullDateTime.format(slot.startDate), `${statusNames[slot.status]} · ${fmtPrice(slot.value, unit)}`];
+      if (slot.status === 'predicted' && Number.isFinite(Number(slot.lower)) && Number.isFinite(Number(slot.upper)) && slot.lower != null && slot.upper != null) lines.push(`Indicatieve marge: ${fmtPrice(slot.lower, unit)} tot ${fmtPrice(slot.upper, unit)}`);
+      lines.push(`Bron: ${slot.source || (slot.status === 'missing' ? 'geen' : 'tariefsensor')}`);
+      if (slot.reason) lines.push(slot.reason);
+      tooltip.textContent = lines.join('\n'); show('chart-tooltip', true);
+      tooltip.style.left = `${Math.max(4, Math.min(scroll.clientWidth - tooltip.offsetWidth - 4, x - scroll.scrollLeft + 12))}px`;
+      tooltip.style.top = '12px';
+    };
     data.forEach((s, i) => {
-      const x = pad.l + i * step + (step - barW) / 2;
+      const x = pad.l + i * step + (step - barW) / 2, center = x + barW / 2;
       const c = s.status === 'known' ? '#13866f' : s.status === 'predicted' ? '#df963f' : '#dce5e3';
-      if (s.status === 'predicted' && firstPredX === null) firstPredX = x + barW / 2;
-      if (Number.isFinite(s.value)) { const yy = y(s.value); el('rect', { x, y: yy, width: barW, height: Math.max(2, pad.t + plotH - yy), rx: Math.min(2, barW / 2), fill: c, opacity: s.status === 'predicted' ? .79 : .92 }); }
-      else el('rect', { x, y: pad.t + plotH - 3, width: barW, height: 3, rx: 1, fill: c });
+      const day = dateKey(s.startDate);
+      if (day !== previousDay) { if (i) el('line', { x1: pad.l + i * step, x2: pad.l + i * step, y1: pad.t, y2: pad.t + plotH, stroke: '#b7c9c5', 'stroke-dasharray': '3 4' }); const label = el('text', { x: center + 3, y: height - 7, fill: '#526b69', 'font-size': 10, 'font-weight': 700 }); label.textContent = fmtDate.format(s.startDate); previousDay = day; }
+      if (s.status === 'predicted' && firstPredX === null) firstPredX = center;
+      if (s.status === 'predicted' && s.lower != null && s.upper != null && Number.isFinite(Number(s.lower)) && Number.isFinite(Number(s.upper))) {
+        const top = y(Number(s.upper)), bottom = y(Number(s.lower));
+        el('rect', { x: x - 1, y: top, width: barW + 2, height: Math.max(1, bottom - top), fill: '#df963f', opacity: .16 });
+        el('line', { x1: center, x2: center, y1: top, y2: bottom, stroke: '#bf7624', 'stroke-width': 1 });
+        for (const yy of [top, bottom]) el('line', { x1: x - 1, x2: x + barW + 1, y1: yy, y2: yy, stroke: '#bf7624', 'stroke-width': 1 });
+      }
+      if (Number.isFinite(s.value)) { const yy = y(s.value), zero = y(0); el('rect', { x, y: Math.min(yy, zero), width: barW, height: Math.max(2, Math.abs(zero - yy)), rx: Math.min(2, barW / 2), fill: c, opacity: s.status === 'predicted' ? .7 : .92 }); }
+      else el('rect', { x, y: y(0) - 2, width: barW, height: 3, rx: 1, fill: c });
+      if (s.startDate.getMinutes() === 0 && s.startDate.getHours() % 3 === 0) { const tick = el('text', { x: center, y: height - 24, 'text-anchor': 'middle', fill: '#758689', 'font-size': 9 }); tick.textContent = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit' }).format(s.startDate); }
+      const hit = el('rect', { x: pad.l + i * step, y: pad.t, width: step, height: plotH, fill: 'transparent', tabindex: 0, role: 'button', 'aria-label': `${fmtFullDateTime.format(s.startDate)}, ${statusNames[s.status]}, ${fmtPrice(s.value, s.unit)}` });
+      hit.addEventListener('pointerenter', () => showTooltip(s, center));
+      hit.addEventListener('focus', () => showTooltip(s, center));
+      hit.addEventListener('pointerleave', () => show('chart-tooltip', false));
+      hit.addEventListener('blur', () => show('chart-tooltip', false));
+      hit.addEventListener('click', () => showTooltip(s, center));
+      hit.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showTooltip(s, center); } });
     });
-    if (firstPredX !== null) { el('line', { x1: firstPredX, x2: firstPredX, y1: pad.t, y2: pad.t + plotH, stroke: '#c67925', 'stroke-width': 1.3, 'stroke-dasharray': '4 4' }); const t = el('text', { x: Math.min(firstPredX + 5, width - 103), y: pad.t + 10, fill: '#a86922', 'font-size': 9 }); t.textContent = 'prognose start'; }
-    const marks = [0, Math.floor(count / 4), Math.floor(count / 2), Math.floor(count * 3 / 4), count - 1].filter((v, i, a) => a.indexOf(v) === i);
-    marks.forEach(i => { const x = pad.l + i * step + step / 2; const label = el('text', { x, y: height - 10, 'text-anchor': 'middle', fill: '#758689', 'font-size': 9 }); label.textContent = fmtTime.format(data[i].startDate).replace(/\s[A-Z]{1,4}$/, ''); });
-    const boundary = slots.find(s => s.status === 'predicted'); setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate)}.` : 'Er is voor deze dag nog geen prognosepunt.');
-    setText('chart-unit', slots.find(s => s.unit)?.unit || '');
+    if (firstPredX !== null) { el('line', { x1: firstPredX, x2: firstPredX, y1: pad.t, y2: pad.t + plotH, stroke: '#c67925', 'stroke-width': 1.3, 'stroke-dasharray': '4 4' }); const t = el('text', { x: firstPredX + 5, y: pad.t + 10, fill: '#a86922', 'font-size': 9 }); t.textContent = 'prognose start'; }
+    const boundary = slots.find(s => s.status === 'predicted'); setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
+    setText('chart-unit', slots.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
+    if (!state.chartScrollInitialized) { const current = data.findIndex(s => s.endDate > new Date()); scroll.scrollLeft = Math.max(0, (current < 0 ? 0 : current) * step - 110); state.chartScrollInitialized = true; }
+    else scroll.scrollLeft = oldScroll;
   }
   function renderWindows(windows, unit) {
     const root = $('window-groups'); root.replaceChildren();
@@ -122,16 +148,16 @@
     for (const [title, entries] of groups) {
       if (!entries.length) continue;
       const section = document.createElement('section'); section.className = 'window-group'; const h = document.createElement('div'); h.className = 'group-title'; h.textContent = title; section.append(h);
-      entries.slice(0, 3).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = humanTime(w.start), end = humanTime(w.end); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
+      entries.slice(0, 3).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = humanTime(w.start, true), end = humanTime(w.end, true); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
     }
-    if (!shown) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Geen compleet, aaneengesloten venster gevonden voor deze duur en datum.'; root.append(empty); }
+    if (!shown) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Geen compleet, aaneengesloten venster gevonden voor deze duur.'; root.append(empty); }
   }
   function renderTable(slots, unit) {
     const body = $('price-rows'); body.replaceChildren();
     const relevant = slots;
-    if (!relevant.length) { const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 4; td.className = 'table-empty'; td.textContent = 'Geen kwartieren voor deze datum.'; tr.append(td); body.append(tr); }
-    for (const s of relevant) { const tr = document.createElement('tr'), time = document.createElement('td'), price = document.createElement('td'), source = document.createElement('td'), status = document.createElement('td'); time.textContent = `${humanTime(s.startDate)} – ${humanTime(s.endDate)}`; price.textContent = fmtPrice(s.value, s.unit || unit); source.textContent = s.source || (s.status === 'known' ? 'Tariefentiteit' : s.status === 'predicted' ? 'Lokaal model' : 'Geen bron'); source.className = 'origin'; const pill = document.createElement('span'); pill.className = `status-pill ${statusClasses[s.status]}`; pill.textContent = statusNames[s.status]; status.append(pill); tr.append(time, price, source, status); body.append(tr); }
-    setText('row-count', `${relevant.length} kwartieren`); setText('table-title', `Kwartieren · ${new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, dateStyle: 'full' }).format(safeDate(`${state.date}T12:00:00Z`) || new Date())}`);
+    if (!relevant.length) { const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 4; td.className = 'table-empty'; td.textContent = 'Geen kwartieren beschikbaar.'; tr.append(td); body.append(tr); }
+    for (const s of relevant) { const tr = document.createElement('tr'), time = document.createElement('td'), price = document.createElement('td'), source = document.createElement('td'), status = document.createElement('td'); time.textContent = `${humanTime(s.startDate, true)} – ${humanTime(s.endDate, true)}`; price.textContent = fmtPrice(s.value, s.unit || unit); source.textContent = s.source || (s.status === 'known' ? 'Tariefentiteit' : s.status === 'predicted' ? 'Lokaal model' : 'Geen bron'); source.className = 'origin'; const pill = document.createElement('span'); pill.className = `status-pill ${statusClasses[s.status]}`; pill.textContent = statusNames[s.status]; status.append(pill); tr.append(time, price, source, status); body.append(tr); }
+    setText('row-count', `${relevant.length} kwartieren`); setText('table-title', 'Kwartieren · volledige tijdlijn');
   }
   function renderDashboard(data) {
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
@@ -142,7 +168,7 @@
     const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderTable(slots, unit); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
   }
   async function loadDashboard() {
-    try { show('load-error', false); const hours = Number($('window-duration').value) || 1; const data = await api(`api/dashboard?date=${encodeURIComponent(state.date)}&window_hours=${hours}`); renderDashboard(data); setConnection(true); }
+    try { show('load-error', false); const hours = Number($('window-duration').value) || 1; const data = await api(`api/timeline?window_hours=${hours}`); renderDashboard(data); setConnection(true); }
     catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); }
   }
   function optionFor(entity) { const o = document.createElement('option'); o.value = entity.entity_id; o.textContent = `${entity.friendly_name || entity.entity_id} · ${entity.entity_id}`; return o; }
@@ -174,6 +200,7 @@
     if (!tariff.value && state.entities.some(e => e.entity_id === DEFAULT_TARIFF)) tariff.value = DEFAULT_TARIFF;
     const mode = s.weather_source === 'ha' || s.weather_source === 'home_assistant' ? 'ha' : 'open_meteo'; const radio = document.querySelector(`input[name="weather_mode"][value="${mode}"]`); if (radio) radio.checked = true;
     $('solar-entity').value = s.weather_entities?.solar || ''; $('wind-entity').value = s.weather_entities?.wind || ''; $('temperature-entity').value = s.weather_entities?.temperature || ''; $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
+    $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
     const suggested = s.location_suggestion || {};
     $('latitude').value = s.latitude ?? suggested.latitude ?? '';
     $('longitude').value = s.longitude ?? suggested.longitude ?? '';
@@ -190,7 +217,7 @@
   async function saveSettings(event) {
     event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value;
     if (!tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
-    const settings = { tariff_entity: tariff, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value) };
+    const settings = { tariff_entity: tariff, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value) };
     if (weatherSource === 'ha' && Object.values(settings.weather_entities).some(v => !v)) { show('settings-error', true); $('settings-error').textContent = 'Kies zon, wind en temperatuur om HA-weer te gebruiken.'; return; }
     const button = $('settings-save'); button.disabled = true; button.textContent = 'Opslaan…';
     try { state.settings = await api('api/settings', { method: 'PUT', body: JSON.stringify(settings) }); $('settings-dialog').close(); toast('Instellingen opgeslagen. De app haalt de bronnen opnieuw op.'); await loadAll(); }
@@ -198,13 +225,19 @@
     finally { button.disabled = false; button.textContent = 'Opslaan'; }
   }
   function toast(message) { const t = $('toast'); t.textContent = message; show('toast', true); setTimeout(() => show('toast', false), 3600); }
+  async function calculateNow() {
+    const button = $('calculate-now'); button.disabled = true; button.textContent = 'Bezig…';
+    try { const result = await api('api/calculate', { method: 'POST' }); await loadAll(); toast(`Berekening gereed · ${result.points ?? 0} prognosekwartieren.`); }
+    catch (error) { show('notice', true); $('notice').textContent = `Berekenen mislukt: ${error.message}`; }
+    finally { button.disabled = false; button.textContent = '↻ Bereken nu'; }
+  }
   async function loadAll() {
     try { state.settings = await api('api/settings'); } catch (_) { state.settings = null; }
     try { updateStatus(await api('api/status')); } catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); return; }
     await loadDashboard();
   }
   function init() {
-    setupDates(); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
+    $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
     window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); });
     loadAll(); state.timer = setInterval(loadAll, 60000);
   }

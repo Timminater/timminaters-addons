@@ -2,3 +2,14 @@
 @media(max-width:980px){.summary-grid{grid-template-columns:1fr 1fr}.update-card{grid-column:1/-1;min-height:0!important}.update-card .source-row{display:inline-grid;width:32%;vertical-align:top;margin-right:.7%}.lower-grid{grid-template-columns:1fr}.page-shell{padding-top:29px}}
 @media(max-width:620px){.topbar{height:64px;padding:0 16px}.brand-mark{width:33px;height:33px}.brand strong{font-size:13px}.brand small{font-size:9px}.connection{font-size:0}.connection i{margin:0}.top-actions{gap:10px}.button{padding:9px 10px}.page-shell{padding:25px 14px 20px}.intro-row{align-items:flex-start;flex-direction:column;margin-bottom:18px}.intro-row h1{font-size:28px}.day-control{display:flex;align-items:center;gap:10px}.day-control select{min-width:0}.summary-grid{grid-template-columns:1fr;gap:11px}.summary-grid>.card{min-height:0;padding:18px}.current-value{margin:14px 0 7px}.current-value span{font-size:38px}.update-card{grid-column:auto}.update-card .source-row{display:grid;width:auto;margin:0}.chart-card,.lower-grid .card,.table-card{padding:18px 16px}.chart-heading{flex-direction:column}.legend{gap:12px;padding:0}.chart-wrap{height:225px;margin-top:14px}.chart-caption{font-size:9px;gap:12px}.chart-caption span:first-child{max-width:70%}.section-heading h2{font-size:16px}.page-footer{flex-direction:column}.table-card{padding-bottom:0}.table-scroll{max-height:390px}th,td{padding:9px 8px}.error-card{align-items:flex-start}.error-card .button{margin-left:auto}.dialog-actions{position:sticky;bottom:0;background:white;padding-top:10px}}
 [hidden] { display: none !important; }
+/* Continuous quarter timeline */
+.chart-area{position:relative;margin-top:18px}
+.chart-wrap{height:295px;margin-top:0;overflow-x:auto;overflow-y:hidden;scrollbar-color:#91ada7 #e9f1ef;scrollbar-width:thin;overscroll-behavior-x:contain}
+#price-chart{display:block;width:auto;min-width:100%;height:265px;overflow:hidden}
+.chart-tooltip{position:absolute;z-index:2;min-width:205px;max-width:min(290px,calc(100% - 16px));padding:12px 14px;border-radius:10px;background:#173b3b;color:#fff;box-shadow:0 12px 30px #173b3b40;pointer-events:none;font-size:11px;line-height:1.55;white-space:pre-line}
+.chart-tooltip strong{font-size:12px}
+.chart-caption{margin-top:10px}
+#calculation-interval{width:100%}
+@media(max-width:620px){.top-actions{gap:5px}.top-actions .button{font-size:10px;padding:8px}.brand small{display:none}.chart-wrap{height:255px}#price-chart{height:225px}.chart-area{margin-top:14px}}
+#chart-axis{position:absolute;top:0;left:0;width:52px;height:265px;z-index:1;pointer-events:none;background:#fff;border-right:1px solid #e8efed}
+@media(max-width:620px){#chart-axis{height:225px}}
