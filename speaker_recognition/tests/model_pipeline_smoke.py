@@ -62,8 +62,8 @@ def main() -> None:
     if first.denoised_pcm is None or repeated.denoised_pcm is None:
         raise SystemExit(
             "Model pipeline failed: "
-            f"first={first.stages}/{first.fallback_reason}; "
-            f"repeated={repeated.stages}/{repeated.fallback_reason}"
+            f"first={first.stages}/{first.fallback_reason}/{first.quality}; "
+            f"repeated={repeated.stages}/{repeated.fallback_reason}/{repeated.quality}"
         )
     expected_bytes = sample_count * 2
     if (
