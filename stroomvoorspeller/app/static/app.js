@@ -177,9 +177,14 @@
     const unit = data.unit || state.settings?.tariff_unit || '';
     const summary = $('analysis-summary'); summary.replaceChildren();
     const addMetric = (label, value) => { const card = document.createElement('div'); card.className = 'card analysis-metric'; const caption = document.createElement('span'); caption.textContent = label; const strong = document.createElement('strong'); strong.textContent = value; card.append(caption, strong); summary.append(card); };
-    addMetric('Evaluatieperiode', `${data.summary?.days ?? 0} dagen`); addMetric('Vergelijkbare meetpunten', String(data.summary?.points ?? 0));
+    addMetric('Evaluatieperiode', `${data.summary?.days ?? 0} dagen`); addMetric('Vergelijkbare kwartieren', String(data.summary?.points ?? 0));
     const pointCount = Number(data.summary?.points) || 0;
-    setText('analysis-state', pointCount ? `Evaluatie van de afgelopen ${data.summary?.days ?? 0} dagen; de vergelijkingstabel toont maximaal 40 recente meetparen.` : 'Opstartfase: er zijn nog geen historische prognoses met bijbehorende metingen om te vergelijken.');
+    const waiting = Number(data.summary?.pending_points) || 0;
+    const firstWaiting = data.summary?.first_pending_start ? humanTime(data.summary.first_pending_start, true) : null;
+    const emptyReason = data.summary?.runs
+      ? `${data.summary.runs} dagelijkse prognose${data.summary.runs === 1 ? '' : 's'} bewaard; ${waiting} voorspelde kwartieren hebben nog geen later bekend tarief.${firstWaiting ? ` Eerste openstaande kwartier: ${firstWaiting}.` : ''}`
+      : 'Nog geen bewaarde prognoses voor deze tariefbron en instelling; de analyse begint na de eerste modelrun.';
+    setText('analysis-state', pointCount ? `Evaluatie van de afgelopen ${data.summary?.days ?? 0} dagen; de tabel toont maximaal 40 recente kwartierparen.` : emptyReason);
     const horizons = $('analysis-horizons'); horizons.replaceChildren();
     (Array.isArray(data.horizons) ? data.horizons : []).forEach(item => { const row = document.createElement('tr'); appendCell(row, item.horizon); appendCell(row, item.n ?? 0); appendCell(row, fmtPrice(item.mae, unit)); appendCell(row, fmtPrice(item.bias, unit)); horizons.append(row); });
     if (!horizons.children.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = 4; cell.className = 'table-empty'; cell.textContent = 'Nog onvoldoende evaluatiepunten per horizon.'; row.append(cell); horizons.append(row); }
@@ -193,7 +198,7 @@
     const comparisons = $('analysis-comparisons'); comparisons.replaceChildren(); const entries = Array.isArray(data.comparisons) ? data.comparisons : [];
     entries.slice(0, 40).forEach(item => { const row = document.createElement('tr'); appendCell(row, humanTime(item.start, true)); appendCell(row, humanTime(item.issued_at, true)); appendCell(row, fmtPrice(item.forecast, unit)); appendCell(row, fmtPrice(item.actual, unit)); appendCell(row, fmtPrice(item.error, unit)); if (calibrated) appendCell(row, item.lower == null || item.upper == null ? '—' : `${fmtPrice(item.lower, unit)} – ${fmtPrice(item.upper, unit)}`); comparisons.append(row); });
     show('comparison-empty', entries.length === 0);
-    if (!entries.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = calibrated ? 6 : 5; cell.className = 'table-empty'; cell.textContent = 'Nog geen overeenkomstige prognoses en metingen beschikbaar.'; row.append(cell); comparisons.append(row); }
+    if (!entries.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = calibrated ? 6 : 5; cell.className = 'table-empty'; cell.textContent = 'Nog geen prognosekwartieren met later bekend tarief beschikbaar.'; row.append(cell); comparisons.append(row); }
     show('analysis-error', false);
   }
   async function loadAnalysis() {

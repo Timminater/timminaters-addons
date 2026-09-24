@@ -1,8 +1,8 @@
 """Causale analyse van opgeslagen stroomprijsprognoses.
 
 Elke lokale kalenderdag levert precies één run. Intervalkalibratie gebruikt
-uitsluitend fouten van eerder uitgegeven runs waarvan de werkelijke kwartieren
-op het uitgiftetijdstip al waren afgelopen.
+uitsluitend fouten van eerder uitgegeven runs waarvan de tarieven op het
+uitgiftetijdstip al waren gepubliceerd.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _rank_quantile(values: list[float], coverage: float) -> float:
 def _truth_as_of(store: Any, archive_entity: str, issued: datetime,
                  points: list[Mapping[str, Any]], current_truth: Mapping[datetime, float | None]
                  ) -> dict[datetime, float | None]:
-    """Read only archived revisions already observed by a historical issue."""
+    """Read only tariff revisions already published by a historical issue."""
     valid_points = [p for p in points if p.get("start_utc") and p.get("end_utc")]
     if not valid_points:
         return {}
@@ -84,12 +84,11 @@ def _truth_as_of(store: Any, archive_entity: str, issued: datetime,
         for row in rows:
             start = _utc(row["start_utc"])
             price = _finite_price(row.get("price"))
-            if (_utc(row["end_utc"]) <= issued and row.get("quality", "valid") == "valid"
-                    and price is not None):
+            if row.get("quality", "valid") == "valid" and price is not None:
                 result[start] = price
         return result
-    # Small test doubles may implement only actual_quarters, whose returned
-    # rows are already final; still enforce maturity at this past issue.
+    # Small test doubles may implement only actual_quarters. Their publication
+    # history is unavailable, so use the conservative ended-quarter fallback.
     return {start: current_truth.get(start) for start in starts
             if any(_utc(p["start_utc"]) == start and _utc(p["end_utc"]) <= issued
                    for p in valid_points)}
@@ -116,10 +115,22 @@ def build_analysis(store: Any, entity: str, archive_entity: str, price_field: st
         runs = store.stored_forecasts(entity, since, price_field, unit)
         runs = [r for r in runs if _utc(r["issued_at"]) <= cutoff]
         daily = _nearest_noon(runs)
-    truth = store.actual_quarters(archive_entity, cutoff)
+    published_reader = getattr(store, "published_quarters", None)
+    truth = (published_reader(archive_entity, cutoff) if callable(published_reader)
+             else store.actual_quarters(archive_entity, cutoff))
     truth_by_start = {_utc(start): _finite_price(price) for start, price in truth.items()}
+    pending_starts = []
+    for run in daily:
+        issued = _utc(run["issued_at"])
+        for point in run.get("points", []):
+            start = _utc(point["start_utc"])
+            if (_horizon((start - issued).total_seconds() / 3600) is not None
+                    and _finite_price(point.get("price")) is not None
+                    and truth_by_start.get(start) is None):
+                pending_starts.append(start)
 
-    # Scores at the current cutoff support the recent evaluation series and
+    # Published day-ahead tariffs count once known, even before their quarter
+    # elapses. Scores at the current cutoff support the recent evaluation and
     # the independently fitted live bands. Separate as-of scores below are
     # used to estimate historical holdout coverage without lookahead.
     scored_by_day: list[tuple[Any, datetime, list[dict[str, Any]]]] = []
@@ -165,8 +176,7 @@ def build_analysis(store: Any, entity: str, archive_entity: str, price_field: st
                     actual = actual_as_of_issue.get(start)
                     forecast = _finite_price(point.get("price"))
                     if (_horizon((start - old_issue).total_seconds() / 3600) == label
-                            and forecast is not None and actual is not None
-                            and _utc(point["end_utc"]) <= issued):
+                            and forecast is not None and actual is not None):
                         calibration.append({"issued": old_issue, "error": forecast - actual})
             distinct_days = {r["issued"].astimezone(LOCAL_TZ).date() for r in calibration}
             enough = (len(distinct_days) >= MIN_CALIBRATION_DAYS
@@ -237,7 +247,10 @@ def build_analysis(store: Any, entity: str, archive_entity: str, price_field: st
         "status": "ready" if comparison_rows else "insufficient_data",
         "unit": unit,
         "summary": {"days": distinct_eval_days, "points": total_comparisons,
-                    "returned_points": len(returned_comparisons)},
+                    "returned_points": len(returned_comparisons),
+                    "runs": len(daily), "pending_points": len(pending_starts),
+                    "first_pending_start": (min(pending_starts).isoformat().replace("+00:00", "Z")
+                                            if pending_starts else None)},
         "horizons": horizons,
         "comparisons": returned_comparisons,
         "calibration": {

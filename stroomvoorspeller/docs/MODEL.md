@@ -125,12 +125,13 @@ kwartieren. De banddekking blijft leeg zolang de getoonde marge niet voor kwarti
 Het Analyse-tabblad gebruikt daadwerkelijk bewaarde modeluitkomsten. Eén run per
 lokale dag voorkomt dat frequente automatische runs dezelfde dag kunstmatig
 zwaar laten wegen. De eerder uitgegeven kwartierprognose wordt alleen vergeleken
-met een later werkelijk bekend geworden tarief uit dezelfde entiteit-, prijsveld-
-en eenheidsreeks. Ontbrekende prijzen blijven ontbreken. Fouten worden per
+met een later gepubliceerd tarief uit dezelfde entiteit-, prijsveld- en
+eenheidsreeks. Een dag vooruit bekend tarief telt direct mee; het kwartier hoeft
+nog niet afgelopen te zijn. Ontbrekende prijzen blijven ontbreken. Fouten worden per
 voorspelhorizon als MAE en getekende bias getoond.
 
 Een empirische kwartierband kan pas worden toegepast na voldoende afzonderlijke
-dagen en gerealiseerde kwartieren. De bandbreedte wordt uit oudere absolute
+dagen en later gepubliceerde kwartiertarieven. De bandbreedte wordt uit oudere absolute
 voorspelfouten afgeleid; dekking wordt op latere runs gemeten. Zonder die basis
 blijft de oorspronkelijke v4-marge zichtbaar als ongekalibreerde indicatie.
 Ook een lokaal gekalibreerde historische band is geen garantie dat toekomstige

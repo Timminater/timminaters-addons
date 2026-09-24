@@ -347,6 +347,20 @@ class Store:
                               "WHERE entity_id=? AND end_utc<=? AND quality='valid' ORDER BY start_utc", (entity_id,end)).fetchall()
         return {row["start_utc"]: float(row["price"]) for row in rows}
 
+    def published_quarters(self, entity_id: str, known_by: datetime) -> dict[str, float]:
+        """Published tariffs known by this time, including future price intervals.
+
+        Day-ahead tariffs can be compared with an earlier forecast as soon as
+        Home Assistant publishes them; consumption of the quarter is irrelevant.
+        """
+        cutoff = utc_iso(known_by)
+        with self._connect() as db:
+            rows = db.execute("SELECT start_utc,price FROM quarter_prices "
+                              "WHERE entity_id=? AND quality='valid' AND observed_at<=? "
+                              "AND (published_at IS NULL OR published_at<=?) ORDER BY start_utc",
+                              (entity_id, cutoff, cutoff)).fetchall()
+        return {row["start_utc"]: float(row["price"]) for row in rows}
+
     def set_source_status(self, source: str, *, success: bool, attempted_at: datetime,
                           error: str | None = None, detail: Mapping[str, Any] | None = None) -> None:
         now = utc_iso(attempted_at)

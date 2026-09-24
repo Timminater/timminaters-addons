@@ -93,7 +93,52 @@ def test_missing_truth_is_not_filled_or_counted():
     result = call(store)
     assert result["comparisons"] == []
     assert result["summary"]["points"] == 0
+    assert result["summary"]["runs"] == 1
+    assert result["summary"]["pending_points"] == len(run["points"])
     assert all(item["n"] == 0 for item in result["horizons"])
+
+
+def test_later_published_day_ahead_tariff_is_scored_before_quarter_ends(tmp_path):
+    store = Store(tmp_path)
+    archive = "sensor.tariff|price_field=tax_excluded|unit=EUR/MWh"
+    issued = NOW - timedelta(days=1)
+    start = NOW + timedelta(hours=12)
+    end = start + timedelta(minutes=15)
+    published = NOW - timedelta(hours=1)
+    store.save_forecast("day-ahead", issued, "test", "provisional", [],
+                        {"tariff_entity": "sensor.tariff", "price_field": "tax_excluded",
+                         "tariff_unit": "EUR/MWh"},
+                        [{"start_utc": start, "end_utc": end, "price": 12.0}])
+    store.upsert_quarters([{"entity_id": archive, "start_utc": start,
+                           "end_utc": end, "price": 10.0, "unit": "EUR/MWh",
+                           "source": "ha_forecast", "observed_at": published,
+                           "published_at": published, "quality": "valid"}])
+    assert store.actual_quarters(archive, NOW) == {}
+    assert store.published_quarters(archive, NOW) == {iso(start): 10.0}
+    result = call(store)
+    assert result["summary"]["points"] == 1
+    assert result["comparisons"][0]["actual"] == 10.0
+    assert result["comparisons"][0]["error"] == 2.0
+
+
+def test_unpublished_future_tariff_is_not_scored(tmp_path):
+    store = Store(tmp_path)
+    archive = "sensor.tariff|price_field=tax_excluded|unit=EUR/MWh"
+    issued = NOW - timedelta(days=1)
+    start = NOW + timedelta(hours=12)
+    later = NOW + timedelta(minutes=1)
+    store.save_forecast("day-ahead", issued, "test", "provisional", [],
+                        {"tariff_entity": "sensor.tariff", "price_field": "tax_excluded",
+                         "tariff_unit": "EUR/MWh"},
+                        [{"start_utc": start, "end_utc": start + timedelta(minutes=15),
+                          "price": 12.0}])
+    store.upsert_quarters([{"entity_id": archive, "start_utc": start,
+                           "end_utc": start + timedelta(minutes=15), "price": 10.0,
+                           "unit": "EUR/MWh", "source": "ha_forecast",
+                           "observed_at": later, "published_at": later,
+                           "quality": "valid"}])
+    assert store.published_quarters(archive, NOW) == {}
+    assert call(store)["summary"]["points"] == 0
 
 
 def test_calibrated_half_width_and_holdout_coverage_use_earlier_days_only():
