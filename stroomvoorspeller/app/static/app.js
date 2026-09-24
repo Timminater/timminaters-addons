@@ -5,7 +5,6 @@
   const DEFAULT_TARIFF = 'sensor.zonneplan_current_quarter_hourly_electricity_tariff';
   const TZ = 'Europe/Amsterdam';
   const statusNames = { known: 'Bekend', predicted: 'Voorspeld', missing: 'Ontbreekt' };
-  const statusClasses = { known: 'status-known', predicted: 'status-predicted', missing: 'status-missing' };
   const fmtDate = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short' });
   const fmtTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   const fmtDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -89,8 +88,9 @@
     const data = fillGaps(slots);
     show('chart-empty', !data.length); svg.hidden = !data.length;
     if (!data.length) return;
-    const step = 11, height = 265;
-    const pad = { l: 52, r: 18, t: 18, b: 43 }, width = Math.max(scroll.clientWidth, pad.l + data.length * step + pad.r), plotH = height - pad.t - pad.b;
+    const compact = window.matchMedia('(max-width: 620px)').matches;
+    const step = 11, height = compact ? 190 : 265;
+    const pad = { l: 52, r: 18, t: compact ? 12 : 18, b: compact ? 34 : 43 }, width = Math.max(scroll.clientWidth, pad.l + data.length * step + pad.r), plotH = height - pad.t - pad.b;
     svg.style.width = `${width}px`;
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     const values = data.flatMap(s => [s.value, Number(s.lower), Number(s.upper)]).filter(Number.isFinite);
@@ -145,7 +145,7 @@
     }
     const boundary = slots.find(s => s.status === 'predicted'); setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
     setText('chart-unit', slots.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
-    if (!state.chartScrollInitialized) { const next = data.findIndex(s => s.endDate > now); scroll.scrollLeft = Math.max(0, (next < 0 ? 0 : next) * step - 110); state.chartScrollInitialized = true; }
+    if (!state.chartScrollInitialized) { const next = data.findIndex(s => s.endDate > now), nextIndex = next < 0 ? 0 : next; scroll.scrollLeft = compact ? Math.max(0, pad.l + nextIndex * step - scroll.clientWidth / 2) : Math.max(0, nextIndex * step - 110); state.chartScrollInitialized = true; }
     else scroll.scrollLeft = oldScroll;
   }
   function renderWindows(windows, unit) {
@@ -159,20 +159,13 @@
     }
     if (!shown) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Geen compleet, aaneengesloten venster gevonden voor deze duur.'; root.append(empty); }
   }
-  function renderTable(slots, unit) {
-    const body = $('price-rows'); body.replaceChildren();
-    const relevant = slots;
-    if (!relevant.length) { const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 4; td.className = 'table-empty'; td.textContent = 'Geen kwartieren beschikbaar.'; tr.append(td); body.append(tr); }
-    for (const s of relevant) { const tr = document.createElement('tr'), time = document.createElement('td'), price = document.createElement('td'), source = document.createElement('td'), status = document.createElement('td'); time.textContent = `${humanTime(s.startDate, true)} – ${humanTime(s.endDate, true)}`; price.textContent = fmtPrice(s.value, s.unit || unit); source.textContent = s.source || (s.status === 'known' ? 'Tariefentiteit' : s.status === 'predicted' ? 'Lokaal model' : 'Geen bron'); source.className = 'origin'; const pill = document.createElement('span'); pill.className = `status-pill ${statusClasses[s.status]}`; pill.textContent = statusNames[s.status]; status.append(pill); tr.append(time, price, source, status); body.append(tr); }
-    setText('row-count', `${relevant.length} kwartieren`); setText('table-title', 'Kwartieren · volledige tijdlijn');
-  }
   function renderDashboard(data) {
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
     setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || state.settings?.tariff_entity || 'Tariefbron niet ingesteld'); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
     const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('band-note', q.uncertainty || 'De getoonde marge is een ongekalibreerde modelindicatie, geen betrouwbaarheidsinterval of vaste prijs.'); $('forecast-legend').lastChild.textContent = q.band_calibrated ? ' Voorspeld met empirische band' : ' Voorspeld met indicatieve marge'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
     const noteTitle = document.querySelector('.provisional-note strong');
     if (noteTitle) noteTitle.textContent = q.maturity?.ready ? 'Lokaal geëvalueerde prognose' : 'Voorlopige prognose';
-    const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderTable(slots, unit); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
+    const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
   }
   async function loadDashboard() {
     try { show('load-error', false); const hours = Number($('window-duration').value) || 1; const data = await api(`api/timeline?window_hours=${hours}`); renderDashboard(data); setConnection(true); }

@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 
-LABEL io.hass.version="0.1.4" \
+LABEL io.hass.version="0.1.5" \
       io.hass.type="app" \
       io.hass.arch="aarch64|amd64"
 

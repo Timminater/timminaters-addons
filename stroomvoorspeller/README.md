@@ -2,6 +2,8 @@
 
 Een lokale Home Assistant App met een eigen Ingress-pagina voor bekende en voorspelde kwartierprijzen. De App leest de Home Assistant Core API, kan weersverwachtingen van Open-Meteo en historische Nederlandse marktprijzen van [Fraunhofer Energy-Charts](https://www.energy-charts.info/api.html?c=NL&l=en) ophalen, en bewaart keuzes, prijsarchief, invoersnapshots en modeluitkomsten op de installatie zelf onder `/data`. Er is geen apparaatbediening.
 
+![Stroomvoorspeller in Home Assistant met kwartierprijsgrafiek (1920 × 1080)](docs/screenshot-1080p.png)
+
 ## Bron en status
 
 De rekenregels zijn geïnspireerd door [`Mr-MIle/stroomvoorspeller` op commit `175a0ed975c409fbf9329a62687a7952ee745514`](https://github.com/Mr-MIle/stroomvoorspeller/commit/175a0ed975c409fbf9329a62687a7952ee745514). De gebruikte v4-berekeningen zijn voor deze App opnieuw geïmplementeerd en met vaste referentiegevallen vergeleken. Kwartierprijzen uit een gekozen tariefsensor zijn een andere doelgrootheid dan kale EPEX-prijzen in EUR/MWh. De methode en beperkingen staan in [MODEL.md](docs/MODEL.md).
@@ -10,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.4`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.5`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
