@@ -46,6 +46,7 @@ Je kunt nu ook **Energy-Charts Nederland** als zelfstandige marktbron kiezen, zo
 Gebruik een repository-lokale basetemp:
 
 ```sh
+python -c "from pathlib import Path; Path('.pytest-tmp').mkdir(exist_ok=True)"
 pytest --basetemp .pytest-tmp/DEV-003 tests
 ```
 
