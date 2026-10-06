@@ -12,6 +12,14 @@
   const fmtFullDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   function setText(id, value, fallback = '—') { const e = $(id); if (e) e.textContent = value == null || value === '' ? fallback : String(value); }
   function show(id, visible) { const e = $(id); if (e) e.hidden = !visible; }
+  function describePriceSource(source = {}) {
+    if (source.price_source === 'energy_charts_nl') {
+      const choice = source.price_choice === 'all_in' ? 'all-in afnameprijs' : 'kale beursprijs';
+      const supplier = source.price_choice === 'all_in' && source.supplier ? ` · ${source.supplier}` : '';
+      return `Energy-Charts Nederland · ${choice}${supplier}`;
+    }
+    return source.tariff_entity || state.settings?.tariff_entity || 'Niet ingesteld';
+  }
   function safeDate(value) { const d = new Date(value); return Number.isNaN(d.getTime()) ? null : d; }
   function dateKey(d) { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
   function fmtPrice(value, unit) { if (value == null || value === '') return '—'; const n = Number(value); return Number.isFinite(n) ? `${fmtNumber.format(n)} ${unit || ''}`.trim() : '—'; }
@@ -53,7 +61,7 @@
     setText('price-source-state', data.stale ? 'Verouderd' : (data.last_price_update ? 'Actueel' : 'Wacht'));
     setText('weather-source-state', data.last_weather_update ? 'Beschikbaar' : 'Wacht');
     setText('model-source-state', data.last_model_update ? 'Gereed' : 'Wacht');
-    setText('detail-price-source', data.sources?.tariff_entity || state.settings?.tariff_entity || 'Niet ingesteld');
+    setText('detail-price-source', describePriceSource(data.sources || {}));
     setText('detail-weather-source', data.sources?.weather_source || state.settings?.weather_source || 'Niet ingesteld');
     setText('detail-model-update', data.last_model_update ? humanTime(data.last_model_update, true) : 'Nog geen berekening');
     setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld');
@@ -161,7 +169,7 @@
   }
   function renderDashboard(data) {
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
-    setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || state.settings?.tariff_entity || 'Tariefbron niet ingesteld'); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
+    setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || describePriceSource(data.source || {})); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', data.source?.price_source === 'energy_charts_nl' && current.status === 'known' ? 'Bekende marktprijs' : current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
     const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('band-note', q.uncertainty || 'De getoonde marge is een ongekalibreerde modelindicatie, geen betrouwbaarheidsinterval of vaste prijs.'); $('forecast-legend').lastChild.textContent = q.band_calibrated ? ' Voorspeld met empirische band' : ' Voorspeld met indicatieve marge'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
     const noteTitle = document.querySelector('.provisional-note strong');
     if (noteTitle) noteTitle.textContent = q.maturity?.ready ? 'Lokaal geëvalueerde prognose' : 'Voorlopige prognose';
@@ -239,10 +247,17 @@
     $('settings-dialog').showModal();
   }
   function fillSettings(s = {}) {
+    $('price-source').value = s.price_source || 'home_assistant';
     const tariff = $('tariff-entity'); tariff.value = s.tariff_entity || '';
     if (!tariff.value && state.entities.some(e => e.entity_id === DEFAULT_TARIFF)) tariff.value = DEFAULT_TARIFF;
     const mode = s.weather_source === 'ha' || s.weather_source === 'home_assistant' ? 'ha' : 'open_meteo'; const radio = document.querySelector(`input[name="weather_mode"][value="${mode}"]`); if (radio) radio.checked = true;
     $('solar-entity').value = s.weather_entities?.solar || ''; $('wind-entity').value = s.weather_entities?.wind || ''; $('temperature-entity').value = s.weather_entities?.temperature || ''; $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
+    $('price-choice').value = s.price_choice || 'bare'; $('supplier').value = s.supplier || 'custom';
+    $('energy-tax').value = s.energy_tax_eur_kwh ?? 0.09161; $('vat-percent').value = s.vat_percent ?? 21;
+    $('supplier-fee').value = s.supplier_fee_eur_kwh_incl_vat ?? 0;
+    $('tariff-valid-from').value = s.tariff_valid_from || ''; $('tariff-valid-to').value = s.tariff_valid_to || '';
+    $('supplier-fee-confirmed').checked = s.supplier_fee_confirmed === true;
+    updatePriceSourceFields();
     $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
     $('mqtt-enabled').checked = s.mqtt_enabled === true;
     const suggested = s.location_suggestion || {};
@@ -259,14 +274,32 @@
     setWeatherFields();
   }
   async function saveSettings(event) {
-    event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value;
-    if (!tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
-    const settings = { tariff_entity: tariff, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
+    event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value; const priceSource = $('price-source').value;
+    if (priceSource === 'home_assistant' && !tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
+    const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
+    if (priceSource === 'energy_charts_nl' && settings.price_choice === 'all_in' && (!$('supplier-fee').value || (settings.supplier === 'tibber' && !settings.supplier_fee_confirmed))) { show('settings-error', true); $('settings-error').textContent = 'Vul de gecontroleerde inkoopvergoeding incl. btw in en bevestig de btw-basis.'; return; }
     if (weatherSource === 'ha' && Object.values(settings.weather_entities).some(v => !v)) { show('settings-error', true); $('settings-error').textContent = 'Kies zon, wind en temperatuur om HA-weer te gebruiken.'; return; }
     const button = $('settings-save'); button.disabled = true; button.textContent = 'Opslaan…';
     try { state.settings = await api('api/settings', { method: 'PUT', body: JSON.stringify(settings) }); $('settings-dialog').close(); toast('Instellingen opgeslagen. De app haalt de bronnen opnieuw op.'); await loadAll(); }
     catch (error) { show('settings-error', true); $('settings-error').textContent = error.message; }
     finally { button.disabled = false; button.textContent = 'Opslaan'; }
+  }
+  function updatePriceSourceFields() {
+    const market = $('price-source').value === 'energy_charts_nl';
+    show('ha-tariff-fields', !market);
+    show('market-tariff-fields', market);
+    $('tariff-entity').required = !market;
+    $('tariff-entity').disabled = market;
+    $('tariff-unit').disabled = market;
+    $('price-field').disabled = market;
+  }
+  function supplierDefaults() {
+    const supplier = $('supplier').value;
+    $('energy-tax').value = '0.09161'; $('vat-percent').value = '21';
+    $('tariff-valid-from').value = supplier === 'custom' ? '' : '2026-01-01';
+    $('tariff-valid-to').value = supplier === 'custom' ? '' : '2026-12-31';
+    $('supplier-fee').value = supplier === 'zonneplan' ? '0.02' : supplier === 'tibber' ? '' : '';
+    $('supplier-fee-confirmed').checked = false;
   }
   function toast(message) { const t = $('toast'); t.textContent = message; show('toast', true); setTimeout(() => show('toast', false), 3600); }
   async function calculateNow() {
@@ -282,6 +315,7 @@
   }
   function init() {
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
+    $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);
     for (const [button, view] of [[$('dashboard-tab'), 'dashboard'], [$('analysis-tab'), 'analysis']]) button.addEventListener('keydown', event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); activateView(view === 'dashboard' ? 'analysis' : 'dashboard', true); } });
     window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); });

@@ -18,12 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        app:
-          - homeassistant-samsung-frametv-artchanger
-          - llm_proxy
-          - esphome_mcp
-          - speaker_recognition
-          - stroomvoorspeller
+        # App-specific releases must not republish unchanged versions of other apps.
+        app: ${{ fromJSON(github.event_name == 'release' && startsWith(github.event.release.tag_name, 'stroomvoorspeller-v') && '["stroomvoorspeller"]' || '["homeassistant-samsung-frametv-artchanger","llm_proxy","esphome_mcp","speaker_recognition","stroomvoorspeller"]') }}
     uses: ./.github/workflows/build-app.yml
     with:
       app: ${{ matrix.app }}

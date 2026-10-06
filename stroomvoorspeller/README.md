@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.6`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.7`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -39,12 +39,14 @@ Bij uitval toont de App bewaarde prijzen met een verouderingsmelding. Een entite
 
 Bij een nieuw Zonneplan-archief zonder weekendhistorie kan het model de afgelopen 35 dagen Nederlandse marktkwartieren ophalen. Het leidt de tariefomrekening uitsluitend af wanneer minimaal 96 bestaande Zonneplan-kwartieren vrijwel exact op die marktprijzen aansluiten. De herleide oude prijzen voeden alleen het model: de grafiek en de nauwkeurigheidsmeting blijven echte HA-tarieven onderscheiden van deze aanvulling. De pagina vermeldt de herleiding als voorlopige modelbasis. Bij ontbrekende marktdata of een mislukte vergelijking blijft de eerdere, eveneens voorlopige dagtypeproxy actief. Historische contractwijzigingen zijn niet automatisch te verifiëren.
 
+Je kunt nu ook **Energy-Charts Nederland** als zelfstandige marktbron kiezen, zonder Zonneplan-integratie. Kies kale EUR/kWh of configureer een gedateerde all-in afnameprijs; bron, componenten en geldigheidsdatums krijgen aparte archief- en modelidentiteiten. De bestaande Home Assistant-entiteit blijft beschikbaar. Zie [Prijsbron en tariefcomponenten](docs/PRICES.md) voor de instellingen-API, bronvermelding en MQTT-sensoren.
+
 ## Ontwikkelcontrole
 
 Gebruik een repository-lokale basetemp:
 
 ```sh
-pytest --basetemp .pytest-runtime tests
+pytest --basetemp .pytest-tmp/DEV-003 tests
 ```
 
 De point-in-time evaluatie in `app/backtest.py` rekent met bewaarde invoersnapshots. Zij mag geen achteraf gemeten weer als modelinvoer gebruiken. Zonder voldoende volwassen lokale data rapporteert de App geen bewezen nauwkeurigheid.

@@ -21,12 +21,14 @@ try:
     from .storage import Store, price_archive_key, utc_iso
     from .weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
     from .market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
+    from .energy_prices import EnergyPriceError, SUPPLIERS, all_in_price, fetch_prices, price_rows
     from .mqtt_export import MQTTExporter
 except ImportError:  # ``python app/backend.py`` in the container entrypoint
     from ha_client import HAClient, HAError, collect_price_data, parse_dt
     from storage import Store, price_archive_key, utc_iso
     from weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
     from market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
+    from energy_prices import EnergyPriceError, SUPPLIERS, all_in_price, fetch_prices, price_rows
     from mqtt_export import MQTTExporter
 
 UTC = timezone.utc
@@ -159,8 +161,17 @@ class AppService:
     def get_settings(self) -> dict[str, Any]:
         value = self.store.get_settings()
         value.setdefault("tariff_entity", "")
+        value.setdefault("price_source", "home_assistant")
         value.setdefault("tariff_unit", "")
         value.setdefault("price_field", "tax_included")
+        value.setdefault("price_choice", "bare")
+        value.setdefault("supplier", "custom")
+        value.setdefault("energy_tax_eur_kwh", 0.09161)
+        value.setdefault("vat_percent", 21.0)
+        value.setdefault("supplier_fee_eur_kwh_incl_vat", 0.0)
+        value.setdefault("supplier_fee_confirmed", False)
+        value.setdefault("tariff_valid_from", "")
+        value.setdefault("tariff_valid_to", "")
         value.setdefault("weather_source", "open_meteo")
         value.setdefault("weather_entities", {"solar": "", "wind": "", "temperature": ""})
         value.setdefault("latitude", None); value.setdefault("longitude", None)
@@ -169,7 +180,10 @@ class AppService:
         return value
 
     def put_settings(self, body: Mapping[str, Any]) -> dict[str, Any]:
-        allowed = {"tariff_entity", "tariff_unit", "price_field", "weather_source", "weather_entities", "latitude", "longitude", "calculation_interval_minutes", "mqtt_enabled"}
+        allowed = {"tariff_entity", "price_source", "tariff_unit", "price_field", "price_choice", "supplier",
+                   "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from",
+                   "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
+                   "calculation_interval_minutes", "mqtt_enabled"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
@@ -180,6 +194,9 @@ class AppService:
         if type(merged.get("mqtt_enabled")) is not bool:
             raise ValueError("Home Assistant-entiteiten moeten aan of uit staan")
         entity = merged.get("tariff_entity") or ""
+        price_source = merged.get("price_source")
+        if price_source not in {"home_assistant", "energy_charts_nl"}:
+            raise ValueError("Kies Home Assistant of Energy-Charts Nederland als prijsbron")
         if entity and not re.fullmatch(r"sensor\.[a-z0-9_]+", entity):
             raise ValueError("Kies een sensor-entiteit uit Home Assistant")
         unit = merged.get("tariff_unit") or ""
@@ -188,6 +205,42 @@ class AppService:
         price_field = merged.get("price_field")
         if price_field not in VALID_PRICE_FIELDS:
             raise ValueError("Kies inclusief of exclusief belasting voor de tariefreeks")
+        price_choice = merged.get("price_choice")
+        if price_choice not in {"bare", "all_in"}:
+            raise ValueError("Kies kale beursprijs of all-in afnameprijs")
+        supplier = merged.get("supplier")
+        if supplier not in SUPPLIERS:
+            raise ValueError("Kies Zonneplan, Tibber of een eigen tarief")
+        def component(name: str, default: float) -> float:
+            try: result = float(merged.get(name, default))
+            except (TypeError, ValueError) as exc: raise ValueError(f"{name} moet een getal zijn") from exc
+            if not math.isfinite(result): raise ValueError(f"{name} moet een eindig getal zijn")
+            return result
+        energy_tax = component("energy_tax_eur_kwh", 0.09161)
+        vat = component("vat_percent", 21)
+        fee_default = SUPPLIERS[supplier]["fee_incl_vat"] or 0.0
+        if supplier == "tibber" and "supplier_fee_eur_kwh_incl_vat" not in body:
+            fee_default = 0.0  # The published buy fee VAT basis is not explicit; require user verification.
+        elif supplier != current.get("supplier") and "supplier_fee_eur_kwh_incl_vat" not in body:
+            merged["supplier_fee_eur_kwh_incl_vat"] = fee_default
+        fee = component("supplier_fee_eur_kwh_incl_vat", fee_default)
+        fee_confirmed = merged.get("supplier_fee_confirmed", False)
+        if type(fee_confirmed) is not bool:
+            raise ValueError("Bevestig de opslagbasis met ja of nee")
+        changed_supplier = supplier != current.get("supplier")
+        valid_from = str((SUPPLIERS[supplier]["valid_from"] if changed_supplier and "tariff_valid_from" not in body else merged.get("tariff_valid_from")) or "")
+        valid_to = str((SUPPLIERS[supplier]["valid_to"] if changed_supplier and "tariff_valid_to" not in body else merged.get("tariff_valid_to")) or "")
+        if not 0 <= vat <= 100 or energy_tax < 0 or fee < 0:
+            raise ValueError("Tariefcomponenten vallen buiten het geldige bereik")
+        if price_choice == "all_in":
+            try:
+                from datetime import date as _date
+                if not valid_from or not valid_to or _date.fromisoformat(valid_to) < _date.fromisoformat(valid_from):
+                    raise ValueError
+            except ValueError as exc:
+                raise ValueError("Vul een geldige periode voor de tariefcomponenten in") from exc
+            if supplier == "tibber" and not fee_confirmed:
+                raise ValueError("Controleer en bevestig de btw-basis van Tibbers inkoopvergoeding")
         source = merged.get("weather_source")
         if source not in {"open_meteo", "ha"}:
             raise ValueError("Weerbron moet Open-Meteo of Home Assistant zijn")
@@ -208,10 +261,16 @@ class AppService:
             except (TypeError, ValueError) as exc: raise ValueError("Vul breedtegraad en lengtegraad in") from exc
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
                 raise ValueError("Coördinaten vallen buiten het geldige bereik")
-        new = {"tariff_entity": entity, "tariff_unit": unit, "price_field": price_field,
+        new = {"tariff_entity": entity, "price_source": price_source, "tariff_unit": unit, "price_field": price_field,
+               "price_choice": price_choice, "supplier": supplier, "energy_tax_eur_kwh": energy_tax,
+               "vat_percent": vat, "supplier_fee_eur_kwh_incl_vat": fee,
+               "supplier_fee_confirmed": fee_confirmed,
+               "tariff_valid_from": valid_from, "tariff_valid_to": valid_to,
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
-        if any(new[key] != current.get(key) for key in ("tariff_entity", "price_field", "tariff_unit")):
+        scope_keys = ("tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
+                      "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
+        if any(new[key] != current.get(key) for key in scope_keys):
             new["history_cursor_utc"] = None
         saved = self.store.set_settings(new)
         if current.get("mqtt_enabled") and not saved.get("mqtt_enabled"):
@@ -220,6 +279,16 @@ class AppService:
         if any(new[key] != current.get(key) for key in new if key != "history_cursor_utc"):
             self._wake.set()
         return saved
+
+    @staticmethod
+    def _price_identity(settings: Mapping[str, Any]) -> str:
+        if settings.get("price_source", "home_assistant") != "energy_charts_nl":
+            return str(settings.get("tariff_entity") or "")
+        payload = {key: settings.get(key) for key in ("price_source", "price_choice", "supplier",
+                   "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat",
+                   "tariff_valid_from", "tariff_valid_to")}
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
+        return f"energy_charts_nl:{digest}"
 
     def entity_list(self) -> dict[str, Any]:
         try:
@@ -242,13 +311,14 @@ class AppService:
 
     def status(self) -> dict[str, Any]:
         settings = self.get_settings()
-        entity = settings.get("tariff_entity") or ""
+        entity = self._price_identity(settings)
+        configured = bool(entity)
         price_field = settings.get("price_field", "tax_included")
-        archive_entity = self._archive_entity(entity, settings) if entity else ""
+        archive_entity = self._archive_entity(entity, settings) if configured else ""
         sources = self.store.source_statuses()
-        run, _ = self.store.latest_forecast(entity if entity else None, price_field if entity else None,
-                                           settings.get("tariff_unit") if entity else None)
-        archive = self.store.archive_summary(archive_entity) if entity else {"quarter_count": 0, "first_start": None, "last_end": None, "coverage_days": 0}
+        run, _ = self.store.latest_forecast(entity if configured else None, price_field if configured else None,
+                                           settings.get("tariff_unit") if configured else None)
+        archive = self.store.archive_summary(archive_entity) if configured else {"quarter_count": 0, "first_start": None, "last_end": None, "coverage_days": 0}
         errors = []
         for source, error in (("price", self._last_price_error), ("weather", self._last_weather_error), ("model", self._last_model_error)):
             if error is None:
@@ -256,28 +326,28 @@ class AppService:
             if error: errors.append({"source": source, "message": error})
         ps = sources.get("price", {}); ws = sources.get("weather", {})
         price_detail = ps.get("detail") or {}
-        price_status_matches = (price_detail.get("entity_id") == entity
+        price_status_matches = (price_detail.get("identity", price_detail.get("entity_id")) == entity
                                 and price_detail.get("price_field", "tax_included") == price_field
                                 and price_detail.get("tariff_unit") == settings.get("tariff_unit"))
         price_last_success = ps.get("last_success") if price_status_matches else None
         stale = not price_last_success or self.clock().astimezone(UTC) - parse_dt(price_last_success) > timedelta(minutes=20)
         missing_inputs = []
         if not ws.get("last_success"): missing_inputs.append("verwachte zon, wind en temperatuur")
-        if not settings.get("tariff_unit"): missing_inputs.append("tariefunit in instellingen")
+        if not settings.get("tariff_unit") and settings.get("price_source") != "energy_charts_nl": missing_inputs.append("tariefunit in instellingen")
         maturity = self._maturity(entity, self.clock().astimezone(UTC), archive, price_field,
-                                  archive_entity, settings.get("tariff_unit")) if entity else {
+                                  archive_entity, settings.get("tariff_unit")) if configured else {
             "ready": False, "archive_ready": False, "mature_daily_runs": 0, "required_daily_runs": 7,
             "metrics": None, "daily": [], "reasons": ["Kies eerst een tariefentiteit"]}
         reasons = list(run.get("reasons", [])) if run else ["Nog geen modelrun"]
         reasons.extend(maturity["reasons"])
-        calibration = self.analysis().get("calibration", {}) if entity else {}
+        calibration = self.analysis().get("calibration", {}) if configured else {}
         reasons.append("Empirische kwartierband lokaal geëvalueerd" if calibration.get("ready")
                        else "Kwartieronzekerheidsband is niet gekalibreerd")
         quality = {"label": "geëvalueerd" if maturity["ready"] else "voorlopig",
                    "reasons": sorted(set(reasons)),
                    "missing_inputs": missing_inputs, "coverage": archive.get("coverage_days", 0),
                    "coverage_ratio": archive.get("coverage_ratio", 0), "maturity": maturity}
-        return {"ok": True, "configured": bool(entity), "stale": stale, "errors": errors,
+        return {"ok": True, "configured": configured, "stale": stale, "errors": errors,
                 "mqtt": {"enabled": settings["mqtt_enabled"],
                          "connected": self._mqtt_exporter.transport is not None},
                 "last_price_update": price_last_success, "last_weather_update": ws.get("last_success"),
@@ -285,7 +355,9 @@ class AppService:
                 "model_version": run.get("model_version") if run else None,
                 "calculation_interval_minutes": settings["calculation_interval_minutes"],
                 "quality": quality, "archive": archive,
-                "sources": {"tariff_entity": entity or None, "weather_source": settings.get("weather_source")},
+                "sources": {"tariff_entity": settings.get("tariff_entity") or None,
+                            "price_source": settings.get("price_source"), "price_choice": settings.get("price_choice"),
+                            "supplier": settings.get("supplier"), "weather_source": settings.get("weather_source")},
                 "location_suggestion": self._suggested_coordinates()}
 
     def _maturity(self, entity: str, now: datetime, archive: Mapping[str, Any],
@@ -450,12 +522,15 @@ class AppService:
         with self._lock:
             now = self.clock().astimezone(UTC)
             settings = self.get_settings()
-            entity = settings.get("tariff_entity")
-            if not entity:
+            configured_entity = settings.get("tariff_entity")
+            if settings.get("price_source", "home_assistant") == "home_assistant" and not configured_entity:
                 return {"ok": False, "message": "Kies eerst een tariefentiteit in Instellingen"}
+            entity = self._price_identity(settings)
+            market_mode = settings.get("price_source") == "energy_charts_nl"
             price_status = self.store.source_statuses().get("price", {})
             price_detail = price_status.get("detail") or {}
-            same_price_source = (price_detail.get("entity_id") == entity and
+            same_price_source = (price_detail.get("identity") == entity and
+                                 price_detail.get("entity_id") == configured_entity and
                                  price_detail.get("price_field", "tax_included") == settings.get("price_field", "tax_included") and
                                  price_detail.get("tariff_unit") == settings.get("tariff_unit"))
             last_attempt = price_status.get("last_attempt") if same_price_source else None
@@ -464,9 +539,28 @@ class AppService:
             cursor_raw = settings.get("history_cursor_utc")
             cursor = parse_dt(cursor_raw) - timedelta(hours=1) if cursor_raw else now - timedelta(days=35)
             try:
-                quarter_rows, hourly_rows, observed = collect_price_data(
-                    self.ha, entity, now, history_days=35, tariff_unit=settings.get("tariff_unit") or None,
-                    price_field=settings.get("price_field", "tax_included"), history_start=cursor)
+                if market_mode:
+                    market = fetch_prices(now)
+                    current_prices = []
+                    fetched_at = parse_dt(market.get("fetched_at"))
+                    if fetched_at <= now:
+                        for market_row in market.get("prices", []):
+                            interval_start = parse_dt(market_row["start_utc"])
+                            if interval_start <= now < interval_start + timedelta(minutes=15):
+                                current_prices = [market_row]
+                                break
+                    # Keep the complete curve in this refresh's local variable
+                    # for archive/model ingestion, but retain only the active
+                    # interval in the periodically appended source snapshot.
+                    market_snapshot = {key: value for key, value in market.items() if key != "prices"}
+                    market_snapshot["prices"] = current_prices
+                    self.store.save_snapshot(now, "energy_charts_market", market_snapshot)
+                    quarter_rows, hourly_rows = price_rows(market, settings, entity, now), []
+                    observed = now
+                else:
+                    quarter_rows, hourly_rows, observed = collect_price_data(
+                        self.ha, configured_entity, now, history_days=35, tariff_unit=settings.get("tariff_unit") or None,
+                        price_field=settings.get("price_field", "tax_included"), history_start=cursor)
                 # HA history state semantics are not guaranteed to match the
                 # selected tax-exclusive forecast field. Retain only the
                 # explicitly selected published forecast values in that mode.
@@ -485,7 +579,9 @@ class AppService:
                 settings["history_cursor_utc"] = utc_iso(now)
                 self.store.set_settings({"history_cursor_utc": settings["history_cursor_utc"]})
                 self.store.set_source_status("price", success=True, attempted_at=now,
-                                             detail={"entity_id": entity, "price_field": settings.get("price_field", "tax_included"),
+                                             detail={"identity": entity, "entity_id": configured_entity,
+                                                     "price_source": settings.get("price_source", "home_assistant"),
+                                                     "price_field": settings.get("price_field", "tax_included"),
                                                      "tariff_unit": settings.get("tariff_unit"),
                                                      "archive_entity_id": archive_entity,
                                                      "rows": len(quarter_rows), "cursor": utc_iso(now)})
@@ -519,6 +615,11 @@ class AppService:
 
             archive_entity = self._archive_entity(entity, settings)
             history = self.store.quarters(archive_entity, as_of=now)
+            # Market-feed future intervals are published day-ahead and cannot
+            # enter a historical model fit before their intervals have elapsed.
+            # Preserve the existing HA forecast-history model inputs.
+            if market_mode:
+                history = [row for row in history if parse_dt(row["end_utc"]) <= now]
             if not history:
                 return {"ok": False, "message": "Er zijn nog geen historische kwartierprijzen om het model op te starten"}
             try:
@@ -585,7 +686,7 @@ class AppService:
     def dashboard(self, day: date, window_hours: int) -> dict[str, Any]:
         if window_hours not in VALID_WINDOWS:
             raise ValueError("window_hours moet 1, 2, 3 of 5 zijn")
-        settings = self.get_settings(); entity = settings.get("tariff_entity") or ""
+        settings = self.get_settings(); entity = self._price_identity(settings)
         price_field = settings.get("price_field", "tax_included")
         if not entity:
             return {"current": None, "slots": [], "windows": {"known": [], "mixed": []},
@@ -637,6 +738,9 @@ class AppService:
                 "model_version": run["model_version"] if run else None,
                 "archive": archive,
                 "source": {"tariff_entity": entity, "price_field": settings.get("price_field"),
+                           "price_source": settings.get("price_source"),
+                           "price_choice": settings.get("price_choice"),
+                           "supplier": settings.get("supplier"),
                            "weather_source": settings.get("weather_source")}}
 
     def timeline(self, window_hours: int = 1) -> dict[str, Any]:
@@ -681,7 +785,7 @@ class AppService:
         from .analysis import build_analysis
 
         settings = self.get_settings()
-        entity = settings.get("tariff_entity") or ""
+        entity = self._price_identity(settings)
         if not entity:
             return {"status": "not_configured", "unit": settings.get("tariff_unit"),
                     "summary": {"days": 0, "points": 0}, "horizons": [],
@@ -712,13 +816,54 @@ class AppService:
         self._mqtt_exporter.stop()
 
     def _publish_mqtt_snapshot(self) -> None:
-        if not self._mqtt_exporter.enabled or not self.get_settings().get("tariff_entity"):
+        settings = self.get_settings()
+        if not self._mqtt_exporter.enabled or not (settings.get("tariff_entity") or settings.get("price_source") == "energy_charts_nl"):
             return
         try:
             snapshot = self.timeline()
-            self._mqtt_exporter.publish(snapshot, snapshot, self.status())
+            if settings.get("price_source") == "energy_charts_nl":
+                self._mqtt_exporter.publish(snapshot, snapshot, self.status(), self.current_market_prices())
+            else:
+                self._mqtt_exporter.publish(snapshot, snapshot, self.status())
         except Exception:
             LOG.exception("Optionele MQTT-publicatie mislukt")
+
+    def current_market_prices(self) -> dict[str, Any]:
+        """Return only a freshly fetched published market value for the live interval."""
+        now = self.clock().astimezone(UTC)
+        settings = self.get_settings()
+        if settings.get("price_source") != "energy_charts_nl":
+            return {}
+        snapshot = self.store.latest_snapshot("energy_charts_market", successful_only=True)
+        if not snapshot:
+            return {}
+        payload = snapshot["payload"]
+        try:
+            fetched = parse_dt(payload["fetched_at"])
+            if fetched > now or now - fetched > timedelta(minutes=20):
+                return {}
+            latest_attempt = self.store.source_statuses().get("price", {}).get("last_attempt")
+            price_error = self.store.source_statuses().get("price", {}).get("error")
+            if price_error and latest_attempt and parse_dt(latest_attempt) >= fetched:
+                return {}
+            current_start = datetime.fromtimestamp((now.timestamp() // 900) * 900, UTC)
+            raw_row = next((row for row in payload.get("prices", [])
+                            if parse_dt(row["start_utc"]) == current_start
+                            and parse_dt(row["start_utc"]) <= now < parse_dt(row["start_utc"]) + timedelta(minutes=15)), None)
+            if raw_row is None:
+                return {}
+            raw = float(raw_row["market_eur_mwh"]) / 1000
+            start = current_start.isoformat().replace("+00:00", "Z")
+            end = (current_start + timedelta(minutes=15)).isoformat().replace("+00:00", "Z")
+            base = {"start": start, "end": end, "source": "Energy-Charts.info", "quality": "published", "fetched_at": payload["fetched_at"]}
+            values = {"current_market_price": {**base, "price": raw}}
+            try:
+                values["current_all_in_price"] = {**base, "price": all_in_price(raw, settings=settings, interval_start=current_start)}
+            except (KeyError, TypeError, ValueError, EnergyPriceError):
+                pass
+            return values
+        except (KeyError, TypeError, ValueError):
+            return {}
 
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
@@ -726,7 +871,13 @@ class AppService:
                 self.refresh()
                 self._publish_mqtt_snapshot()
             except Exception: LOG.exception("Onverwachte fout in updatecyclus")
-            interval = self.get_settings()["calculation_interval_minutes"] * 60
+            settings = self.get_settings()
+            interval = settings["calculation_interval_minutes"] * 60
+            if settings.get("price_source") == "energy_charts_nl":
+                now = self.clock().astimezone(UTC)
+                next_quarter = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0) + timedelta(minutes=15)
+                until_boundary = max(1, int((next_quarter - now).total_seconds()))
+                interval = min(interval, 5 * 60, until_boundary)
             self._wake.wait(interval)
             self._wake.clear()
 

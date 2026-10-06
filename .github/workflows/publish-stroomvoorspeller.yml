@@ -31,7 +31,7 @@ jobs:
 
       - name: Run app tests
         working-directory: stroomvoorspeller
-        run: python -m pytest -q -p no:cacheprovider --basetemp .pytest-runtime tests
+        run: python -m pytest -q -p no:cacheprovider --basetemp .pytest-tmp/DEV-003 tests
 
       - name: Check JavaScript syntax
         run: node --check stroomvoorspeller/app/static/app.js

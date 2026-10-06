@@ -1,7 +1,7 @@
 name: "Stroomvoorspeller"
-version: "0.1.6"
+version: "0.1.7"
 slug: "stroomvoorspeller"
-description: "Lokale kwartierprijsprognose op basis van Home Assistant en het stroomvoorspeller v4-model"
+description: "Lokale kwartierprijsprognose met HA-tarieven of Nederlandse marktprijzen en instelbare all-in-kosten"
 url: "https://github.com/Timminater/timminaters-addons/tree/main/stroomvoorspeller"
 image: "ghcr.io/timminater/addon-stroomvoorspeller"
 arch:

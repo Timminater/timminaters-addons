@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -97,6 +98,8 @@ class MQTTExporter:
     SENSOR_SPECS = (
         ("next_quarter_price", "Prijs volgend kwartier", "EUR/kWh", "mdi:flash-outline"),
         ("cheapest_next_3h", "Goedkoopste 3 uur", "EUR/kWh", "mdi:clock-check-outline"),
+        ("current_market_price", "Huidige kale beursprijs", "EUR/kWh", "mdi:flash"),
+        ("current_all_in_price", "Huidige all-in afnameprijs", "EUR/kWh", "mdi:cash-check"),
         ("data_status", "Datastatus", None, "mdi:database-clock-outline"),
     )
 
@@ -149,7 +152,8 @@ class MQTTExporter:
 
     def publish(self, dashboard: Mapping[str, Any] | None,
                 timeline: Mapping[str, Any] | list[Mapping[str, Any]] | None,
-                status: Mapping[str, Any] | None = None) -> bool:
+                status: Mapping[str, Any] | None = None,
+                current_prices: Mapping[str, Any] | None = None) -> bool:
         """Publish latest dashboard/timeline snapshot and optional backend status."""
         with self._lock:
             if self.transport is None and not self.start():
@@ -198,10 +202,14 @@ class MQTTExporter:
                 "data_status": stale_value or "unknown",
             }
             try:
+                self._publish_discovery(current_prices or {})
                 self._send(f"{BASE_TOPIC}/availability", "online")
                 for key, value in values.items():
-                    self._send(f"{BASE_TOPIC}/sensor/{key}", "" if value is None else str(value))
-                    self._last_values[key] = "" if value is None else str(value)
+                    payload = ("None" if value is None else str(value)) if key.startswith("current_") else ("" if value is None else str(value))
+                    self.transport.publish(f"{BASE_TOPIC}/sensor/{key}", payload,
+                                            retain=key not in {"current_market_price", "current_all_in_price"})
+                    if key not in {"current_market_price", "current_all_in_price"}:
+                        self._last_values[key] = payload
                 next_attrs = ({"start": _iso(next_slot[0]),
                                "end": _iso(next_slot[0] + timedelta(minutes=15)),
                                "status": next_slot[2].get("status")}
@@ -214,6 +222,14 @@ class MQTTExporter:
                                                    for item in cheapest_window)}
                          if cheapest_window else {})
                 self._send(f"{BASE_TOPIC}/sensor/cheapest_next_3h/attributes", json.dumps(attrs, separators=(",", ":")))
+                current_prices = current_prices or {}
+                for key in ("current_market_price", "current_all_in_price"):
+                    item = current_prices.get(key) or {}
+                    value = _as_number(float(item["price"])) if item.get("price") is not None else None
+                    self.transport.publish(f"{BASE_TOPIC}/sensor/{key}", value or "None", retain=False)
+                    current_attrs = {name: item[name] for name in ("start", "end", "source", "quality", "fetched_at")
+                                     if item.get(name) is not None}
+                    self._send(f"{BASE_TOPIC}/sensor/{key}/attributes", json.dumps(current_attrs, separators=(",", ":")))
                 return True
             except Exception:
                 LOG.info("MQTT publish unavailable; will retry on next update")
@@ -245,7 +261,9 @@ class MQTTExporter:
         assert self.transport is not None
         self.transport.publish(topic, payload, retain=True)
 
-    def _publish_discovery(self) -> None:
+    def _publish_discovery(self, current_prices: Mapping[str, Any] | None = None) -> None:
+        now = self.clock().astimezone(timezone.utc)
+        quarter_end = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0) + timedelta(minutes=15)
         for key, name, has_unit, icon in self.SENSOR_SPECS:
             config = {
                 "name": name, "unique_id": f"stroomvoorspeller_{key}",
@@ -254,9 +272,18 @@ class MQTTExporter:
                 "payload_available": "online", "payload_not_available": "offline",
                 "device": DEVICE, "icon": icon,
             }
-            if has_unit and self._unit:
-                config.update(unit_of_measurement=self._unit, state_class="measurement")
-            if key in {"next_quarter_price", "cheapest_next_3h"}:
+            if has_unit and (self._unit or key.startswith("current_")):
+                config.update(unit_of_measurement="EUR/kWh" if key.startswith("current_") else self._unit,
+                              state_class="measurement")
+            if key.startswith("current_"):
+                item = (current_prices or {}).get(key) or {}
+                try:
+                    valid_until = _parse_time(item["end"]) if item.get("end") else quarter_end
+                    expiry = max(1, math.ceil((valid_until - now).total_seconds()))
+                except (TypeError, ValueError, OverflowError):
+                    expiry = max(1, math.ceil((quarter_end - now).total_seconds()))
+                config["expire_after"] = min(900, expiry)
+            if key in {"next_quarter_price", "cheapest_next_3h", "current_market_price", "current_all_in_price"}:
                 config["json_attributes_topic"] = f"{BASE_TOPIC}/sensor/{key}/attributes"
             topic = f"{DISCOVERY_PREFIX}/sensor/{BASE_TOPIC}/{key}/config"
             self._send(topic, json.dumps(config, separators=(",", ":")))
