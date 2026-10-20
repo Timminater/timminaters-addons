@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- EpexPredictor NL en Timestral-209M rekenen volledig in de add-on; externe service-URL's en de losse Timestral-service verwijderd.
+- Ingebouwd Epex NL LightGBM-model, brondata-cache en instelbare trainingsperiode van 30–180 dagen.
+- Handmatig bevestigde Timestral-modeldownload met status, voortgang, gepinde gewichten en SHA-256-verificatie; inferentie blijft strikt offline.
+- Eén lokaal ML-proces tegelijk, 1–4 instelbare CPU-threads en vrijgave van model-RAM na iedere run; uitschakelen stopt lopend ML-werk.
+- Ook Epex kan historisch lokaal terugrekenen, apart van live prestatiemetingen.
+- Debian slim-basis met ingebouwde CPU-bibliotheken voor amd64 en aarch64; de modelgewichten blijven optioneel onder /data.
+
 ## 0.2.0
 
 - Adaptieve lokale kwartiermethode met historische patroonkeuze en niveaucorrectie.

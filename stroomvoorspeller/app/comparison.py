@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean
 from zoneinfo import ZoneInfo
 
-from .methods import METHODS, adaptive_forecast, timestral_forecast, configured_version
+from .methods import METHODS, adaptive_forecast, timestral_forecast, epex_forecast, configured_version
 from .model import forecast_quarters
 from .storage import utc_iso
 
@@ -35,12 +35,12 @@ def comparison(service):
     statuses = service.store.source_statuses()
     result = {"active_method": settings["active_method"], "unit": settings["tariff_unit"],
               "methods": [], "history_job": dict(service._history_job),
-              "historical_notice": "Historische reconstructie met het huidige prijsarchief, zonder oude weersverwachtingen. Geen live prestatiebewijs.",
+              "historical_notice": "Historische reconstructie met het huidige prijsarchief, zonder de oorspronkelijke bronversies. Epex gebruikt gereconstrueerde historische weerdata. Geen live prestatiebewijs.",
               "pairing_notice": "Gepaarde MAE gebruikt dezelfde uitgiftetijd en doelkwartieren van ingeschakelde methoden met resultaten."}
     maps = {"live": {}, "historical": {}}
     for method, label in METHODS.items():
         item = {"id": method, "label": label, "enabled": settings["forecast_methods"][method],
-                "status": statuses.get("method:" + method, {}), "historical_supported": method != "epex"}
+                "status": statuses.get("method:" + method, {}), "historical_supported": True}
         for mode in maps:
             latest, _ = service.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"],
                                                       method=method, evaluation_mode=mode,
@@ -74,8 +74,6 @@ def comparison(service):
             maps[mode][method] = scored
             item[mode] = {**_scores(scored.values()), "version": version, "days": len(days),
                           "horizons": [{"horizon": k, **_scores(v)} for k, v in buckets.items()]}
-        if method == "epex":
-            item["historical"]["reason"] = "Publieke API bevat geen archief van destijds uitgegeven prognoses"
         result["methods"].append(item)
     for mode, methods in maps.items():
         available = [key for key, values in methods.items() if values and settings["forecast_methods"][key]]
@@ -87,15 +85,15 @@ def comparison(service):
 
 
 def start_history_test(service):
-    """Single background job; at most seven daily issues, 24h each, no Epex calls."""
+    """Single background job; at most seven daily issues and 24h each."""
     with service._history_job_lock:
         if service._history_thread and service._history_thread.is_alive():
             return dict(service._history_job)
         settings = service.get_settings()
         entity = service._price_identity(settings)
-        methods = [m for m, enabled in settings["forecast_methods"].items() if enabled and m != "epex"]
+        methods = [m for m, enabled in settings["forecast_methods"].items() if enabled]
         if not methods:
-            raise ValueError("Schakel een lokale methode of Timestral in voor historische tests")
+            raise ValueError("Schakel een rekenmethode in voor historische tests")
         if not entity:
             raise ValueError("Kies eerst een prijsbron")
         now = service.clock().astimezone(UTC)
@@ -138,8 +136,10 @@ def _history_worker(service, settings, entity, rows, now, methods):
                         run = adaptive_forecast(history, issue, max_points=96, price_scale=scale, base=forecast_quarters)
                     elif method == "v4":
                         run = forecast_quarters(history, issue, max_points=96, price_scale=scale)
+                    elif method == "epex":
+                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=96)
                     else:
-                        run = timestral_forecast(history, issue, settings, max_points=96)
+                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=96)
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,
                               "tariff_unit": settings["tariff_unit"], "price_field": settings["price_field"],
                               "history": history, "weather_model": None, "price_scale": scale}

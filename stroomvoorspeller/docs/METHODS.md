@@ -1,171 +1,154 @@
-# Rekenmethoden en vergelijking
+# Lokale rekenmethoden
 
-Via Instellingen kan elke methode afzonderlijk aan of uit. Standaard is alleen
-**Lokaal adaptief** aan; er worden geen Timestral-gewichten opgehaald en geen
-EpexPredictor-aanvragen gedaan zolang die methoden uit staan. Alle methoden mogen
-uit: bekende prijzen blijven dan beschikbaar, prognoses verdwijnen uit grafiek
-en MQTT. De actieve methode moet ingeschakeld zijn wanneer een methode aan staat.
-Andere ingeschakelde methoden bouwen hun eigen vergelijkingsreeks op.
+Alle methoden rekenen **in dezelfde add-on**. Er zijn geen instellingen voor een
+EpexPredictor- of Timestral-server en er wordt geen prijshistorie naar een externe
+rekenservice verstuurd. Oude service-URL's uit 0.2.0 worden genegeerd en niet meer
+via instellingen aangeboden.
 
-Uitschakelen voorkomt volgende berekeningen. Een al lopende aanvraag mag
-afronden. Historische tests controleren de schakelaars opnieuw vóór elke run.
-Er wordt niet automatisch van methode gewisseld bij uitval; de eigen foutstatus
-blijft zichtbaar onder Analyse. Daardoor is duidelijk van welke methode een
-prognose afkomstig is. De laatste opgeslagen prognose blijft bij een tijdelijk
-mislukte berekening beschikbaar met de bestaande uitgiftetijd.
+Onder Instellingen kan elke methode afzonderlijk aan of uit. Standaard is alleen
+**Lokaal adaptief** aan. De actieve methode bepaalt grafiek en MQTT; andere
+ingeschakelde methoden bewaren hun eigen resultaten voor Analyse. Alle methoden
+mogen uit: bekende prijzen blijven zichtbaar, prognoses verdwijnen.
 
-## Lokale methoden
+## Resources
 
-**Lokaal adaptief** combineert de oorspronkelijke v4-uitkomst (25%) met een
-historisch kwartierpatroon (75%). Een validatievenster van de afgelopen zeven
-dagen kiest tussen 7-, 14- en 28-daagse patronen, met of zonder een robuuste
-prijsniveaucorrectie op de laatste twee dagen. Werkdagen en weekenden en lokale
-kwartierposities blijven onderscheiden. Elke validatievoorspelling gebruikt
-uitsluitend prijzen van vóór zijn eigen simulatietijd; de doelprijzen komen
-niet in die training terecht. Bij onvoldoende validatiepunten blijft v4 actief
-binnen deze methode, met een expliciete melding. De mixverhouding is een vaste
-ontwerpkeuze, geen bewezen universeel optimale verhouding.
+De CPU-bibliotheken voor alle methoden zitten in de image. Daardoor is de image
+groter dan die van 0.2.0; de Timestral-gewichten zitten er niet in. De lokale
+amd64-testimage was circa 1,2 GiB uitgepakt, exclusief modelgewichten. Uitgeschakelde
+methoden importeren geen zware ML-bibliotheken en starten geen training,
+inferentie of download. De webserver blijft onafhankelijk van die bibliotheken.
 
-**Oorspronkelijke v4** blijft afzonderlijk beschikbaar voor vergelijking.
-De adaptieve methode is experimenteel. Een regressietest toont minder fout in
-een synthetische prijsniveausprong; dat bewijst geen verbetering bij elk contract,
-elk weersregime of op een bestaande installatie. Beide methoden blijven hun
-ongekalibreerde marges als indicatie tonen totdat voldoende eigen live fouten
-voor kalibratie beschikbaar zijn.
+Epex en Timestral starten elk een tijdelijk **lokaal Python-proces**. Er draait
+maximaal één ML-proces of modeldownload tegelijk. Na afloop wordt het proces
+beëindigd en komt zijn modelgeheugen vrij. Uitschakelen stopt ook een lopende
+ML-berekening; de eerste controle gebeurt binnen circa één seconde. De instelling
+**CPU-threads voor lokale ML** begrenst beide modellen tot 1–4 threads (standaard 2).
 
-## EpexPredictor NL
+Automatische Epex-runs zijn minimaal een uur uit elkaar; Timestral-runs minimaal
+vijftien minuten. Een langer algemeen berekeninterval blijft van kracht.
+**Bereken nu** kan bewust een nieuwe run starten. Bij uitval wordt niet heimelijk
+van methode gewisseld; de foutstatus en uitgiftetijd blijven zichtbaar.
 
-De app gebruikt het `/prices`-endpoint van
-[b3nn0/EpexPredictor](https://github.com/b3nn0/EpexPredictor). De standaard-URL is
-`https://epexpredictor.batzill.com`; een zelf gehoste compatibele service kan ook.
-De aanvraag kiest Nederland, EUR/MWh en UTC. De app verstuurt geen HA-prijshistorie
-of Supervisor-token. De publieke dienst is gratis op basis van fair use en geeft
-geen beschikbaarheidsgarantie. Automatische aanvragen en foutpogingen worden
-begrensd tot maximaal eenmaal per uur; **Bereken nu** kan dit bewust doorbreken.
+## Lokaal adaptief en oorspronkelijke v4
 
-Het antwoord bevat ook bekende prijzen. Waarden tot en met `knownUntil`, plus
-lokaal al bekende kwartieren, worden niet als voorspelling opgeslagen. De lokale
-ophaaltijd is de uitgiftetijd voor vergelijking: de upstream modelversie en
-werkelijke berekentijd zijn niet beschikbaar. Scores identificeren daarom de
-adapterversie, niet een onveranderlijk upstream model.
+Lokaal adaptief combineert v4 (25%) met een historisch kwartierpatroon (75%). Een
+validatievenster van zeven dagen kiest uit 7-, 14- en 28-daagse patronen, met of
+zonder niveaucorrectie op de laatste twee dagen. De validatie-invoer moet vóór de
+gesimuleerde uitgiftetijd beschikbaar zijn. Bij te weinig validatiepunten valt
+deze methode terug op v4, met een melding. De mix is een ontwerpkeuze, geen
+bewezen universeel optimale verhouding. De oorspronkelijke v4 blijft als aparte
+referentiemethode beschikbaar.
 
-Voor de Energy-Charts-prijsbron gebruikt de app de bestaande kale/all-in-keuze
-en gedateerde tariefcomponenten. Voor een HA-tarief moet de gebruiker expliciet
-een omrekening bevestigen:
+## Ingebouwde EpexPredictor NL
+
+De add-on bevat de oorspronkelijke LightGBM-modelmodules van
+[b3nn0/EpexPredictor](https://github.com/b3nn0/EpexPredictor) op commit
+`676ed37da4968c4a94d3fece39b948d5988ff580`, inclusief BSD-3-Clause-licentie.
+Training en voorspelling vinden lokaal plaats, met de Nederlandse configuratie
+en vier Nederlandse weerlocaties. Dit is het **NL single-stage-model**, niet de
+volledige internationale tweetrapsstapel van de publieke service. Daardoor zijn
+de prestatiecijfers van die service niet rechtstreeks van toepassing.
+
+De trainingshistorie is instelbaar van 30 tot 180 dagen (standaard 180). Een
+kortere periode bespaart rekentijd en geheugen. Minimaal veertien dagen complete
+markt-/weerkwartieren zijn vereist. Invoer en het laatst getrainde model worden
+onder `/data/models/epex` bewaard; elke run traint met de beschikbare begrensde
+invoer. De data-cache voorkomt het telkens opnieuw downloaden van alle historie. Een
+volledige weerprognose-cache jonger dan een uur wordt hergebruikt; bij bronuitval
+mag een volledige cache tot zes uur oud dienen, met vermelding in de run.
+
+Lokaal rekenen betekent hier niet volledig offline: actuele en historische
+**brondata** komen van Energy-Charts/Fraunhofer ISE en Open-Meteo
+(`api.energy-charts.info`, `api.open-meteo.com` en
+`historical-forecast-api.open-meteo.com`). Er worden geen voorspellingen bij
+`epexpredictor.batzill.com` opgehaald. Het NL-model heeft geen ENTSO-E-token nodig;
+upstream ondersteunt een optionele ENTSO-E-bronfallback. Nord Pool wordt door de
+app niet ingeschakeld. Bronvoorwaarden en fair use blijven van toepassing.
+
+Lokale aanpassingen aan de upstream-code staan in `app/vendor/README.md`: proxy-
+en CA-ondersteuning met verificatie, begrensde timeouts/threads en geen opvulling
+van ontbrekende kwartierprijzen. Training gebruikt uitsluitend vóór de uitgifte
+geëindigde marktkwartieren, ook als een cache al day-aheadprijzen bevat. Alleen
+kwartieren met complete weerkenmerken worden voorspeld; gaten blijven gaten.
+
+Bij Energy-Charts gebruikt de app de bestaande kale/all-in-keuze en gedateerde
+tariefcomponenten. Voor een HA-tarief is een expliciet bevestigde omrekening nodig:
 
 ```
 HA-prijs (EUR/kWh) = kale marktprijs (EUR/kWh) × vermenigvuldiger + vaste opslag
 ```
 
-Dit is nodig om beursprijzen niet met een all-intarief te verwarren. De formule
-moet bij de **gekozen belastingvariant en eenheid** passen. Er wordt geen
-leveranciersformule geraden. Bij gewijzigde omrekeninstellingen begint een nieuwe
-Epex-evaluatiereeks; eerdere prognoses blijven bewaard.
+Die formule moet bij het gekozen belastingveld en contract passen; de app raadt
+geen leveranciersformule. Een gewijzigde omrekening of trainingsperiode begint
+een eigen Epex-evaluatiereeks. De onderliggende marktbron gebruikt CC BY 4.0;
+bronvermelding blijft EpexPredictor, Energy-Charts/Fraunhofer ISE en Open-Meteo.
 
-Bronvermelding: EpexPredictor (Adrian Batzill; BSD-3-Clause voor de upstream code),
-Energy-Charts/Fraunhofer ISE en Open-Meteo. Deze app integreert de API en bevat geen
-gekopieerde EpexPredictor-modelcode. Upstream-code-inspectie:
-`676ed37da4968c4a94d3fece39b948d5988ff580`.
+## Ingebouwde Timestral-209M en handmatige download
 
-## Timestral-209M: optionele rekenservice
+De officiële Timestral-bibliotheek is ingebouwd op commit
+`a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff` (Apache-2.0). Er is geen aparte
+machine, container, server-URL of luisterpoort nodig.
 
-De gewone add-on blijft licht en vereist geen PyTorch. De optionele service in
-`timestral_service/` draait op een aparte Linux-machine of container met CPU en
-voldoende geheugen. Bouw en start die bijvoorbeeld op de Docker-host:
+1. Open Instellingen en lees de informatie bij **Timestral lokaal installeren**.
+2. Lees de modellicentie en vink de downloadbevestiging aan.
+3. Klik **Download Timestral-model** en wacht op de lokale gereedmelding.
+4. Schakel Timestral in en kies het eventueel als actieve methode.
 
-```sh
-cd stroomvoorspeller/timestral_service
-docker build -t stroomvoorspeller-timestral .
-docker run -d --name stroomvoorspeller-timestral --restart unless-stopped \
-  --cpus 2 --memory 4g \
-  -e TIMESTRAL_THREADS=2 \
-  -v stroomvoorspeller-timestral-cache:/cache \
-  -p LAN_IP:8098:8098 stroomvoorspeller-timestral
-```
+Alleen inschakelen start **geen download**. De downloadactie is afzonderlijk en
+werkt ook als de methode nog uit staat. Het endpoint
+`POST /api/timestral/download` vereist `{"confirmed": true}`; status en voortgang
+staan op `GET /api/timestral`. De modeldownload doet een expliciete aanvraag bij
+Hugging Face, controleert de gepinde bestanden en bewaart ze onder
+`/data/models/timestral-209m`. Na een herstart of update blijven die bestanden
+behouden. Een onderbroken download kan handmatig worden hervat. Bij een bezet
+ML-proces verschijnt een melding; probeer de download dan opnieuw na die run.
 
-Vervang `LAN_IP` door het private adres van de Docker-host en vul in de app
-`http://LAN_IP:8098` in. Bij een gedeeld privaat containernetwerk kan de service
-via zijn servicenaam worden benaderd zonder hostpoort. Publiceer deze endpoint
-niet op internet: hij heeft geen authenticatie en ontvangt de prijshistorie van
-het gekozen tarief. Gebruik voor toegang over een onbetrouwbaar netwerk een
-beveiligde infrastructuur met TLS/toegangscontrole.
+De checkpoint is vastgezet op
+`9874d252ab0aae16f7f7c999f98f98d6ad7d8365`. De gewichten zijn 837.271.648 bytes
+(circa 800 MiB); daarnaast is ruimte voor de image, metadata en eventuele
+onvolledige download nodig. SHA-256 van gewichten én configuratie wordt
+gecontroleerd; ook vóór inferentie worden de checks herhaald. De modellicentie
+wordt mee gedownload. De gewichten hebben een **Modified MIT**-licentie met een
+beperking voor bedrijven/werkgevers boven USD 20 miljoen geconsolideerde
+maandomzet. Zie de [modellicentie](https://huggingface.co/mistralai/Timestral-209M/blob/main/LICENSE).
 
-De 4 GB is een startbudget, geen bewezen maximum. Meer context vraagt meer
-geheugen. De standaardcontext is 28 dagen, instelbaar van 2 tot 90 dagen. De worker
-begrenst CPU-threads tot vier en verwerkt maximaal één aanvraag tegelijk.
-Automatische berekeningen en foutpogingen zijn minimaal vijftien minuten uit
-elkaar. De eerste aanvraag downloadt het model naar de cache; die eerste download
-kan langer duren dan de aanvraaglimiet. Een volgende poging hergebruikt de cache.
-Elke inferentie draait in een tijdelijk proces; na afloop geeft dat zijn
-modelgeheugen vrij. Dit kost extra laadtijd maar vermijdt permanent model-RAM.
+Inferentie gebruikt uitsluitend de lokale bestanden, met offline-modus aan.
+Ontbrekende of beschadigde bestanden veroorzaken een melding; nooit een
+stilzwijgende download. De adapter gebruikt prijshistorie, zonder weerscovariaten.
+Gaten blijven ontbrekend en negatieve prijzen worden toegestaan. De q10–q90-band
+is modelonzekerheid, geen lokaal bewezen 80%-dekking.
 
-De service gebruikt de officiële `timestral`-bibliotheek op commit
-`a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff`, PyTorch 2.6.0 CPU en de gepinde
-[Timestral-209M](https://huggingface.co/mistralai/Timestral-209M)-checkpoint
-`9874d252ab0aae16f7f7c999f98f98d6ad7d8365`.
-Netwerktoegang tot GitHub en de Python/PyTorch-registers is nodig voor de bouw;
-Hugging Face en diens downloadhosts zijn nodig bij de eerste modeldownload.
-TLS- en artifactverificatie blijven ingeschakeld. Een beheerde build met eigen
-CA kan die met `--secret id=proxy_ca,src=/pad/naar/ca-bundle.pem` aanbieden.
+De context is instelbaar van 2 tot 90 dagen (standaard 28). Gebruik bij voorkeur
+minimaal 4 GB beschikbare RAM; dat is een startbudget, geen garantie voor elk
+apparaat of elke context. Minder context/threads bespaart resources. Tijdens
+ontwikkeling werkte 28 dagen context met zeven dagen horizon offline binnen een
+containerlimiet van 4 GiB RAM en twee CPU's. Deze controle zegt niets over de
+nauwkeurigheid op jouw installatie.
 
-Deze eerste adapter gebruikt **prijshistorie**, zonder weerscovariaten. Gaten
-blijven ontbrekend; er worden geen gemeten prijzen geïnterpoleerd. Reeds bekende
-aaneengesloten day-aheadkwartieren mogen als context dienen. Negatieve prijzen
-blijven toegestaan, ook bij een uitsluitend positieve context. De q10–q90-band
-is modelonzekerheid en geen lokaal bewezen 80%-dekking. `GET /health` bewijst
-bereikbaarheid; alleen een geslaagde `POST /forecast` bewijst inferentie.
+## Bestaande historie en vergelijking
 
-De codebibliotheek is Apache-2.0; de modelgewichten vallen onder een **Modified MIT**
-licentie, inclusief een beperking voor bedrijven/werkgevers met meer dan
-USD 20 miljoen geconsolideerde maandelijkse omzet. Zie de
-[modellicentie](https://huggingface.co/mistralai/Timestral-209M/blob/main/LICENSE)
-voor de voorwaarden vóór gebruik of distributie.
-
-## Bestaande historie gebruiken
-
-De app bewaart alle echte kwartieren in zijn eigen prijsarchief. Bij een nieuwe
+De app bewaart echte kwartieren in zijn eigen archief. Bij een nieuwe
 HA-configuratie vraagt hij standaard maximaal 90 dagen Recorder-historie op,
-instelbaar van 14 tot 180 dagen. Vergroten van deze instelling reset de
-ophaalcursor; de volgende verversing vult het beschikbare bereik aan. HA moet die
-gegevens nog hebben: verwijderde Recorder-data en grovere uur-/statistiekwaarden
-kunnen niet als echte kwartierprijzen worden hersteld. De bestaande beperking
-voor tax_excluded-HA-historie blijft van kracht: de betekenis van oude states
-is niet bewezen gelijk aan het gekozen belastingveld.
+instelbaar van 14–180 dagen. Een groter bereik reset de ophaalcursor. Verwijderde
+Recorder-data en uurstatistieken kunnen geen echte kwartierdata vervangen. Voor
+`tax_excluded` blijft het bestaande voorbehoud over de betekenis van oude HA-
+states gelden.
 
-Onder Analyse start **Test bestaande historie** handmatig een achtergrondtaak.
-De taak gebruikt maximaal zeven recente uitgiftedagen, voorspelt per dag de
-volgende 96 UTC-kwartieren en vereist minimaal zestien dagen prijsarchief, waarvan
-veertien dagen voor de eerste training. Alleen ingeschakelde lokale methoden en
-Timestral worden uitgevoerd; Timestral moet dus ook voor historische tests
-bereikbaar zijn. Onvoldoende historische dekking levert weinig of geen paren op,
-geen opgevulde doelprijzen. De taak is begrensd en herhaalbaar zonder dubbele
-resultaten voor dezelfde invoer en modelversie.
+**Test bestaande historie** onder Analyse start handmatig een begrensde
+achtergrondtaak: maximaal zeven recente uitgiftedagen, per dag 96 toekomstige
+UTC-kwartieren, met minimaal zestien dagen prijsarchief. Alleen ingeschakelde
+methoden draaien. Ook Epex kan nu lokaal opnieuw trainen voor elke historische
+uitgifte. Timestral vereist vooraf lokaal gedownloade gewichten.
 
-Deze resultaten heten **historische reconstructie**. Ze gebruiken het nu
-beschikbare prijsarchief en alleen vóór elk simulatietijdstip geëindigde
-kwartieren, zonder historische weersverwachtingen. Achteraf gecorrigeerde
-prijswaarden en oude publicatievintages zijn daarmee niet te reconstrueren.
-Die scores blijven gescheiden van live prognoses en tellen niet mee voor
-volwassenheid of intervalkalibratie. Ze bieden wel meteen een eerste vergelijking
-wanneer voldoende oude kwartieren beschikbaar zijn.
+Historische resultaten heten **reconstructie**. Alleen vóór de simulatie geëindigde
+prijzen worden modelinvoer. Epex gebruikt gereconstrueerde historische markt- en
+weerdata; de oorspronkelijke datavintages en oude weersverwachtingen zijn niet
+gegarandeerd. Deze scores blijven gescheiden van destijds opgeslagen live
+prognoses en tellen niet mee voor volwassenheid of intervalkalibratie.
 
-De publieke EpexPredictor-API biedt geen archief van destijds afgegeven prognoses.
-Epex krijgt daarom geen verzonnen historische score. Daar begint de eerlijke
-vergelijking zodra de app echte prognoses ophaalt en bewaart.
-
-## Scores en opslag
-
-Elke run bewaart methode, adapter/modelversie, uitgiftetijd, prijsidentiteit,
-belastingveld, eenheid, invoer en evaluatiemodus. Oudere bestaande runs blijven
-leesbaar. Live scores en gekalibreerde banden worden per methode én versie
-berekend. De actieve methode bepaalt grafiek en MQTT; historische runs kunnen
-nooit de actieve prognose vervangen.
-
-Analyse toont MAE, bias en aantallen per methode via `/api/methods`, met in de API
-ook de horizons 0–24, 24–48 en 48–168 uur. Eén run per lokale dag begrenst de
-invloed van frequente berekeningen. De gepaarde MAE gebruikt uitsluitend dezelfde
+Elke run bewaart methode, versie, uitgiftetijd, prijsidentiteit, belastingveld,
+eenheid, invoer en evaluatiemodus. De lokale adapters hebben nieuwe versies,
+zodat scores uit de oude externe route niet met de nieuwe modellen worden
+gemengd. Analyse toont MAE, bias en aantallen; de gepaarde MAE gebruikt dezelfde
 uitgiftetijden en doelkwartieren van ingeschakelde methoden met resultaten.
-Wanneer er geen overlap is verschijnt geen gepaarde score. Ontbrekende methoden
-of mislukte aanvragen worden niet als nul fout meegeteld. Historische en live
-scores mogen door hun verschillende invoer niet rechtstreeks als één ranglijst
-worden gelezen.
+Ontbrekende paren blijven ontbreken en worden niet als nul fout meegeteld.

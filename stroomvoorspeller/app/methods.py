@@ -8,8 +8,6 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any, Mapping
-from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from .model import ForecastPoint, ForecastRun, _prepare_history, _quarter_start
@@ -18,15 +16,14 @@ UTC = timezone.utc
 LOCAL = ZoneInfo("Europe/Amsterdam")
 STEP = timedelta(minutes=15)
 METHODS = {"local": "Lokaal adaptief", "v4": "Oorspronkelijke v4",
-           "epex": "EpexPredictor NL", "timestral": "Timestral-209M"}
-VERSIONS = {"local": "adaptive-quarter-1", "epex": "epex-api-nl-1", "timestral": "timestral-209m-1"}
+           "epex": "EpexPredictor NL (lokaal)", "timestral": "Timestral-209M (lokaal)"}
+VERSIONS = {"local": "adaptive-quarter-1", "epex": "epex-local-nl-1", "timestral": "timestral-local-209m-1"}
 TIMESTRAL_REVISION = "9874d252ab0aae16f7f7c999f98f98d6ad7d8365"
-EPEX_URL = "https://epexpredictor.batzill.com"
 
 
 def epex_version(settings: Mapping) -> str:
     # A new endpoint or tariff mapping starts its own score/calibration series.
-    keys = ("epex_url", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
+    keys = ("epex_training_days", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
             "price_source", "price_choice", "tariff_unit", "price_field", "energy_tax_eur_kwh",
             "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
     digest = hashlib.sha256(json.dumps({k: settings.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()[:12]
@@ -34,36 +31,13 @@ def epex_version(settings: Mapping) -> str:
 
 
 def timestral_version(settings: Mapping) -> str:
-    payload = [settings.get("timestral_url", ""), settings.get("timestral_context_days", 28)]
+    payload = [settings.get("timestral_context_days", 28)]
     digest = hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:12]
     return VERSIONS["timestral"] + ":" + TIMESTRAL_REVISION[:12] + ":" + digest
 
 
 def configured_version(method: str, settings: Mapping) -> str | None:
     return epex_version(settings) if method == "epex" else timestral_version(settings) if method == "timestral" else None
-
-
-def validate_url(value: str, *, optional: bool = False) -> str:
-    if optional and not value:
-        return ""
-    parts = urlsplit(value)
-    if (parts.scheme not in {"http", "https"} or not parts.hostname or parts.username
-            or parts.password or parts.query or parts.fragment):
-        raise ValueError("Gebruik een HTTP(S) service-URL zonder wachtwoord, query of fragment")
-    # Access .port to reject malformed ports at settings-save time.
-    _ = parts.port
-    return value.rstrip("/")
-
-
-def request_json(url: str, body: Mapping | None = None, timeout: int = 25) -> Any:
-    raw = json.dumps(body, allow_nan=False).encode() if body is not None else None
-    request = Request(url, data=raw, headers={"Accept": "application/json",
-                      "Content-Type": "application/json", "User-Agent": "Stroomvoorspeller/forecast-methods"})
-    with urlopen(request, timeout=timeout) as response:
-        data = response.read(4_000_001)
-    if len(data) > 4_000_000:
-        raise ValueError("Antwoord van voorspelservice is te groot")
-    return json.loads(data)
 
 
 def _analog(known: Mapping, target: datetime, cutoff: datetime, days: int, level: bool) -> float | None:
@@ -147,15 +121,12 @@ def _market_to_tariff(value: float, settings: Mapping, start: datetime) -> float
     return value * (1000 if settings.get("tariff_unit") == "EUR/MWh" else 1)
 
 
-def epex_forecast(history, issued_at, settings, max_points=672, *, fetch=request_json):
+def epex_forecast(history, issued_at, settings, max_points=672, *, runner=None):
     if settings.get("price_source") != "energy_charts_nl" and not settings.get("epex_tariff_confirmed"):
         raise ValueError("Bevestig eerst de markt-naar-HA-tariefomrekening voor EpexPredictor")
-    url = settings.get("epex_url", EPEX_URL) + "/prices?" + urlencode(
-        {"region": "NL", "unit": "EUR_PER_MWH", "hours": 168, "timezone": "UTC"})
-    payload = fetch(url)
-    known_until = datetime.fromisoformat(payload["knownUntil"].replace("Z", "+00:00"))
-    if known_until.tzinfo is None:
-        raise ValueError("EpexPredictor knownUntil mist een tijdzone")
+    from .local_runtime import run_local
+    payload = (runner or run_local)("epex", {"issued_at": issued_at.isoformat(),
+        "training_days": settings.get("epex_training_days", 180), "max_points": max_points}, settings, timeout=600)
     known = _prepare_history(history, issued_at, 1)
     points, seen = [], set()
     stop = _quarter_start(issued_at) + max_points * STEP
@@ -170,23 +141,22 @@ def epex_forecast(history, issued_at, settings, max_points=672, *, fetch=request
         value = float(row["total"])
         if not math.isfinite(value):
             raise ValueError("EpexPredictor levert een niet-eindige prijs")
-        # Known API prices are NOT predictions, and must never enter scoring.
-        if start <= known_until or start < issued_at or start >= stop or start in known:
+        # Locally known prices are not predictions and never enter scoring.
+        if start < issued_at or start >= stop or start in known:
             continue
         price = _market_to_tariff(value, settings, start)
-        points.append(ForecastPoint(start, start + STEP, price, source="epex-api",
-                                   reason="Extern opgehaalde NL-prognose; modeluitgiftetijd niet beschikbaar"))
+        points.append(ForecastPoint(start, start + STEP, price, source="epex-local",
+                                   reason="Ingebouwd EpexPredictor NL-model, lokaal getraind met markt- en weerdata"))
     if not points:
         raise ValueError("EpexPredictor leverde geen onbekende toekomstige kwartieren")
     return ForecastRun(epex_version(settings), issued_at, sorted(points, key=lambda p: p.start_utc), "voorlopig",
-                       ["EpexPredictor / Energy-Charts / Open-Meteo; externe dienst zonder beschikbaarheidsgarantie",
-                        "Lokale ophaaltijd is evaluatietijd; upstream modelversie is niet beschikbaar"])
+                       ["Lokale EpexPredictor NL single-stage; marktdata Energy-Charts, weerdata Open-Meteo",
+                        "NL-model zonder internationale tweede modelstap; prestaties afzonderlijk evalueren",
+                        "Weer uit lokale cache" if payload.get("weather_cached") else "Weerbron ververst tijdens deze run"])
 
 
-def timestral_forecast(history, issued_at, settings, max_points=672, *, fetch=request_json):
-    url = settings.get("timestral_url", "")
-    if not url:
-        raise ValueError("Stel de URL van de optionele Timestral-rekenservice in")
+def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=None):
+    from .local_runtime import run_local
     known = _prepare_history(history, issued_at, 1)
     if not known:
         raise ValueError("Timestral heeft kwartierhistorie nodig")
@@ -207,12 +177,12 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, fetch=re
     horizon = min(max_points, max(0, int((_quarter_start(issued_at) + max_points * STEP - end) / STEP)))
     if horizon < 1:
         raise ValueError("Alle kwartieren binnen de horizon zijn al bekend")
-    payload = fetch(url + "/forecast", {"context": context, "prediction_length": horizon}, timeout=180)
+    payload = (runner or run_local)("timestral", {"context": context, "prediction_length": horizon}, settings, timeout=180)
     if payload.get("model") != "mistralai/Timestral-209M" or payload.get("revision") != TIMESTRAL_REVISION:
-        raise ValueError("Timestral-service gebruikt niet het ingestelde 209M-model")
+        raise ValueError("Lokale Timestral-module gebruikt niet het ingestelde 209M-model")
     arrays = [payload.get(key) for key in ("median", "lower", "upper")]
     if any(not isinstance(a, list) or len(a) != horizon for a in arrays):
-        raise ValueError("Timestral-service levert onjuiste voorspellinglengte")
+        raise ValueError("Lokale Timestral-module levert onjuiste voorspellinglengte")
     points = []
     for i, values in enumerate(zip(*arrays)):
         value, lower, upper = map(float, values)

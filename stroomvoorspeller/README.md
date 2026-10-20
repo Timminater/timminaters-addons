@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.0`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.1`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -73,6 +73,6 @@ grafiek en MQTT; ingeschakelde alternatieven bewaren hun eigen prognoses.
 
 Onder Analyse vergelijk je live resultaten en kun je beschikbare bestaande
 kwartierhistorie handmatig laten terugrekenen, zonder historische en live scores
-te vermengen. Timestral vereist de optionele aparte CPU-rekenservice.
+te vermengen. Alle methoden rekenen in de add-on. Timestral vereist een afzonderlijk bevestigde modeldownload; er is geen externe rekenservice nodig.
 Zie [methoden, resourcebeheer en historische tests](docs/METHODS.md) voor installatie,
 tariefomrekening, beperkingen en licenties.

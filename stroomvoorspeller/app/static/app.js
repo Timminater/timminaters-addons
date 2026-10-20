@@ -241,6 +241,25 @@
     try { await api('api/history-test', {method: 'POST'}); await loadMethods(); }
     catch (error) { state.historyError = error.message; setText('history-progress', error.message); $('history-test').disabled = false; }
   }
+  let modelTimer = null;
+  async function loadTimestralStatus() {
+    try {
+      const status = await api('api/timestral');
+      const running = status.job?.state === 'running';
+      const mb = value => Math.round((value || 0) / 1024 / 1024);
+      $('timestral-download').disabled = running;
+      $('timestral-download').textContent = running ? 'Download bezig…' : status.ready ? 'Controleer / herstel modeldownload' : 'Download Timestral-model';
+      setText('timestral-download-status', status.ready ? 'Timestral staat lokaal klaar. Inschakelen start geen nieuwe download.' : status.job?.state === 'failed' ? status.job.message : running ? `${status.job.message} · ${mb(status.downloaded_bytes)} / ${mb(status.download_bytes)} MB` : 'Model nog niet gedownload. Inschakelen alleen start geen download.');
+      if (modelTimer) clearTimeout(modelTimer);
+      if (running) modelTimer = setTimeout(loadTimestralStatus, 2500);
+    } catch (error) { setText('timestral-download-status', error.message); }
+  }
+  async function downloadTimestral() {
+    if (!$('timestral-consent').checked) { setText('timestral-download-status', 'Bevestig eerst de download en lees de modellicentie.'); return; }
+    $('timestral-download').disabled = true;
+    try { await api('api/timestral/download', {method: 'POST', body: JSON.stringify({confirmed: true})}); await loadTimestralStatus(); }
+    catch (error) { setText('timestral-download-status', error.message); $('timestral-download').disabled = false; }
+  }
   function activateView(view, focus = false) {
     state.activeView = view; const analysis = view === 'analysis';
     $('dashboard-panel').hidden = analysis; $('analysis-panel').hidden = !analysis;
@@ -293,11 +312,13 @@
     $('mqtt-enabled').checked = s.mqtt_enabled === true;
     for (const method of ['local', 'v4', 'epex', 'timestral']) $('method-' + method).checked = s.forecast_methods?.[method] ?? (method === 'local');
     $('active-method').value = s.active_method || 'local';
-    $('epex-url').value = s.epex_url || 'https://epexpredictor.batzill.com';
+    $('ml-threads').value = s.ml_threads ?? 2;
+    $('epex-training').value = s.epex_training_days ?? 180;
     $('epex-multiplier').value = s.epex_multiplier ?? 1;
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
-    $('timestral-url').value = s.timestral_url || '';
+    $('timestral-consent').checked = false;
+    void loadTimestralStatus();
     $('timestral-context').value = s.timestral_context_days ?? 28;
     $('history-days').value = s.history_days ?? 90;
     const suggested = s.location_suggestion || {};
@@ -319,11 +340,11 @@
     const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
     settings.forecast_methods = Object.fromEntries(['local', 'v4', 'epex', 'timestral'].map(m => [m, $('method-' + m).checked]));
     settings.active_method = $('active-method').value;
-    settings.epex_url = $('epex-url').value;
+    settings.ml_threads = Number($('ml-threads').value);
+    settings.epex_training_days = Number($('epex-training').value);
     settings.epex_multiplier = Number($('epex-multiplier').value);
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
-    settings.timestral_url = $('timestral-url').value;
     settings.timestral_context_days = Number($('timestral-context').value);
     settings.history_days = Number($('history-days').value);
     if (priceSource === 'energy_charts_nl' && settings.price_choice === 'all_in' && (!$('supplier-fee').value || (settings.supplier === 'tibber' && !settings.supplier_fee_confirmed))) { show('settings-error', true); $('settings-error').textContent = 'Vul de gecontroleerde inkoopvergoeding incl. btw in en bevestig de btw-basis.'; return; }
@@ -364,6 +385,7 @@
   }
   function init() {
     $('history-test').addEventListener('click', testHistory);
+    $('timestral-download').addEventListener('click', downloadTimestral);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
     $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);

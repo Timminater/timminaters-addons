@@ -145,6 +145,9 @@ class AppService:
         self._history_job = {"state": "idle"}
         self._history_thread: threading.Thread | None = None
         self._history_job_lock = threading.Lock()
+        self._download_job = {"state": "idle"}
+        self._download_lock = threading.Lock()
+        self._download_thread: threading.Thread | None = None
         self._maturity_cache: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
         self._analysis_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._mqtt_exporter = mqtt_exporter or MQTTExporter(
@@ -182,11 +185,13 @@ class AppService:
         value.setdefault("mqtt_enabled", False)
         value.setdefault("forecast_methods", {"local": True, "v4": False, "epex": False, "timestral": False})
         value.setdefault("active_method", "local")
-        value.setdefault("epex_url", "https://epexpredictor.batzill.com")
+        value.pop("epex_url", None)
+        value.setdefault("epex_training_days", 180)
+        value.setdefault("ml_threads", 2)
         value.setdefault("epex_tariff_confirmed", False)
         value.setdefault("epex_multiplier", 1.0)
         value.setdefault("epex_offset_eur_kwh", 0.0)
-        value.setdefault("timestral_url", "")
+        value.pop("timestral_url", None)
         value.setdefault("timestral_context_days", 28)
         value.setdefault("history_days", 90)
         return value
@@ -195,14 +200,14 @@ class AppService:
         allowed = {"tariff_entity", "price_source", "tariff_unit", "price_field", "price_choice", "supplier",
                    "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from",
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
-                   "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_url",
-                   "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh", "timestral_url",
+                   "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
+                   "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
                    "timestral_context_days", "history_days"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
-        from .methods import METHODS, validate_url
+        from .methods import METHODS
         methods = merged["forecast_methods"]
         if (not isinstance(methods, dict) or set(methods) != set(METHODS)
                 or any(type(v) is not bool for v in methods.values())):
@@ -211,8 +216,6 @@ class AppService:
             raise ValueError("Onbekende actieve methode")
         if any(methods.values()) and not methods[merged["active_method"]]:
             raise ValueError("De actieve rekenmethode moet ingeschakeld zijn (of schakel alle methoden uit)")
-        merged["epex_url"] = validate_url(str(merged["epex_url"]))
-        merged["timestral_url"] = validate_url(str(merged["timestral_url"]), optional=True)
         if type(merged["epex_tariff_confirmed"]) is not bool:
             raise ValueError("Bevestig de Epex-tariefomrekening met aan of uit")
         for key in ("epex_multiplier", "epex_offset_eur_kwh"):
@@ -222,7 +225,8 @@ class AppService:
                 raise ValueError("Ongeldige Epex-tariefomrekening")
         if merged["epex_multiplier"] <= 0:
             raise ValueError("De Epex-vermenigvuldiger moet positief zijn")
-        for key, low, high in (("timestral_context_days", 2, 90), ("history_days", 14, 180)):
+        for key, low, high in (("timestral_context_days", 2, 90), ("history_days", 14, 180),
+                               ("epex_training_days", 30, 180), ("ml_threads", 1, 4)):
             if type(merged[key]) is not int or not low <= merged[key] <= high:
                 raise ValueError(f"{key}: kies een geheel aantal dagen van {low} t/m {high}")
         interval = merged.get("calculation_interval_minutes")
@@ -305,8 +309,8 @@ class AppService:
                "tariff_valid_from": valid_from, "tariff_valid_to": valid_to,
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
-        for key in ("forecast_methods", "active_method", "epex_url", "epex_tariff_confirmed",
-                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_url", "timestral_context_days", "history_days"):
+        for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_confirmed",
+                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_context_days", "history_days"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
@@ -830,13 +834,21 @@ class AppService:
         return MethodStore(self.store, settings["active_method"],
                            run["model_version"] if run else configured_version(settings["active_method"], settings))
 
+    def _runtime_settings(self, settings, method):
+        return {**settings, "_data_dir": str(self.store.data_dir),
+                "_cancel": lambda: self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method)}
+
+    def timestral_status(self):
+        from .local_runtime import timestral_status
+        return {**timestral_status(self.store.data_dir), "job": dict(self._download_job)}
+
     def _run_methods(self, history, now, weather, used_weather, settings, entity, force, extra_reasons):
         from .methods import adaptive_forecast, epex_forecast, timestral_forecast, configured_version, VERSIONS
         runners = {
             "local": lambda: adaptive_forecast(history, now, used_weather, price_scale=scale, base=_load_forecaster()),
             "v4": lambda: _load_forecaster()(history, issued_at=now, weather=used_weather, price_scale=scale),
-            "epex": lambda: epex_forecast(history, now, settings),
-            "timestral": lambda: timestral_forecast(history, now, settings),
+            "epex": lambda: epex_forecast(history, now, self._runtime_settings(settings, "epex")),
+            "timestral": lambda: timestral_forecast(history, now, self._runtime_settings(settings, "timestral")),
         }
         unit = settings.get("tariff_unit") or ((history[-1].get("unit") if history else None) or "EUR/MWh").replace("€/", "EUR/")
         scale = 1000.0 if unit == "EUR/kWh" else 1.0
@@ -1014,6 +1026,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if path == "/api/methods":
                     from .comparison import comparison
                     return self._send(200, comparison(service))
+                if path == "/api/timestral": return self._send(200, service.timestral_status())
                 if path == "/api/history-job": return self._send(200, dict(service._history_job))
                 if path == "/api/health": return self._send(200, {"ok": True, "service": "stroomvoorspeller"})
                 if path == "/api/status": return self._send(200, service.status())
@@ -1067,6 +1080,15 @@ def make_handler(service: AppService, static_dir: str | None = None):
 
         def do_POST(self) -> None:
             path, _ = self._path()
+            if path == "/api/timestral/download":
+                from .local_runtime import start_download
+                try:
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 1024: raise ValueError("Downloadbevestiging ontbreekt")
+                    body = json.loads(self.rfile.read(size))
+                    if not isinstance(body, dict): raise ValueError("Downloadbevestiging ontbreekt")
+                    return self._send(202, start_download(service, body.get("confirmed")))
+                except (ValueError, TypeError) as exc: return self._send(400, {"error": str(exc)})
             if path == "/api/history-test":
                 from .comparison import start_history_test
                 try: return self._send(202, start_history_test(service))

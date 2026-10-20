@@ -69,45 +69,47 @@ def test_epex_excludes_published_prices_and_converts_explicit_tariff():
     settings = {"epex_tariff_confirmed": True, "epex_multiplier": 1.21,
                 "epex_offset_eur_kwh": .1, "tariff_unit": "EUR/kWh"}
     calls = []
-    def fetch(url):
-        calls.append(url)
+    def runner(method, body, config, **kwargs):
+        calls.append((method, body))
         return payload
-    run = epex_forecast([], NOW, settings, fetch=fetch)
+    known = [{"start_utc": NOW + i * STEP, "end_utc": NOW + (i + 1) * STEP,
+              "published_at": NOW, "price": .221} for i in range(2)]
+    run = epex_forecast(known, NOW, settings, runner=runner)
     assert len(run.points) == 2
     assert run.points[0].start_utc == NOW + 2 * STEP
     assert run.points[0].price == pytest.approx(.221)
-    assert "region=NL" in calls[0] and "EUR_PER_MWH" in calls[0]
+    assert calls[0][0] == "epex" and calls[0][1]["training_days"] == 180
     # Unconfirmed conversion must fail before any request.
     settings["epex_tariff_confirmed"] = False
     with pytest.raises(ValueError, match="Bevestig"):
-        epex_forecast([], NOW, settings, fetch=lambda *_: pytest.fail("unexpected network"))
+        epex_forecast([], NOW, settings, runner=lambda *a, **k: pytest.fail("unexpected worker"))
 
 
 def test_epex_rejects_duplicate_and_nonfinite_values():
     row = {"startsAt": utc_iso(NOW + STEP), "total": 100}
     settings = {"price_source": "energy_charts_nl", "tariff_unit": "EUR/kWh"}
     with pytest.raises(ValueError, match="Dubbele"):
-        epex_forecast([], NOW, settings, fetch=lambda _: {"knownUntil": utc_iso(NOW), "prices": [row, row]})
+        epex_forecast([], NOW, settings, runner=lambda *a, **k: {"knownUntil": utc_iso(NOW), "prices": [row, row]})
     with pytest.raises(ValueError, match="niet-eindige"):
-        epex_forecast([], NOW, settings, fetch=lambda _: {"knownUntil": utc_iso(NOW), "prices": [{**row, "total": float('nan')}]})
+        epex_forecast([], NOW, settings, runner=lambda *a, **k: {"knownUntil": utc_iso(NOW), "prices": [{**row, "total": float('nan')}]})
 
 
 def test_timestral_regular_grid_preserves_gaps_and_rejects_bad_response():
     rows = history(3)
     del rows[30]
     sent = []
-    def fetch(url, body, **kwargs):
+    def runner(method, body, settings, **kwargs):
         sent.append(body)
         return {"model": "mistralai/Timestral-209M", "revision": TIMESTRAL_REVISION, "median": [-.02] * 4,
                 "lower": [-.05] * 4, "upper": [.01] * 4}
-    run = timestral_forecast(rows, NOW, {"timestral_url": "http://worker", "timestral_context_days": 3}, 4, fetch=fetch)
+    run = timestral_forecast(rows, NOW, {"timestral_context_days": 3}, 4, runner=runner)
     assert sent[0]["context"][30] is None
     assert len(sent[0]["context"]) == 288
     assert run.points[0].price == -.02  # Negative electricity prices are valid.
     assert run.points[0].start_utc == NOW
     with pytest.raises(ValueError, match="lengte"):
-        timestral_forecast(rows, NOW, {"timestral_url": "http://worker"}, 4,
-            fetch=lambda *a, **k: {"model": "mistralai/Timestral-209M", "revision": TIMESTRAL_REVISION, "median": []})
+        timestral_forecast(rows, NOW, {}, 4,
+            runner=lambda *a, **k: {"model": "mistralai/Timestral-209M", "revision": TIMESTRAL_REVISION, "median": []})
 
 
 def save(store, run_id, method, mode="live", issue=NOW, version="v1"):
@@ -158,17 +160,26 @@ def test_disabled_methods_never_called_and_failure_isolated(tmp_path, monkeypatc
     assert app.store.latest_forecast(method="local")[0]
 
 
-def test_historical_job_runs_existing_data_without_polluting_live(tmp_path):
+def test_historical_job_runs_existing_data_without_polluting_live(tmp_path, monkeypatch):
     app = service(tmp_path)
     app.put_settings({"forecast_methods": {"local": False, "v4": True, "epex": True, "timestral": False},
                       "active_method": "v4"})
     archive = app._archive_entity("sensor.prices", app.get_settings())
     app.store.upsert_quarters([{**r, "entity_id": archive} for r in history(18)])
+    calls = []
+    def epex_replay(rows, issue, settings, max_points):
+        calls.append(issue)
+        run = forecast_quarters(rows, issue, max_points=max_points, price_scale=1000)
+        from dataclasses import replace
+        from app.methods import epex_version
+        return replace(run, model_version=epex_version(settings))
+    monkeypatch.setattr('app.comparison.epex_forecast', epex_replay)
     job = start_history_test(app)
     app._history_thread.join(timeout=30)
     assert not app._history_thread.is_alive()
     assert app._history_job["state"] == "completed"
-    assert app._history_job["completed"] <= 7
+    assert app._history_job["completed"] <= 14
+    assert calls
     assert app.store.latest_forecast()[0] is None
     report = comparison(app)
     v4 = next(m for m in report["methods"] if m["id"] == "v4")
@@ -256,7 +267,7 @@ def test_remote_failed_attempt_is_throttled_until_interval(tmp_path, monkeypatch
 
 
 def test_worker_rejects_invalid_payload_without_importing_model():
-    from timestral_service.server import validate
+    from app.local_worker import validate_timestral as validate
     with pytest.raises(ValueError):
         validate({'context': [None] * 192, 'prediction_length': 96})
     with pytest.raises(ValueError):
