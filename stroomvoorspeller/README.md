@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.1.7`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.0`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -63,3 +63,16 @@ De uitvoer bevat MAE en bias over alle gerealiseerde voorspellingen (`n`). Verge
 ## Herkomst en privacy
 
 Zie [architectuur](docs/ARCHITECTUUR.md), [model en afwijkingen](docs/MODEL.md) en de [officiële communicatie](https://developers.home-assistant.io/docs/apps/communication/) en [App-configuratie](https://developers.home-assistant.io/docs/apps/configuration/) van Home Assistant. Deze App gebruikt geen GitHub Actions, Vercel, publieke `ha.json` of opslag van persoonsgegevens buiten de installatie. Bij keuze voor Open-Meteo verlaten alleen de gekozen coördinaten en de benodigde weerquery de installatie.
+
+## Rekenmethoden en historische vergelijking
+
+Onder Instellingen kun je **Lokaal adaptief**, **Oorspronkelijke v4**,
+**EpexPredictor NL** en **Timestral-209M** afzonderlijk in- of uitschakelen.
+Alleen Lokaal adaptief staat standaard aan. Kies één actieve methode voor de
+grafiek en MQTT; ingeschakelde alternatieven bewaren hun eigen prognoses.
+
+Onder Analyse vergelijk je live resultaten en kun je beschikbare bestaande
+kwartierhistorie handmatig laten terugrekenen, zonder historische en live scores
+te vermengen. Timestral vereist de optionele aparte CPU-rekenservice.
+Zie [methoden, resourcebeheer en historische tests](docs/METHODS.md) voor installatie,
+tariefomrekening, beperkingen en licenties.

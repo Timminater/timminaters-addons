@@ -210,8 +210,36 @@
     show('analysis-error', false);
   }
   async function loadAnalysis() {
-    try { show('analysis-error', false); renderAnalysis(await api('api/analysis')); }
+    try { show('analysis-error', false); renderAnalysis(await api('api/analysis')); await loadMethods(); }
     catch (error) { state.analysisLoaded = false; const box = $('analysis-error'); box.replaceChildren(); const text = document.createElement('span'); text.textContent = `Analyse kon niet worden geladen: ${error.message}`; box.append(text); show('analysis-error', true); }
+  }
+  let historyTimer = null;
+  async function loadMethods() {
+    const data = await api('api/methods');
+    const body = $('method-comparisons'); body.replaceChildren();
+    const score = value => `${fmtPrice(value?.mae, data.unit)} / ${value?.n ?? 0}`;
+    for (const method of data.methods || []) {
+      const row = document.createElement('tr');
+      appendCell(row, `${method.label}${method.id === data.active_method && method.enabled ? ' (actief)' : ''}`);
+      appendCell(row, !method.enabled ? 'Uit' : method.status?.error || (method.status?.last_success ? 'Gereed' : 'Wacht op berekening'));
+      appendCell(row, score(method.live)); appendCell(row, score(method.live?.paired));
+      appendCell(row, method.historical_supported ? score(method.historical) : 'Niet beschikbaar');
+      appendCell(row, method.historical_supported ? score(method.historical?.paired) : '—'); body.append(row);
+    }
+    setText('method-pairing', data.pairing_notice);
+    setText('history-notice', data.historical_notice);
+    const job = data.history_job || {};
+    const running = job.state === 'running'; $('history-test').disabled = running;
+    const labels = {idle: 'Nog geen historische test gestart.', running: 'Historische test bezig', completed: 'Historische test afgerond', completed_with_errors: 'Afgerond met fouten', failed: 'Historische test mislukt', cancelled: 'Historische test gestopt'};
+    setText('history-progress', state.historyError || `${labels[job.state] || job.state} ${job.total ? `${job.completed || 0}/${job.total}` : ''} ${(job.errors || []).map(e => `${e.method || ''}: ${e.message}`).join(' · ')}`);
+    if (historyTimer) clearTimeout(historyTimer);
+    if (running) historyTimer = setTimeout(() => loadMethods().catch(error => { setText('history-progress', error.message); $('history-test').disabled = false; }), 2500);
+  }
+  async function testHistory() {
+    state.historyError = null;
+    $('history-test').disabled = true;
+    try { await api('api/history-test', {method: 'POST'}); await loadMethods(); }
+    catch (error) { state.historyError = error.message; setText('history-progress', error.message); $('history-test').disabled = false; }
   }
   function activateView(view, focus = false) {
     state.activeView = view; const analysis = view === 'analysis';
@@ -234,6 +262,8 @@
   }
   function setWeatherFields() { const ha = document.querySelector('input[name="weather_mode"]:checked')?.value === 'ha'; show('ha-weather-fields', ha); show('open-meteo-fields', !ha); }
   async function openSettings() {
+    if (state.settingsOpening) return;
+    state.settingsOpening = true; state.promptedConfig = true;
     show('settings-error', false);
     try { state.settings = await api('api/settings'); }
     catch (error) { state.settings = {}; show('settings-error', true); $('settings-error').textContent = `Instellingen konden niet worden geladen: ${error.message}`; }
@@ -245,6 +275,7 @@
     }
     fillSettings(state.settings || {});
     $('settings-dialog').showModal();
+    state.settingsOpening = false;
   }
   function fillSettings(s = {}) {
     $('price-source').value = s.price_source || 'home_assistant';
@@ -260,6 +291,15 @@
     updatePriceSourceFields();
     $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
     $('mqtt-enabled').checked = s.mqtt_enabled === true;
+    for (const method of ['local', 'v4', 'epex', 'timestral']) $('method-' + method).checked = s.forecast_methods?.[method] ?? (method === 'local');
+    $('active-method').value = s.active_method || 'local';
+    $('epex-url').value = s.epex_url || 'https://epexpredictor.batzill.com';
+    $('epex-multiplier').value = s.epex_multiplier ?? 1;
+    $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
+    $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
+    $('timestral-url').value = s.timestral_url || '';
+    $('timestral-context').value = s.timestral_context_days ?? 28;
+    $('history-days').value = s.history_days ?? 90;
     const suggested = s.location_suggestion || {};
     $('latitude').value = s.latitude ?? suggested.latitude ?? '';
     $('longitude').value = s.longitude ?? suggested.longitude ?? '';
@@ -277,6 +317,15 @@
     event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value; const priceSource = $('price-source').value;
     if (priceSource === 'home_assistant' && !tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
     const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
+    settings.forecast_methods = Object.fromEntries(['local', 'v4', 'epex', 'timestral'].map(m => [m, $('method-' + m).checked]));
+    settings.active_method = $('active-method').value;
+    settings.epex_url = $('epex-url').value;
+    settings.epex_multiplier = Number($('epex-multiplier').value);
+    settings.epex_offset_eur_kwh = Number($('epex-offset').value);
+    settings.epex_tariff_confirmed = $('epex-confirmed').checked;
+    settings.timestral_url = $('timestral-url').value;
+    settings.timestral_context_days = Number($('timestral-context').value);
+    settings.history_days = Number($('history-days').value);
     if (priceSource === 'energy_charts_nl' && settings.price_choice === 'all_in' && (!$('supplier-fee').value || (settings.supplier === 'tibber' && !settings.supplier_fee_confirmed))) { show('settings-error', true); $('settings-error').textContent = 'Vul de gecontroleerde inkoopvergoeding incl. btw in en bevestig de btw-basis.'; return; }
     if (weatherSource === 'ha' && Object.values(settings.weather_entities).some(v => !v)) { show('settings-error', true); $('settings-error').textContent = 'Kies zon, wind en temperatuur om HA-weer te gebruiken.'; return; }
     const button = $('settings-save'); button.disabled = true; button.textContent = 'Opslaan…';
@@ -314,6 +363,7 @@
     await loadDashboard(); if (state.activeView === 'analysis') await loadAnalysis();
   }
   function init() {
+    $('history-test').addEventListener('click', testHistory);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
     $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);

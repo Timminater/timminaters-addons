@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 try:
     from .ha_client import HAClient, HAError, collect_price_data, parse_dt
-    from .storage import Store, price_archive_key, utc_iso
+    from .storage import Store, MethodStore, price_archive_key, utc_iso
     from .weather import WeatherError, fetch_ha_weather, fetch_open_meteo, model_weather
     from .market_history import MarketHistoryError, REASON as MARKET_HISTORY_REASON, derive_zonneplan_history, fetch_market_history
     from .energy_prices import EnergyPriceError, SUPPLIERS, all_in_price, fetch_prices, price_rows
@@ -142,6 +142,9 @@ class AppService:
         self._last_price_error: str | None = None
         self._last_weather_error: str | None = None
         self._last_model_error: str | None = None
+        self._history_job = {"state": "idle"}
+        self._history_thread: threading.Thread | None = None
+        self._history_job_lock = threading.Lock()
         self._maturity_cache: dict[str, tuple[tuple[Any, ...], dict[str, Any]]] = {}
         self._analysis_cache: tuple[tuple[Any, ...], dict[str, Any]] | None = None
         self._mqtt_exporter = mqtt_exporter or MQTTExporter(
@@ -177,17 +180,51 @@ class AppService:
         value.setdefault("latitude", None); value.setdefault("longitude", None)
         value.setdefault("calculation_interval_minutes", DEFAULT_INTERVAL_MINUTES)
         value.setdefault("mqtt_enabled", False)
+        value.setdefault("forecast_methods", {"local": True, "v4": False, "epex": False, "timestral": False})
+        value.setdefault("active_method", "local")
+        value.setdefault("epex_url", "https://epexpredictor.batzill.com")
+        value.setdefault("epex_tariff_confirmed", False)
+        value.setdefault("epex_multiplier", 1.0)
+        value.setdefault("epex_offset_eur_kwh", 0.0)
+        value.setdefault("timestral_url", "")
+        value.setdefault("timestral_context_days", 28)
+        value.setdefault("history_days", 90)
         return value
 
     def put_settings(self, body: Mapping[str, Any]) -> dict[str, Any]:
         allowed = {"tariff_entity", "price_source", "tariff_unit", "price_field", "price_choice", "supplier",
                    "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from",
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
-                   "calculation_interval_minutes", "mqtt_enabled"}
+                   "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_url",
+                   "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh", "timestral_url",
+                   "timestral_context_days", "history_days"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        from .methods import METHODS, validate_url
+        methods = merged["forecast_methods"]
+        if (not isinstance(methods, dict) or set(methods) != set(METHODS)
+                or any(type(v) is not bool for v in methods.values())):
+            raise ValueError("Geef voor elke rekenmethode aan of deze ingeschakeld is")
+        if not isinstance(merged["active_method"], str) or merged["active_method"] not in METHODS:
+            raise ValueError("Onbekende actieve methode")
+        if any(methods.values()) and not methods[merged["active_method"]]:
+            raise ValueError("De actieve rekenmethode moet ingeschakeld zijn (of schakel alle methoden uit)")
+        merged["epex_url"] = validate_url(str(merged["epex_url"]))
+        merged["timestral_url"] = validate_url(str(merged["timestral_url"]), optional=True)
+        if type(merged["epex_tariff_confirmed"]) is not bool:
+            raise ValueError("Bevestig de Epex-tariefomrekening met aan of uit")
+        for key in ("epex_multiplier", "epex_offset_eur_kwh"):
+            try: merged[key] = float(merged[key])
+            except (ValueError, TypeError): raise ValueError("Ongeldige Epex-tariefomrekening") from None
+            if not math.isfinite(merged[key]) or abs(merged[key]) > 100:
+                raise ValueError("Ongeldige Epex-tariefomrekening")
+        if merged["epex_multiplier"] <= 0:
+            raise ValueError("De Epex-vermenigvuldiger moet positief zijn")
+        for key, low, high in (("timestral_context_days", 2, 90), ("history_days", 14, 180)):
+            if type(merged[key]) is not int or not low <= merged[key] <= high:
+                raise ValueError(f"{key}: kies een geheel aantal dagen van {low} t/m {high}")
         interval = merged.get("calculation_interval_minutes")
         if type(interval) is not int or interval not in VALID_INTERVAL_MINUTES:
             raise ValueError("Berekeninterval moet 5, 15, 30, 60 of 120 minuten zijn")
@@ -268,11 +305,15 @@ class AppService:
                "tariff_valid_from": valid_from, "tariff_valid_to": valid_to,
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
-        scope_keys = ("tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
+        for key in ("forecast_methods", "active_method", "epex_url", "epex_tariff_confirmed",
+                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_url", "timestral_context_days", "history_days"):
+            new[key] = merged[key]
+        scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
         if any(new[key] != current.get(key) for key in scope_keys):
             new["history_cursor_utc"] = None
         saved = self.store.set_settings(new)
+        self._analysis_cache = None
         if current.get("mqtt_enabled") and not saved.get("mqtt_enabled"):
             self._mqtt_exporter.stop(remove_entities=True)
         self._mqtt_exporter.enabled = saved["mqtt_enabled"]
@@ -316,13 +357,17 @@ class AppService:
         price_field = settings.get("price_field", "tax_included")
         archive_entity = self._archive_entity(entity, settings) if configured else ""
         sources = self.store.source_statuses()
-        run, _ = self.store.latest_forecast(entity if configured else None, price_field if configured else None,
+        run, _ = self._latest_forecast(entity if configured else None, price_field if configured else None,
                                            settings.get("tariff_unit") if configured else None)
         archive = self.store.archive_summary(archive_entity) if configured else {"quarter_count": 0, "first_start": None, "last_end": None, "coverage_days": 0}
         errors = []
         for source, error in (("price", self._last_price_error), ("weather", self._last_weather_error), ("model", self._last_model_error)):
             if error is None:
                 error = sources.get(source, {}).get("error")
+            if source == "weather" and settings["active_method"] not in {"local", "v4"}:
+                continue
+            if source == "model" and not settings["forecast_methods"].get(settings["active_method"]):
+                continue
             if error: errors.append({"source": source, "message": error})
         ps = sources.get("price", {}); ws = sources.get("weather", {})
         price_detail = ps.get("detail") or {}
@@ -332,7 +377,7 @@ class AppService:
         price_last_success = ps.get("last_success") if price_status_matches else None
         stale = not price_last_success or self.clock().astimezone(UTC) - parse_dt(price_last_success) > timedelta(minutes=20)
         missing_inputs = []
-        if not ws.get("last_success"): missing_inputs.append("verwachte zon, wind en temperatuur")
+        if settings["active_method"] in {"local", "v4"} and not ws.get("last_success"): missing_inputs.append("verwachte zon, wind en temperatuur")
         if not settings.get("tariff_unit") and settings.get("price_source") != "energy_charts_nl": missing_inputs.append("tariefunit in instellingen")
         maturity = self._maturity(entity, self.clock().astimezone(UTC), archive, price_field,
                                   archive_entity, settings.get("tariff_unit")) if configured else {
@@ -357,7 +402,7 @@ class AppService:
                 "quality": quality, "archive": archive,
                 "sources": {"tariff_entity": settings.get("tariff_entity") or None,
                             "price_source": settings.get("price_source"), "price_choice": settings.get("price_choice"),
-                            "supplier": settings.get("supplier"), "weather_source": settings.get("weather_source")},
+                            "supplier": settings.get("supplier"), "weather_source": settings.get("weather_source"), "active_method": settings["active_method"]},
                 "location_suggestion": self._suggested_coordinates()}
 
     def _maturity(self, entity: str, now: datetime, archive: Mapping[str, Any],
@@ -372,10 +417,10 @@ class AppService:
         calibrated.
         """
         archive_entity = archive_entity or entity
-        latest_run, _ = self.store.latest_forecast(entity, price_field, tariff_unit)
+        latest_run, _ = self._latest_forecast(entity, price_field, tariff_unit)
         cache_key = (archive.get("last_end"), latest_run.get("id") if latest_run else None,
                      now.astimezone(AMSTERDAM).date().isoformat())
-        cache_scope = f"{entity}|{price_field}|{tariff_unit}|{archive_entity}"
+        cache_scope = f"{entity}|{price_field}|{tariff_unit}|{archive_entity}|{self.get_settings()['active_method']}"
         cached = self._maturity_cache.get(cache_scope)
         if cached and cached[0] == cache_key:
             return cached[1]
@@ -384,7 +429,12 @@ class AppService:
 
         actuals = self.store.actual_quarters(archive_entity, now)
         actual_by_dt = {parse_dt(k): v for k, v in actuals.items()}
-        candidates = self.store.stored_forecasts(entity, now - timedelta(days=30), price_field, tariff_unit)
+        from .methods import configured_version
+        settings = self.get_settings()
+        candidates = MethodStore(self.store, settings["active_method"],
+                                 latest_run["model_version"] if latest_run else configured_version(settings["active_method"], settings)).daily_stored_forecasts(
+                      entity, now - timedelta(days=30), now,
+                      price_field, tariff_unit, include_history=True)
         by_day: dict[str, dict[str, Any]] = {}
         for snapshot in reversed(candidates):
             issued = parse_dt(snapshot["issued_at"])
@@ -537,7 +587,7 @@ class AppService:
             if not force_model and last_attempt and now - parse_dt(last_attempt) < timedelta(minutes=1):
                 return {"ok": True, "throttled": True, "message": "De prijsbron is zojuist bijgewerkt"}
             cursor_raw = settings.get("history_cursor_utc")
-            cursor = parse_dt(cursor_raw) - timedelta(hours=1) if cursor_raw else now - timedelta(days=35)
+            cursor = parse_dt(cursor_raw) - timedelta(hours=1) if cursor_raw else now - timedelta(days=settings["history_days"])
             try:
                 if market_mode:
                     market = fetch_prices(now)
@@ -559,7 +609,7 @@ class AppService:
                     observed = now
                 else:
                     quarter_rows, hourly_rows, observed = collect_price_data(
-                        self.ha, configured_entity, now, history_days=35, tariff_unit=settings.get("tariff_unit") or None,
+                        self.ha, configured_entity, now, history_days=settings["history_days"], tariff_unit=settings.get("tariff_unit") or None,
                         price_field=settings.get("price_field", "tax_included"), history_start=cursor)
                 # HA history state semantics are not guaranteed to match the
                 # selected tax-exclusive forecast field. Retain only the
@@ -597,7 +647,8 @@ class AppService:
             weather: dict[str, Any] | None = None
             try:
                 prior_weather = self.store.latest_snapshot("weather", successful_only=True)
-                weather = self._weather_snapshot(settings, now, force_weather)
+                weather = (self._weather_snapshot(settings, now, force_weather)
+                           if any(settings["forecast_methods"][m] for m in ("local", "v4")) else None)
                 weather_is_new = bool(weather) and (not prior_weather or
                     weather.get("observed_at") != prior_weather["payload"].get("observed_at"))
                 if weather_is_new:
@@ -614,18 +665,20 @@ class AppService:
                     weather = old["payload"]
 
             archive_entity = self._archive_entity(entity, settings)
-            history = self.store.quarters(archive_entity, as_of=now)
+            history = [row for row in self.store.quarters(archive_entity, start=now - timedelta(days=settings["history_days"]), as_of=now)
+                       if row.get("quality", "valid") in {"valid", "published"}]
             # Market-feed future intervals are published day-ahead and cannot
             # enter a historical model fit before their intervals have elapsed.
             # Preserve the existing HA forecast-history model inputs.
             if market_mode:
                 history = [row for row in history if parse_dt(row["end_utc"]) <= now]
-            if not history:
+            if not history and not settings["forecast_methods"].get("epex"):
                 return {"ok": False, "message": "Er zijn nog geen historische kwartierprijzen om het model op te starten"}
             try:
                 used_weather = model_weather(weather) if weather else None
                 try:
-                    derived_history = self._market_model_history(entity, settings, history, now)
+                    derived_history = (self._market_model_history(entity, settings, history, now)
+                                       if any(settings["forecast_methods"][m] for m in ("local", "v4")) else [])
                 except Exception:
                     LOG.exception("Optionele historische marktaanvulling overgeslagen")
                     derived_history = []
@@ -634,49 +687,8 @@ class AppService:
                                "published_at": r.get("published_at"), "source": r.get("source")} for r in history]
                 input_rows.extend(derived_history)
                 input_rows.sort(key=lambda row: row["start_utc"])
-                signature_payload = {"tariff_entity": entity, "tariff_unit": settings.get("tariff_unit"),
-                                     "model_version": _load_model_version(),
-                                     "price_field": settings.get("price_field"), "history": input_rows,
-                                     "weather": weather}
-                signature = hashlib.sha256(json.dumps(signature_payload, sort_keys=True, separators=(",", ":"),
-                                             allow_nan=False, default=str).encode("utf-8")).hexdigest()
-                previous_run, _ = self.store.latest_forecast(entity, settings.get("price_field", "tax_included"),
-                                                              settings.get("tariff_unit"))
-                if not force_model and previous_run and previous_run.get("inputs", {}).get("signature") == signature:
-                    self.store.set_source_status("model", success=True, attempted_at=now,
-                                                 detail={"model_version": previous_run["model_version"],
-                                                         "unchanged_inputs": True})
-                    self._last_model_error = None
-                    self.store.prune(now)
-                    return {"ok": True, "unchanged": True, "model_version": previous_run["model_version"],
-                            "quality": previous_run["quality"]}
-                model_unit = settings.get("tariff_unit") or ((history[-1].get("unit") or "EUR/MWh").replace("€/", "EUR/"))
-                price_scale = 1000.0 if model_unit == "EUR/kWh" else 1.0
-                run = _load_forecaster()(input_rows, issued_at=now, weather=used_weather,
-                                         max_points=672, price_scale=price_scale)
-                points = list(_field(run, "points", []))
-                model_version = str(_field(run, "model_version", "unknown"))
-                quality = str(_field(run, "quality", "provisional"))
-                reasons = list(_field(run, "reasons", []))
-                if derived_history:
-                    reasons.append(MARKET_HISTORY_REASON)
-                run_id = str(uuid.uuid4())
-                saved_inputs = {"tariff_entity": entity, "tariff_unit": settings.get("tariff_unit"),
-                                "price_field": settings.get("price_field"), "weather_snapshot": weather,
-                                "weather_model": used_weather,
-                                "price_scale": price_scale,
-                                "history": input_rows, "history_cursor": settings.get("history_cursor_utc"),
-                                "signature": signature}
-                self.store.save_forecast(run_id, now, model_version, quality, reasons, saved_inputs,
-                                         [{"start_utc": _field(p, "start_utc"), "end_utc": _field(p, "end_utc"),
-                                           "price": _field(p, "price"), "lower": _field(p, "lower"),
-                                           "upper": _field(p, "upper"), "source": _field(p, "source", "model"),
-                                           "quality": _field(p, "quality", quality), "reason": _field(p, "reason")} for p in points])
-                self.store.set_source_status("model", success=True, attempted_at=now,
-                                             detail={"model_version": model_version, "points": len(points)})
-                self._last_model_error = None
-                self.store.prune(now)
-                return {"ok": True, "model_version": model_version, "points": len(points), "quality": quality}
+                return self._run_methods(input_rows, now, weather, used_weather, settings, entity, force_model,
+                                         [MARKET_HISTORY_REASON] if derived_history else [])
             except Exception as exc:
                 LOG.exception("Forecastberekening mislukt")
                 self._last_model_error = str(exc)
@@ -696,7 +708,7 @@ class AppService:
         archive_entity = self._archive_entity(entity, settings)
         known_rows = self.store.quarters(archive_entity, start, end)
         known_map = {r["start_utc"]: r for r in known_rows}
-        run, forecast_points = self.store.latest_forecast(entity, price_field, settings.get("tariff_unit"))
+        run, forecast_points = self._latest_forecast(entity, price_field, settings.get("tariff_unit"))
         pred_map = {r["start_utc"]: r for r in forecast_points}
         slots: list[dict[str, Any]] = []
         cursor = start
@@ -793,14 +805,101 @@ class AppService:
                     "reason": "Kies eerst een tariefentiteit"}}
         now = self.clock().astimezone(UTC)
         key = (entity, settings.get("price_field", "tax_included"),
-               settings.get("tariff_unit"), int(now.timestamp() // 900))
+               settings.get("tariff_unit"), settings["active_method"], int(now.timestamp() // 900))
         if self._analysis_cache and self._analysis_cache[0] == key:
             return self._analysis_cache[1]
-        result = build_analysis(self.store, entity, self._archive_entity(entity, settings),
+        result = build_analysis(self._method_store(), entity, self._archive_entity(entity, settings),
                                 settings.get("price_field", "tax_included"),
                                 settings.get("tariff_unit"), now)
         self._analysis_cache = key, result
         return result
+
+    def _latest_forecast(self, entity=None, price_field=None, tariff_unit=None):
+        settings = self.get_settings()
+        method = settings["active_method"]
+        if not settings["forecast_methods"].get(method):
+            return None, []
+        from .methods import configured_version
+        return self.store.latest_forecast(entity, price_field, tariff_unit, method=method,
+                                         model_version=configured_version(method, settings))
+
+    def _method_store(self):
+        settings = self.get_settings()
+        run, _ = self._latest_forecast(self._price_identity(settings), settings["price_field"], settings["tariff_unit"])
+        from .methods import configured_version
+        return MethodStore(self.store, settings["active_method"],
+                           run["model_version"] if run else configured_version(settings["active_method"], settings))
+
+    def _run_methods(self, history, now, weather, used_weather, settings, entity, force, extra_reasons):
+        from .methods import adaptive_forecast, epex_forecast, timestral_forecast, configured_version, VERSIONS
+        runners = {
+            "local": lambda: adaptive_forecast(history, now, used_weather, price_scale=scale, base=_load_forecaster()),
+            "v4": lambda: _load_forecaster()(history, issued_at=now, weather=used_weather, price_scale=scale),
+            "epex": lambda: epex_forecast(history, now, settings),
+            "timestral": lambda: timestral_forecast(history, now, settings),
+        }
+        unit = settings.get("tariff_unit") or ((history[-1].get("unit") if history else None) or "EUR/MWh").replace("€/", "EUR/")
+        scale = 1000.0 if unit == "EUR/kWh" else 1.0
+        results = {}
+        for method, enabled in settings["forecast_methods"].items():
+            if not enabled:
+                continue
+            # A user can switch off pending work while a previous method runs.
+            if self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method):
+                continue
+            signature = hashlib.sha256(json.dumps({"history": history, "weather": weather,
+                "settings": {k: v for k, v in settings.items() if k != "history_cursor_utc"}, "method": method,
+                "version": VERSIONS.get(method, _load_model_version())},
+                sort_keys=True, default=str).encode()).hexdigest()
+            previous, _ = self.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"], method=method,
+                model_version=configured_version(method, settings))
+            # Remote methods are bounded to hourly/interval refresh even when inputs change.
+            interval = max(settings["calculation_interval_minutes"], 60 if method == "epex" else 15 if method == "timestral" else 0)
+            recent = previous and now - parse_dt(previous["issued_at"]) < timedelta(minutes=interval)
+            unchanged = previous and previous["inputs"].get("signature") == signature
+            status = self.store.source_statuses().get("method:" + method, {})
+            failed_recently = (status.get("error") and status.get("last_attempt")
+                               and status.get("detail", {}).get("signature") == signature
+                               and now - parse_dt(status["last_attempt"]) < timedelta(minutes=interval))
+            if not force and failed_recently and method in {"epex", "timestral"}:
+                results[method] = {"ok": False, "message": status["error"], "throttled": True}
+                continue
+            if not force and recent and (method in {"epex", "timestral"} or unchanged):
+                results[method] = {"ok": True, "unchanged": True, "points": 0,
+                                   "model_version": previous["model_version"]}
+                continue
+            try:
+                run = runners[method]()
+                known_starts = {r["start_utc"] for r in self.store.quarters(
+                    self._archive_entity(entity, settings), as_of=now)
+                    if r.get("quality", "valid") in {"valid", "published"}}
+                points = [p for p in _field(run, "points", [])
+                          if utc_iso(_field(p, "start_utc")) not in known_starts]
+                inputs = {"tariff_entity": entity, "tariff_unit": settings["tariff_unit"],
+                          "price_field": settings["price_field"], "method": method, "evaluation_mode": "live",
+                          "weather_snapshot": weather, "weather_model": used_weather, "price_scale": scale,
+                          "history": history, "signature": signature}
+                version = _field(run, "model_version", "unknown")
+                quality = _field(run, "quality", "voorlopig")
+                self.store.save_forecast(str(uuid.uuid4()), now, version, quality,
+                    [*_field(run, "reasons", []), *extra_reasons], inputs,
+                    [{"start_utc": _field(p, "start_utc"), "end_utc": _field(p, "end_utc"),
+                      "price": _field(p, "price"), "lower": _field(p, "lower"), "upper": _field(p, "upper"),
+                      "source": _field(p, "source", method), "reason": _field(p, "reason")} for p in points])
+                self.store.set_source_status("method:" + method, success=True, attempted_at=now,
+                                             detail={"model_version": version, "points": len(points)})
+                results[method] = {"ok": True, "points": len(points), "model_version": version, "quality": quality}
+            except Exception as exc:
+                self.store.set_source_status("method:" + method, success=False, attempted_at=now, error=str(exc),
+                                             detail={"signature": signature})
+                results[method] = {"ok": False, "message": str(exc)}
+        active = results.get(settings["active_method"], {"ok": True, "points": 0, "disabled": True})
+        self._last_model_error = None if active["ok"] else active.get("message")
+        self.store.set_source_status("model", success=active["ok"], attempted_at=now,
+                                     error=self._last_model_error, detail=active)
+        self._analysis_cache = None
+        self.store.prune(now)
+        return {**active, "methods": results}
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
@@ -912,6 +1011,10 @@ def make_handler(service: AppService, static_dir: str | None = None):
         def do_GET(self) -> None:
             path, query = self._path()
             try:
+                if path == "/api/methods":
+                    from .comparison import comparison
+                    return self._send(200, comparison(service))
+                if path == "/api/history-job": return self._send(200, dict(service._history_job))
                 if path == "/api/health": return self._send(200, {"ok": True, "service": "stroomvoorspeller"})
                 if path == "/api/status": return self._send(200, service.status())
                 if path == "/api/entities": return self._send(200, service.entity_list())
@@ -964,6 +1067,10 @@ def make_handler(service: AppService, static_dir: str | None = None):
 
         def do_POST(self) -> None:
             path, _ = self._path()
+            if path == "/api/history-test":
+                from .comparison import start_history_test
+                try: return self._send(202, start_history_test(service))
+                except ValueError as exc: return self._send(400, {"error": str(exc)})
             if path != "/api/calculate": return self._send(404, {"error": "not found"})
             try:
                 result = service.refresh(force_model=True)

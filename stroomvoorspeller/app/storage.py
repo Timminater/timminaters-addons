@@ -228,17 +228,19 @@ class Store:
                   str(p.get("source", "model")), str(p.get("quality", quality)), p.get("reason")) for p in points])
 
     def latest_forecast(self, entity_id: str | None = None, price_field: str | None = None,
-                        tariff_unit: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+                        tariff_unit: str | None = None, *, method: str | None = None,
+                        evaluation_mode: str = "live", model_version: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         with self._connect() as db:
-            runs = db.execute("SELECT * FROM forecast_runs ORDER BY issued_at DESC").fetchall()
-            run = None
-            for candidate in runs:
-                try: inputs = json.loads(candidate["inputs_json"])
-                except (ValueError, TypeError): continue
-                if ((entity_id is None or inputs.get("tariff_entity") == entity_id)
-                        and (price_field is None or inputs.get("price_field", "tax_included") == price_field)
-                        and (tariff_unit is None or inputs.get("tariff_unit") == tariff_unit)):
-                    run = candidate; break
+            run = db.execute("""SELECT * FROM forecast_runs WHERE
+                COALESCE(json_extract(inputs_json,'$.evaluation_mode'),'live')=?
+                AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.method'),'local')=?)
+                AND (? IS NULL OR model_version=?)
+                AND (? IS NULL OR json_extract(inputs_json,'$.tariff_entity')=?)
+                AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?)
+                AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
+                ORDER BY issued_at DESC LIMIT 1""",
+                (evaluation_mode, method, method, model_version, model_version,
+                 entity_id, entity_id, price_field, price_field, tariff_unit, tariff_unit)).fetchone()
             if not run: return None, []
             points = db.execute("SELECT * FROM forecast_points WHERE run_id=? ORDER BY start_utc", (run["id"],)).fetchall()
         d = dict(run); d["reasons"] = json.loads(d.pop("reasons_json")); d["inputs"] = json.loads(d.pop("inputs_json"))
@@ -250,7 +252,8 @@ class Store:
     def forecast_snapshots(self, entity_id: str | None = None,
                            since_issued: datetime | None = None,
                            price_field: str | None = None,
-                           tariff_unit: str | None = None) -> list[dict[str, Any]]:
+                           tariff_unit: str | None = None, *, method: str | None = None,
+                           evaluation_mode: str = "live", model_version: str | None = None) -> list[dict[str, Any]]:
         """Return retained point-in-time input snapshots for walk-forward evaluation."""
         with self._connect() as db:
             if since_issued:
@@ -262,6 +265,9 @@ class Store:
         for row in runs:
             try:
                 inputs = json.loads(row["inputs_json"])
+                if inputs.get("evaluation_mode", "live") != evaluation_mode: continue
+                if method is not None and inputs.get("method", "local") != method: continue
+                if model_version is not None and row["model_version"] != model_version: continue
                 if entity_id is not None and inputs.get("tariff_entity") != entity_id: continue
                 if price_field is not None and inputs.get("price_field", "tax_included") != price_field: continue
                 if tariff_unit is not None and inputs.get("tariff_unit") != tariff_unit: continue
@@ -281,9 +287,9 @@ class Store:
 
     def stored_forecasts(self, entity_id: str, since_issued: datetime,
                          price_field: str | None = None,
-                         tariff_unit: str | None = None) -> list[dict[str, Any]]:
+                         tariff_unit: str | None = None, **scope: Any) -> list[dict[str, Any]]:
         """Point-in-time snapshots paired with the exact predictions saved for each run."""
-        snapshots = {s["id"]: s for s in self.forecast_snapshots(entity_id, since_issued, price_field, tariff_unit)}
+        snapshots = {s["id"]: s for s in self.forecast_snapshots(entity_id, since_issued, price_field, tariff_unit, **scope)}
         if not snapshots: return []
         with self._connect() as db:
             rows = db.execute("""SELECT r.id,r.issued_at,p.start_utc,p.end_utc,p.price,p.lower_price,p.upper_price
@@ -298,7 +304,9 @@ class Store:
 
     def daily_stored_forecasts(self, entity_id: str, since_issued: datetime, ended_by: datetime,
                                price_field: str, tariff_unit: str,
-                               timezone_name: str = "Europe/Amsterdam") -> list[dict[str, Any]]:
+                               timezone_name: str = "Europe/Amsterdam", *, method: str | None = None,
+                               evaluation_mode: str = "live", model_version: str | None = None,
+                               include_history: bool = False) -> list[dict[str, Any]]:
         """Return one point-in-time forecast per local day without inflating all snapshots.
 
         Run selection needs only issue timestamps and the three namespace
@@ -307,13 +315,17 @@ class Store:
         """
         zone = ZoneInfo(timezone_name)
         with self._connect() as db:
+            version_clause = " AND model_version=?" if model_version is not None else ""
             candidates = db.execute("""SELECT id,issued_at FROM forecast_runs
                 WHERE issued_at>=? AND issued_at<=?
                   AND json_extract(inputs_json,'$.tariff_entity')=?
                   AND COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?
-                  AND json_extract(inputs_json,'$.tariff_unit')=?
-                ORDER BY issued_at""",
-                (utc_iso(since_issued), utc_iso(ended_by), entity_id, price_field, tariff_unit)).fetchall()
+                  AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
+                  AND COALESCE(json_extract(inputs_json,'$.evaluation_mode'),'live')=?
+                  AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.method'),'local')=?)
+                """ + version_clause + " ORDER BY issued_at",
+                (utc_iso(since_issued), utc_iso(ended_by), entity_id, price_field, tariff_unit, tariff_unit,
+                 evaluation_mode, method, method, *([model_version] if model_version is not None else []))).fetchall()
             by_day: dict[Any, list[Any]] = {}
             for row in candidates:
                 issued = datetime.fromisoformat(row["issued_at"].replace("Z", "+00:00"))
@@ -336,15 +348,25 @@ class Store:
             point["lower"] = point.pop("lower_price")
             point["upper"] = point.pop("upper_price")
             points_by_run.setdefault(row["run_id"], []).append(point)
-        return [{"id": row["id"], "issued_at": row["issued_at"],
-                 "points": points_by_run.get(row["id"], [])} for row in selected]
+        result = [{"id": row["id"], "issued_at": row["issued_at"],
+                   "points": points_by_run.get(row["id"], [])} for row in selected]
+        if include_history:
+            with self._connect() as db:
+                metadata = {r["id"]: r["inputs_json"] for r in db.execute(
+                    f"SELECT id,inputs_json FROM forecast_runs WHERE id IN ({placeholders})", ids)}
+            for run in result:
+                inputs = json.loads(metadata[run["id"]])
+                packed = inputs.get("history_zlib_b64")
+                run["history"] = (json.loads(zlib.decompress(base64.b64decode(packed)))
+                                  if packed else inputs.get("history", []))
+        return result
 
     def actual_quarters(self, entity_id: str, ended_by: datetime) -> dict[str, float]:
         """Final locally archived quarter prices whose complete interval ended by time."""
         end = utc_iso(ended_by)
         with self._connect() as db:
             rows = db.execute("SELECT start_utc,end_utc,price FROM quarter_prices "
-                              "WHERE entity_id=? AND end_utc<=? AND quality='valid' ORDER BY start_utc", (entity_id,end)).fetchall()
+                              "WHERE entity_id=? AND end_utc<=? AND quality IN ('valid','published') ORDER BY start_utc", (entity_id,end)).fetchall()
         return {row["start_utc"]: float(row["price"]) for row in rows}
 
     def published_quarters(self, entity_id: str, known_by: datetime) -> dict[str, float]:
@@ -356,7 +378,7 @@ class Store:
         cutoff = utc_iso(known_by)
         with self._connect() as db:
             rows = db.execute("SELECT start_utc,price FROM quarter_prices "
-                              "WHERE entity_id=? AND quality='valid' AND observed_at<=? "
+                              "WHERE entity_id=? AND quality IN ('valid','published') AND observed_at<=? "
                               "AND (published_at IS NULL OR published_at<=?) ORDER BY start_utc",
                               (entity_id, cutoff, cutoff)).fetchall()
         return {row["start_utc"]: float(row["price"]) for row in rows}
@@ -377,7 +399,7 @@ class Store:
 
     def archive_summary(self, entity_id: str) -> dict[str, Any]:
         with self._connect() as db:
-            row = db.execute("SELECT COUNT(*) n,MIN(start_utc) first,MAX(end_utc) last FROM quarter_prices WHERE entity_id=? AND quality='valid'", (entity_id,)).fetchone()
+            row = db.execute("SELECT COUNT(*) n,MIN(start_utc) first,MAX(end_utc) last FROM quarter_prices WHERE entity_id=? AND quality IN ('valid','published')", (entity_id,)).fetchone()
         expected = 0
         ratio = 0.0
         if row["first"] and row["last"]:
@@ -405,3 +427,21 @@ class Store:
             lower, upper = utc_iso(start), utc_iso(end)
             points = [p for p in points if lower <= p["start_utc"] < upper]
         return known, points
+
+
+class MethodStore:
+    """Read-only view: active-model scores/bands never mix methods or versions."""
+
+    def __init__(self, store: Store, method: str, model_version: str | None = None):
+        self.store, self.method, self.model_version = store, method, model_version
+
+    def __getattr__(self, name):
+        return getattr(self.store, name)
+
+    def daily_stored_forecasts(self, *args, **kwargs):
+        return self.store.daily_stored_forecasts(*args, **kwargs, method=self.method,
+                                                model_version=self.model_version)
+
+    def stored_forecasts(self, *args, **kwargs):
+        return self.store.stored_forecasts(*args, **kwargs, method=self.method,
+                                          model_version=self.model_version)

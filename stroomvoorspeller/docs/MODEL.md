@@ -1,5 +1,9 @@
 # Model, herkomst en kwartierafwijkingen
 
+De beschrijving hieronder betreft de oorspronkelijke v4-methode. De standaard
+Lokaal adaptief, de optionele EpexPredictor- en Timestral-methoden en de
+gescheiden historische vergelijking staan in [METHODS.md](METHODS.md).
+
 ## Herkomst en eigen implementatie
 
 De methode verwijst naar [Mr-MIle/stroomvoorspeller](https://github.com/Mr-MIle/stroomvoorspeller)

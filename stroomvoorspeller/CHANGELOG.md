@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- Adaptieve lokale kwartiermethode met historische patroonkeuze en niveaucorrectie.
+- Afzonderlijke schakelaars voor Lokaal adaptief, oorspronkelijke v4, EpexPredictor NL en Timestral-209M; keuze van actieve methode voor grafiek/MQTT.
+- Optionele aparte Timestral CPU-service met tijdelijk inferentieproces en gepinde modelgewichten.
+- Gescheiden live/historische methodevergelijking, gepaarde MAE en begrensde handmatige terugrekening op bestaand kwartierarchief.
+- Instelbare initiële HA-historie (14–180 dagen); historische reconstructies tellen niet mee voor live kalibratie.
+- Gepubliceerde Energy-Charts-kwartieren tellen ook mee als echte prijzen voor evaluatie en archiefdekking.
+
 ## 0.1.7
 
 - Nederlandse Energy-Charts-marktprijzen als onafhankelijke bron, zonder Zonneplan-integratie.

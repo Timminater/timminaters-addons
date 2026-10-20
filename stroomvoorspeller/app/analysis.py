@@ -84,7 +84,7 @@ def _truth_as_of(store: Any, archive_entity: str, issued: datetime,
         for row in rows:
             start = _utc(row["start_utc"])
             price = _finite_price(row.get("price"))
-            if row.get("quality", "valid") == "valid" and price is not None:
+            if row.get("quality", "valid") in {"valid", "published"} and price is not None:
                 result[start] = price
         return result
     # Small test doubles may implement only actual_quarters. Their publication
