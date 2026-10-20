@@ -302,11 +302,13 @@
     if (!tariff.value && state.entities.some(e => e.entity_id === DEFAULT_TARIFF)) tariff.value = DEFAULT_TARIFF;
     const mode = s.weather_source === 'ha' || s.weather_source === 'home_assistant' ? 'ha' : 'open_meteo'; const radio = document.querySelector(`input[name="weather_mode"][value="${mode}"]`); if (radio) radio.checked = true;
     $('solar-entity').value = s.weather_entities?.solar || ''; $('wind-entity').value = s.weather_entities?.wind || ''; $('temperature-entity').value = s.weather_entities?.temperature || ''; $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
+    $('supplier').replaceChildren(...Object.entries(s.supplier_presets || {custom: {label: 'Eigen tarief'}}).map(([key, preset]) => new Option(preset.label, key)));
     $('price-choice').value = s.price_choice || 'bare'; $('supplier').value = s.supplier || 'custom';
     $('energy-tax').value = s.energy_tax_eur_kwh ?? 0.09161; $('vat-percent').value = s.vat_percent ?? 21;
     $('supplier-fee').value = s.supplier_fee_eur_kwh_incl_vat ?? 0;
     $('tariff-valid-from').value = s.tariff_valid_from || ''; $('tariff-valid-to').value = s.tariff_valid_to || '';
     $('supplier-fee-confirmed').checked = s.supplier_fee_confirmed === true;
+    updateSupplierHelp();
     updatePriceSourceFields();
     $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
     $('mqtt-enabled').checked = s.mqtt_enabled === true;
@@ -363,7 +365,7 @@
   function updateEpexProfile() {
     const profile = state.settings?.epex_tariff_profiles?.[$('epex-profile').value];
     show('epex-custom-tariff', !profile);
-    $('epex-profile-help').textContent = profile ? `Automatisch: beursprijs × ${profile.multiplier} + € ${profile.offset_eur_kwh.toFixed(7)}/kWh. Geldig ${profile.valid_from} t/m ${profile.valid_to}, voor afname inclusief belasting en btw. Controleer of dit bij je contract past. Geen teruglevertarief of vaste maandkosten.` : 'Vul de omrekening van de kale beursprijs naar jouw HA-tarief in. Afwijkend contract? Gebruik Eigen tarief.';
+    $('epex-profile-help').textContent = profile ? `Automatisch: beursprijs × ${profile.multiplier} + € ${profile.offset_eur_kwh.toFixed(7)}/kWh. Toegepast van ${profile.valid_from} t/m ${profile.valid_to}, voor afname inclusief belasting en btw. Peildatum ${profile.as_of || "onbekend"}. Controleer of dit voorstel bij je contract past. Geen teruglevertarief of vaste maandkosten.` : 'Vul de omrekening van de kale beursprijs naar jouw HA-tarief in. Afwijkend contract? Gebruik Eigen tarief.';
   }
   function updatePriceSourceFields() {
     const market = $('price-source').value === 'energy_charts_nl';
@@ -375,13 +377,22 @@
     $('tariff-unit').disabled = market;
     $('price-field').disabled = market;
   }
+  function updateSupplierHelp() {
+    const preset = state.settings?.supplier_presets?.[$('supplier').value];
+    $('supplier-preset-help').textContent = preset?.as_of ? `Tariefvoorstel uit Tweakers, peildatum ${preset.as_of}. Controleer je contract; de peildatum bewijst geen geldigheid voor eerdere kwartieren. Bedragen zijn aanpasbaar. Geen vaste maandkosten, saldering of teruglevering.` : 'Eigen tariefcomponenten en toepassingsperiode; bestaande waarden blijven behouden.';
+  }
   function supplierDefaults() {
-    const supplier = $('supplier').value;
-    $('energy-tax').value = '0.09161'; $('vat-percent').value = '21';
-    $('tariff-valid-from').value = supplier === 'custom' ? '' : '2026-01-01';
-    $('tariff-valid-to').value = supplier === 'custom' ? '' : '2026-12-31';
-    $('supplier-fee').value = supplier === 'zonneplan' ? '0.02' : supplier === 'tibber' ? '' : '';
+    const preset = state.settings?.supplier_presets?.[$('supplier').value];
+    // Eigen tarief keeps the current values so a proposal can be adjusted.
+    if (preset?.fee_incl_vat != null) {
+      $('energy-tax').value = preset.energy_tax_eur_kwh;
+      $('vat-percent').value = preset.vat_percent;
+      $('tariff-valid-from').value = preset.valid_from;
+      $('tariff-valid-to').value = preset.valid_to;
+      $('supplier-fee').value = preset.fee_incl_vat;
+    }
     $('supplier-fee-confirmed').checked = false;
+    updateSupplierHelp();
   }
   function toast(message) { const t = $('toast'); t.textContent = message; show('toast', true); setTimeout(() => show('toast', false), 3600); }
   async function calculateNow() {

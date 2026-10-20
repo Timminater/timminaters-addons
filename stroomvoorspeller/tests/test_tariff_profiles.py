@@ -65,3 +65,69 @@ def test_expired_profile_does_not_start_ml_worker(tmp_path):
     with pytest.raises(ValueError, match='2026'):
         epex_forecast([], datetime(2027, 1, 1, tzinfo=timezone.utc), settings,
                       runner=lambda *a, **kw: pytest.fail('expired profile launched ML'))
+
+
+@pytest.mark.parametrize('supplier', [
+    'anwb', 'budget', 'clean_energy', 'coolblue', 'easyenergy', 'eneco', 'energiedirect',
+    'energiek', 'energie_vanons', 'energyzero', 'essent', 'frank', 'groenestroomlokaal',
+    'hegg', 'innova', 'nextenergy', 'pure', 'quatt', 'samsam', 'tibber', 'vandebron',
+    'vattenfall', 'vrijopnaam', 'zondergas', 'zonneplan',
+])
+def test_all_suppliers_share_conversion_between_epex_and_energy_charts(tmp_path, supplier):
+    from app.energy_prices import all_in_price
+    from app.tariff_profiles import SUPPLIER_PRESETS
+    app = AppService(store=Store(tmp_path))
+    metadata = app.get_settings()
+    assert len(metadata['supplier_presets']) == 26  # 25 suppliers + custom
+    profile = 'zonneplan_2026' if supplier == 'zonneplan' else supplier + '_2026_08'
+    ha = app.put_settings({'epex_tariff_profile': profile})
+    market = app.put_settings({'price_source': 'energy_charts_nl', 'price_choice': 'all_in',
+                               'supplier': supplier, 'supplier_fee_confirmed': True})
+    assert market['supplier_fee_eur_kwh_incl_vat'] == SUPPLIER_PRESETS[supplier]['fee_incl_vat']
+    assert market['tariff_valid_from'] == '2026-08-04'
+    when = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    for price in (-100, 0, 100):
+        assert _market_to_tariff(price, ha, when) == pytest.approx(all_in_price(price / 1000, market, when))
+
+
+def test_snapshot_does_not_backfill_before_peildatum(tmp_path):
+    from app.energy_prices import all_in_price, EnergyPriceError
+    app = AppService(store=Store(tmp_path))
+    ha = app.put_settings({'epex_tariff_profile': 'tibber_2026_08'})
+    market = app.put_settings({'price_source': 'energy_charts_nl', 'price_choice': 'all_in',
+                               'supplier': 'tibber', 'supplier_fee_confirmed': True})
+    before = datetime.fromisoformat('2026-08-03T21:45:00+00:00')
+    first = datetime.fromisoformat('2026-08-03T22:00:00+00:00')
+    with pytest.raises(ValueError, match='2026-08-04'):
+        _market_to_tariff(100, ha, before)
+    with pytest.raises(EnergyPriceError, match='niet geldig'):
+        all_in_price(.1, market, before)
+    assert _market_to_tariff(100, ha, first) == pytest.approx(.2566481)
+    assert all_in_price(.1, market, first) == pytest.approx(.2566481)
+
+
+def test_existing_market_components_not_overwritten_by_new_catalog(tmp_path):
+    app = AppService(store=Store(tmp_path))
+    app.store.set_settings({'supplier': 'tibber', 'supplier_fee_eur_kwh_incl_vat': .02178,
+                            'energy_tax_eur_kwh': .1, 'vat_percent': 21,
+                            'tariff_valid_from': '2026-01-01', 'tariff_valid_to': '2026-12-31',
+                            'supplier_fee_confirmed': True})
+    saved = app.put_settings({})
+    assert saved['supplier_fee_eur_kwh_incl_vat'] == .02178
+    assert saved['energy_tax_eur_kwh'] == .1
+    assert saved['tariff_valid_from'] == '2026-01-01'
+    changed = app.put_settings({'supplier': 'budget'})
+    assert changed['supplier_fee_eur_kwh_incl_vat'] == .01682
+    assert changed['tariff_valid_from'] == '2026-08-04'
+    custom = app.put_settings({'supplier': 'custom', 'supplier_fee_eur_kwh_incl_vat': .04,
+                               'tariff_valid_from': '2025-01-01'})
+    assert custom['supplier_fee_eur_kwh_incl_vat'] == .04
+    assert custom['tariff_valid_from'] == '2025-01-01'
+
+
+def test_table_units_and_precision():
+    from app.tariff_profiles import SUPPLIER_PRESETS
+    assert SUPPLIER_PRESETS['vattenfall']['fee_incl_vat'] == .025495
+    assert SUPPLIER_PRESETS['tibber']['fee_incl_vat'] == .02480
+    assert SUPPLIER_PRESETS['energyzero']['fee_incl_vat'] == .02242  # superseded 3.388 ct is not used
+    assert SUPPLIER_PRESETS['budget']['fee_incl_vat'] == .01682

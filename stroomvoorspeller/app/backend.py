@@ -191,6 +191,7 @@ class AppService:
         value.setdefault("epex_tariff_profile", "custom")
         from .tariff_profiles import PROFILES
         value["epex_tariff_profiles"] = PROFILES
+        value["supplier_presets"] = SUPPLIERS
         value.setdefault("epex_tariff_confirmed", False)
         value.setdefault("epex_multiplier", 1.0)
         value.setdefault("epex_offset_eur_kwh", 0.0)
@@ -256,7 +257,7 @@ class AppService:
             raise ValueError("Kies kale beursprijs of all-in afnameprijs")
         supplier = merged.get("supplier")
         if supplier not in SUPPLIERS:
-            raise ValueError("Kies Zonneplan, Tibber of een eigen tarief")
+            raise ValueError("Kies een bekende leverancier of een eigen tarief")
         def component(name: str, default: float) -> float:
             try: result = float(merged.get(name, default))
             except (TypeError, ValueError) as exc: raise ValueError(f"{name} moet een getal zijn") from exc
@@ -265,9 +266,7 @@ class AppService:
         energy_tax = component("energy_tax_eur_kwh", 0.09161)
         vat = component("vat_percent", 21)
         fee_default = SUPPLIERS[supplier]["fee_incl_vat"] or 0.0
-        if supplier == "tibber" and "supplier_fee_eur_kwh_incl_vat" not in body:
-            fee_default = 0.0  # The published buy fee VAT basis is not explicit; require user verification.
-        elif supplier != current.get("supplier") and "supplier_fee_eur_kwh_incl_vat" not in body:
+        if supplier != current.get("supplier") and "supplier_fee_eur_kwh_incl_vat" not in body:
             merged["supplier_fee_eur_kwh_incl_vat"] = fee_default
         fee = component("supplier_fee_eur_kwh_incl_vat", fee_default)
         fee_confirmed = merged.get("supplier_fee_confirmed", False)
@@ -286,7 +285,7 @@ class AppService:
             except ValueError as exc:
                 raise ValueError("Vul een geldige periode voor de tariefcomponenten in") from exc
             if supplier == "tibber" and not fee_confirmed:
-                raise ValueError("Controleer en bevestig de btw-basis van Tibbers inkoopvergoeding")
+                raise ValueError("Controleer en bevestig of Tibbers tariefvoorstel bij jouw contract past")
         source = merged.get("weather_source")
         if source not in {"open_meteo", "ha"}:
             raise ValueError("Weerbron moet Open-Meteo of Home Assistant zijn")

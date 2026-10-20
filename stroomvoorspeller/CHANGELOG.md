@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+- 25 leveranciersvoorstellen uit de Tweakers-tabel (peildatum 04-08-2026), met expliciete btw-basis en bronvermelding.
+- Eén lokale tarieflijst voor EpexPredictor naar HA en Energy-Charts all-in; die all-in-reeks voedt ook grafiek, modelinvoer, evaluatie en MQTT.
+- Nieuwe voorstellen begrensd vanaf de peildatum tot eind 2026; geen onbewezen historische tarieven. Bestaande eigen componenten en het Zonneplan-profiel blijven behouden.
+- Energy-Charts-leverancierskeuze vult opslag en periode in; Eigen tarief laat componenten aanpassen. Vattenfalls zes decimalen blijven behouden.
+
 ## 0.2.2
 
 - Leverancierskeuze voor de Epex-omrekening naar HA-tarieven: Zonneplan-afname incl. belasting/btw met automatische 2026-waarden, of Eigen tarief.

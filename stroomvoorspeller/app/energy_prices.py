@@ -9,13 +9,14 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
+from .tariff_profiles import SUPPLIER_PRESETS
+
 UTC = timezone.utc
 AMSTERDAM = ZoneInfo("Europe/Amsterdam")
 API = "https://api.energy-charts.info/price"
 ATTRIBUTION = "Energy-Charts.info (Fraunhofer ISE), CC BY 4.0"
 SUPPLIERS = {
-    "zonneplan": {"label": "Zonneplan", "fee_incl_vat": 0.02, "valid_from": "2026-01-01", "valid_to": "2026-12-31"},
-    "tibber": {"label": "Tibber", "fee_incl_vat": None, "valid_from": "2026-01-01", "valid_to": "2026-12-31"},
+    **SUPPLIER_PRESETS,
     "custom": {"label": "Eigen tarief", "fee_incl_vat": None, "valid_from": None, "valid_to": None},
 }
 
