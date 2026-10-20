@@ -188,6 +188,9 @@ class AppService:
         value.pop("epex_url", None)
         value.setdefault("epex_training_days", 180)
         value.setdefault("ml_threads", 2)
+        value.setdefault("epex_tariff_profile", "custom")
+        from .tariff_profiles import PROFILES
+        value["epex_tariff_profiles"] = PROFILES
         value.setdefault("epex_tariff_confirmed", False)
         value.setdefault("epex_multiplier", 1.0)
         value.setdefault("epex_offset_eur_kwh", 0.0)
@@ -201,7 +204,7 @@ class AppService:
                    "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from",
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
-                   "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
+                   "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
                    "timestral_context_days", "history_days"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
@@ -216,6 +219,8 @@ class AppService:
             raise ValueError("Onbekende actieve methode")
         if any(methods.values()) and not methods[merged["active_method"]]:
             raise ValueError("De actieve rekenmethode moet ingeschakeld zijn (of schakel alle methoden uit)")
+        from .tariff_profiles import apply_profile
+        apply_profile(merged)
         if type(merged["epex_tariff_confirmed"]) is not bool:
             raise ValueError("Bevestig de Epex-tariefomrekening met aan of uit")
         for key in ("epex_multiplier", "epex_offset_eur_kwh"):
@@ -309,7 +314,7 @@ class AppService:
                "tariff_valid_from": valid_from, "tariff_valid_to": valid_to,
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
-        for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_confirmed",
+        for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_profile", "epex_tariff_confirmed",
                     "epex_multiplier", "epex_offset_eur_kwh", "timestral_context_days", "history_days"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",

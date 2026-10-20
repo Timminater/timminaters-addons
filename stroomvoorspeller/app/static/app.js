@@ -314,6 +314,11 @@
     $('active-method').value = s.active_method || 'local';
     $('ml-threads').value = s.ml_threads ?? 2;
     $('epex-training').value = s.epex_training_days ?? 180;
+    const profiles = $('epex-profile');
+    profiles.replaceChildren(new Option('Eigen tarief / andere leverancier', 'custom'));
+    for (const [key, profile] of Object.entries(s.epex_tariff_profiles || {})) profiles.add(new Option(profile.label, key));
+    profiles.value = s.epex_tariff_profile || 'custom';
+    updateEpexProfile();
     $('epex-multiplier').value = s.epex_multiplier ?? 1;
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
@@ -342,6 +347,7 @@
     settings.active_method = $('active-method').value;
     settings.ml_threads = Number($('ml-threads').value);
     settings.epex_training_days = Number($('epex-training').value);
+    settings.epex_tariff_profile = $('epex-profile').value;
     settings.epex_multiplier = Number($('epex-multiplier').value);
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
@@ -354,9 +360,15 @@
     catch (error) { show('settings-error', true); $('settings-error').textContent = error.message; }
     finally { button.disabled = false; button.textContent = 'Opslaan'; }
   }
+  function updateEpexProfile() {
+    const profile = state.settings?.epex_tariff_profiles?.[$('epex-profile').value];
+    show('epex-custom-tariff', !profile);
+    $('epex-profile-help').textContent = profile ? `Automatisch: beursprijs × ${profile.multiplier} + € ${profile.offset_eur_kwh.toFixed(7)}/kWh. Geldig ${profile.valid_from} t/m ${profile.valid_to}, voor afname inclusief belasting en btw. Controleer of dit bij je contract past. Geen teruglevertarief of vaste maandkosten.` : 'Vul de omrekening van de kale beursprijs naar jouw HA-tarief in. Afwijkend contract? Gebruik Eigen tarief.';
+  }
   function updatePriceSourceFields() {
     const market = $('price-source').value === 'energy_charts_nl';
     show('ha-tariff-fields', !market);
+    show('epex-ha-tariff', !market);
     show('market-tariff-fields', market);
     $('tariff-entity').required = !market;
     $('tariff-entity').disabled = market;
@@ -387,6 +399,10 @@
     $('history-test').addEventListener('click', testHistory);
     $('timestral-download').addEventListener('click', downloadTimestral);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
+    $('epex-profile').addEventListener('change', () => {
+      if ($('epex-profile').value !== 'custom') $('price-field').value = 'tax_included';
+      updateEpexProfile();
+    });
     $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);
     for (const [button, view] of [[$('dashboard-tab'), 'dashboard'], [$('analysis-tab'), 'analysis']]) button.addEventListener('keydown', event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); activateView(view === 'dashboard' ? 'analysis' : 'dashboard', true); } });

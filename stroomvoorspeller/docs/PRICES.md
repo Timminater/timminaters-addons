@@ -48,3 +48,14 @@ De retained Discovery-configuratie stelt `expire_after` per update in op de rest
 - [Tarieven energiebelasting 2026](https://open.overheid.nl/documenten/c3d48c04-1009-4ffe-a54b-cebf13427ab5/file): €0,09161/kWh excl. btw tot 10.000 kWh.
 
 Deze componenten geven een indicatieve prijs per afgenomen kWh. Vaste maand- en netwerkkosten, vermindering energiebelasting, saldering en terugleververgoeding zijn niet inbegrepen.
+
+## EpexPredictor naar een HA-leverancierstarief
+
+Bij Home Assistant als prijsbron kiest de gebruiker onder EpexPredictor een tariefprofiel:
+
+- **Zonneplan — afname incl. belasting en btw (2026)**: `marktprijs EUR/kWh × 1,21 + 0,1308481`. De vaste opslag is `0,09161 × 1,21 + 0,02`. De server vult beide waarden en de omrekenbevestiging in; de HA-prijsreeks moet inclusief belasting zijn. Geldig van 1 januari t/m 31 december 2026, beoordeeld in Nederlandse tijd. Buiten deze periode wordt geen prognose met dit profiel gemaakt. Niet voor teruglevering of afwijkende contracten.
+- **Eigen tarief / andere leverancier**: de bestaande handmatige vermenigvuldiger, opslag en bevestiging. Bestaande installaties blijven bij deze keuze en behouden hun waarden; de app leidt nooit zelf een leverancier af uit een entiteitsnaam.
+
+`epex_tariff_profile` is `custom` (standaard) of `zonneplan_2026`. `GET /api/settings` geeft de beschikbare profielen in `epex_tariff_profiles` terug. De backend bepaalt de presetwaarden ook als een client andere getallen meestuurt. De profielkeuze maakt deel uit van de Epex-modelidentiteit. Energy-Charts gebruikt de eigen tariefcomponenten hierboven; het HA-profiel verandert die prijsroute niet.
+
+[Enever-prijzenfeeds](https://enever.nl/prijzenfeeds/) (geraadpleegd 20 oktober 2026) documenteert leverancierscodes en consumentenprijzen inclusief btw, maar geen afzonderlijke leveranciersopslagen. De feeds vereisen een persoonlijk token en zijn bedoeld voor persoonlijk gebruik; publieke herpublicatie is niet toegestaan. Daarom bevat de add-on geen gekopieerde leveranciersprijzen, API-token of automatische Enever-koppeling. Alleen onafhankelijk gecontroleerde componenten worden als lokaal profiel meegeleverd. De overige leveranciers blijven via Eigen tarief instelbaar.

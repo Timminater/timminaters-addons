@@ -23,7 +23,7 @@ TIMESTRAL_REVISION = "9874d252ab0aae16f7f7c999f98f98d6ad7d8365"
 
 def epex_version(settings: Mapping) -> str:
     # A new endpoint or tariff mapping starts its own score/calibration series.
-    keys = ("epex_training_days", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
+    keys = ("epex_tariff_profile", "epex_training_days", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
             "price_source", "price_choice", "tariff_unit", "price_field", "energy_tax_eur_kwh",
             "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
     digest = hashlib.sha256(json.dumps({k: settings.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()[:12]
@@ -112,6 +112,8 @@ def _market_to_tariff(value: float, settings: Mapping, start: datetime) -> float
     if settings.get("price_source") != "energy_charts_nl":
         if not settings.get("epex_tariff_confirmed"):
             raise ValueError("Bevestig eerst de markt-naar-HA-tariefomrekening voor EpexPredictor")
+        from .tariff_profiles import validate_profile_date
+        validate_profile_date(settings, start)
         # Explicit affine conversion, e.g. an all-in contract with fixed offset.
         value = value / 1000 * settings["epex_multiplier"] + settings["epex_offset_eur_kwh"]
     else:
@@ -124,6 +126,9 @@ def _market_to_tariff(value: float, settings: Mapping, start: datetime) -> float
 def epex_forecast(history, issued_at, settings, max_points=672, *, runner=None):
     if settings.get("price_source") != "energy_charts_nl" and not settings.get("epex_tariff_confirmed"):
         raise ValueError("Bevestig eerst de markt-naar-HA-tariefomrekening voor EpexPredictor")
+    if settings.get("price_source") != "energy_charts_nl":
+        from .tariff_profiles import validate_profile_date
+        validate_profile_date(settings, issued_at)
     from .local_runtime import run_local
     payload = (runner or run_local)("epex", {"issued_at": issued_at.isoformat(),
         "training_days": settings.get("epex_training_days", 180), "max_points": max_points}, settings, timeout=600)

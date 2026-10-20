@@ -21,9 +21,11 @@
 <label class="field-label" for="ml-threads">CPU-threads voor lokale ML (1–4)</label><input id="ml-threads" type="number" min="1" max="4" step="1">
 <label class="field-label" for="epex-training">EpexPredictor trainingshistorie (30–180 dagen)</label><input id="epex-training" type="number" min="30" max="180" step="1">
 <p class="field-help">EpexPredictor gebruikt het ingebouwde NL-model. Een kortere trainingsperiode bespaart tijd en geheugen. De eerste start haalt brondata op; volgende runs gebruiken de lokale cache. Er wordt geen prognose bij een externe rekenservice opgehaald.</p>
-<label class="field-label" for="epex-multiplier">HA-tarief: vermenigvuldiger op kale beursprijs</label><input id="epex-multiplier" type="number" min="0.001" max="100" step="any">
+<div id="epex-ha-tariff"><label class="field-label" for="epex-profile">EpexPredictor: leverancier van je HA-tarief</label><select id="epex-profile"><option value="custom">Eigen tarief / andere leverancier</option></select>
+<p id="epex-profile-help" class="field-help"></p>
+<div id="epex-custom-tariff"><label class="field-label" for="epex-multiplier">HA-tarief: vermenigvuldiger op kale beursprijs</label><input id="epex-multiplier" type="number" min="0.001" max="100" step="any">
 <label class="field-label" for="epex-offset">HA-tarief: vaste opslag in EUR/kWh</label><input id="epex-offset" type="number" min="-100" max="100" step="any">
-<label class="radio-row"><input id="epex-confirmed" type="checkbox"><span>Ik heb deze omrekening voor mijn gekozen HA-tarief gecontroleerd: tarief = kale beursprijs × vermenigvuldiger + opslag. Bij Energy-Charts gebruikt de app de tariefcomponenten hierboven.</span></label>
+<label class="radio-row"><input id="epex-confirmed" type="checkbox"><span>Ik heb deze omrekening voor mijn gekozen HA-tarief gecontroleerd: tarief = kale beursprijs × vermenigvuldiger + opslag. </span></label></div></div>
 <div class="timestral-download"><h3>Timestral lokaal installeren</h3>
 <p class="field-help">De rekenbibliotheek is ingebouwd. De modelgewichten (circa 800 MB) worden alleen na jouw bevestiging blijvend lokaal opgeslagen. Daarna rekent Timestral zonder netwerk. Gebruik bij voorkeur minimaal 4 GB beschikbare RAM; een kortere context en minder threads besparen resources. Modelgeheugen komt na elke run vrij.</p>
 <label class="radio-row"><input id="timestral-consent" type="checkbox"><span>Ik bevestig de download van circa 800 MB en heb de <a href="https://huggingface.co/mistralai/Timestral-209M/blob/main/LICENSE" target="_blank" rel="noopener noreferrer">Timestral-modellicentie</a> gelezen (Modified MIT; beperking voor bedrijven/werkgevers boven USD 20 miljoen maandomzet).</span></label>

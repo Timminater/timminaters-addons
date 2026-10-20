@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- Leverancierskeuze voor de Epex-omrekening naar HA-tarieven: Zonneplan-afname incl. belasting/btw met automatische 2026-waarden, of Eigen tarief.
+- Bestaande handmatige omrekeningen blijven behouden; het Zonneplan-profiel wordt buiten 2026 geweigerd.
+- Omrekenvelden alleen zichtbaar bij Eigen tarief en HA als prijsbron.
+
 ## 0.2.1
 
 - EpexPredictor NL en Timestral-209M rekenen volledig in de add-on; externe service-URL's en de losse Timestral-service verwijderd.
