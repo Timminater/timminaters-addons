@@ -86,7 +86,7 @@ def comparison(service):
 
 
 def start_history_test(service):
-    """Single background job; at most seven daily issues and 24h each."""
+    """Single background job; at most seven daily issues and 48h each."""
     with service._history_job_lock:
         if service._history_thread and service._history_thread.is_alive():
             return dict(service._history_job)
@@ -134,16 +134,16 @@ def _history_worker(service, settings, entity, rows, now, methods):
                     continue
                 try:
                     if method == "local":
-                        run = adaptive_forecast(history, issue, max_points=96, price_scale=scale, base=forecast_quarters)
+                        run = adaptive_forecast(history, issue, max_points=192, price_scale=scale, base=forecast_quarters)
                     elif method == "v4":
-                        run = forecast_quarters(history, issue, max_points=96, price_scale=scale)
+                        run = forecast_quarters(history, issue, max_points=192, price_scale=scale)
                     elif method == "epex":
-                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=96)
+                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=192)
                     else:
-                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=96)
+                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=192)
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,
                               "tariff_unit": settings["tariff_unit"], "price_field": settings["price_field"],
-                              "history": history, "weather_model": None, "price_scale": scale}
+                              "history": history, "weather_model": None, "price_scale": scale, "test_horizon_hours": 48}
                     identity = json.dumps([inputs, run.model_version, utc_iso(issue)], sort_keys=True, default=str)
                     run_id = "historical-" + hashlib.sha256(identity.encode()).hexdigest()
                     inputs["reconstructed_at"] = utc_iso(now)

@@ -226,6 +226,12 @@
       appendCell(row, method.historical_supported ? score(method.historical) : 'Niet beschikbaar');
       appendCell(row, method.historical_supported ? score(method.historical?.paired) : '—'); body.append(row);
     }
+    const horizons = $('method-horizons'); horizons.replaceChildren();
+    for (const method of data.methods || []) {
+      const row = document.createElement('tr'); appendCell(row, method.label);
+      for (const name of ['0-24u', '24-48u']) appendCell(row, score(method.historical?.horizons?.find(h => h.horizon === name)));
+      horizons.append(row);
+    }
     setText('method-pairing', data.pairing_notice);
     setText('history-notice', data.historical_notice);
     const job = data.history_job || {};

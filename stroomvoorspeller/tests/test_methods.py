@@ -184,6 +184,7 @@ def test_historical_job_runs_existing_data_without_polluting_live(tmp_path, monk
     report = comparison(app)
     v4 = next(m for m in report["methods"] if m["id"] == "v4")
     assert v4["historical"]["n"] > 0 and v4["live"]["n"] == 0
+    assert next(h for h in v4["historical"]["horizons"] if h["horizon"] == "24-48u")["n"] > 0
     assert not any(k.startswith("method:epex") for k in app.store.source_statuses())
     initial = app.store.forecast_snapshots(evaluation_mode="historical")
     start_history_test(app)

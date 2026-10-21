@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.5`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.6`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -82,3 +82,6 @@ De leverancierskeuze bevat 25 lokale tariefvoorstellen uit [Tweakers, eerste pos
 
 
 Onder **Opslag** zie je hoeveel ruimte database, modellen en cache gebruiken. Je kunt oude gegevens op leeftijd verwijderen, de Epex-cache legen en ongebruikte Timestral-modellen verwijderen. Via **Download analyse-export (ZIP)** kun je prijzen, prognoses en modelinformatie lokaal downloaden om zelf te delen voor onderzoek naar betere voorspellingen. De export verwijdert tokens, coördinaten en oorspronkelijke entiteitsnamen. Zie [opslag en export](docs/DATA.md) voor inhoud, beperkingen en API.
+
+
+Lokaal adaptief v2 valideert voor de horizon 24–48 uur ook de mix met v4 op eerdere voorspelfouten. De historische test rekent nu 48 uur door en toont resultaten per horizon. Zie [modelonderbouwing en beperkingen](docs/METHODS.md#lokaal-adaptief-v2-gevalideerde-mix-voor-2448-uur); het gemeten voordeel uit één export moet nog live worden bevestigd.

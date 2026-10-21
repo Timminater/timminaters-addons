@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6
+
+- Lokaal adaptief v2 valideert voor 24–48 uur de uiteindelijke mix met v4, inclusief volledig terugvallen op v4. Alleen eerder geëindigde en beschikbare validatiedoelen worden gebruikt; andere horizons houden de v1-berekening.
+- Zeven begrensde historische validatie-uitgiftes met gedeelde doelkwartieren voor alle kandidaten; gecachte analogieën en niveaus zonder nieuwe ML-dependencies.
+- Historische tests rekenen nu 48 uur per uitgifte door. Analyse toont 0–24 en 24–48 uur apart. Opnieuw uitgevoerde historische runs met dezelfde uitgiftetijd krijgen voorrang.
+- Nieuwe modelidentiteit adaptive-quarter-2 houdt scores en kalibratie gescheiden van v1; oude data blijft bewaard.
+
 ## 0.2.5
 
 - Opslagindicator met uitsplitsing voor database, Timestral-modellen, Epex-cache en overige appdata.

@@ -159,3 +159,20 @@ zodat scores uit de oude externe route niet met de nieuwe modellen worden
 gemengd. Analyse toont MAE, bias en aantallen; de gepaarde MAE gebruikt dezelfde
 uitgiftetijden en doelkwartieren van ingeschakelde methoden met resultaten.
 Ontbrekende paren blijven ontbreken en worden niet als nul fout meegeteld.
+
+
+## Lokaal adaptief v2: gevalideerde mix voor 24–48 uur
+
+De oude lokale methode koos een historische analogie op basis van diens validatiefout, maar mengde de uitkomst altijd met 25% v4 en 75% analogie. V2 beoordeelt voor doelen die 24 tot minder dan 48 uur na de werkelijke uitgiftetijd liggen de uiteindelijke mix. Kandidaten zijn v4 alleen en analogieën van 7, 14 of 28 dagen (14/28 ook met niveaucorrectie), met 25%, 50%, 75% of 100% analogiegewicht. De historische dagtypen en kwartierposities blijven behouden.
+
+De keuze gebruikt maximaal zeven eerdere dagelijkse uitgiftemomenten om 00:00 UTC, met uurdoelen op horizon 24–48 uur. Elke interne v4-run ziet alleen prijzen die bij dat uitgiftemoment beschikbaar waren en waarvan het kwartier toen al geëindigd was. Doelprijzen moeten bovendien bij de huidige uitgifte geëindigd en beschikbaar zijn. Alle kandidaten gebruiken dezelfde doelset, met minimaal 48 uurdoelen. De huidige weersverwachting wordt nooit achteraf als historische weersverwachting gebruikt. De oorspronkelijke v4-informatie met het actuele weer wordt wel gebruikt in de gekozen mix bij de uiteindelijke prognose.
+
+Minimaal 14 dagen historie is nodig. Bij onvoldoende validatie of een ontbrekende gekozen analogie blijft de bestaande berekening gelden. Voor horizon 0–24 uur en vanaf 48 uur blijft de v1-berekening ongewijzigd. Grenzen van bestaande voorlopige banden worden met de puntcorrectie verschoven; ze worden niet smaller gemaakt en krijgen geen nieuwe dekkingsclaim. Caches voor niveaus en analogieën voorkomen herhaalde scans. Geen NumPy, PyTorch, modeldownload of externe rekenservice nodig.
+
+Modelidentiteit `adaptive-quarter-2` start een eigen score- en kalibratiereeks. Oude `adaptive-quarter-1`-runs blijven in het archief en in exports. De UI toont de nieuwste modelversie per methode; voor een historische vergelijking moet de test opnieuw worden uitgevoerd. Historische tests leveren nu maximaal 192 kwartieren per uitgifte, met aparte zichtbaarheid van 0–24 en 24–48 uur. Aantallen kunnen verschillen; beoordeel dezelfde horizons en doelkwartieren.
+
+### Onderbouwing en beperking
+
+De wijziging is getoetst met een door de gebruiker aangeleverde, geanonimiseerde export. Er worden geen individuele prijsrecords of bestanden uit die export meegeleverd. Op 13 volledige dagelijkse uitgiftes (7–19 oktober 2026, 1.248 doelen per methode) daalde de historische MAE voor 24–48 uur van 5,6723 naar 5,0828 cent/kWh, circa 10,4%. Op de drie apart gehouden volledige uitgiftes van 17–19 oktober (288 doelen) was dat 3,9508 naar 3,8488 cent/kWh, circa 2,6%. De productie-implementatie reproduceerde die uitkomsten exact; de eerste 24 uur bleven identiek.
+
+Dit is beperkt bewijs uit één installatie en één korte periode. De laatste dagen waren eerder in verkennende analyses bekeken en zijn geen volledig onafhankelijke nieuwe dataset. Het resultaat is geen garantie voor live verbetering, andere leveranciers, andere seizoenen of langere horizons. Modelselectie vond binnen elke uitgifte uitsluitend op eerdere gegevens plaats; toekomstige live prestaties moeten de winst bevestigen. Eenvoudige vaste foutcorrecties en een onderzocht regressiemodel leverden geen consistente verbetering en zijn niet ingebouwd.

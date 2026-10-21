@@ -17,7 +17,7 @@ LOCAL = ZoneInfo("Europe/Amsterdam")
 STEP = timedelta(minutes=15)
 METHODS = {"local": "Lokaal adaptief", "v4": "Oorspronkelijke v4",
            "epex": "EpexPredictor NL (lokaal)", "timestral": "Timestral (lokaal)"}
-VERSIONS = {"local": "adaptive-quarter-1", "epex": "epex-local-nl-1", "timestral": "timestral-local-209m-1"}
+VERSIONS = {"local": "adaptive-quarter-2", "epex": "epex-local-nl-1", "timestral": "timestral-local-209m-1"}
 TIMESTRAL_REVISION = "9874d252ab0aae16f7f7c999f98f98d6ad7d8365"
 
 
@@ -105,8 +105,35 @@ def adaptive_forecast(history, issued_at, weather=None, max_points=672, price_sc
                 lower=point.lower + delta if point.lower is not None else None,
                 upper=point.upper + delta if point.upper is not None else None,
                 source="local-adaptive", reason=f"Causaal gekozen {days}-daagse analogie; niveaucorrectie={level}"))
-    return replace(run, model_version=VERSIONS["local"], points=points,
-                   reasons=[*run.reasons, "Adaptieve mix is experimenteel; nauwkeurigheid wordt afzonderlijk gemeten"])
+    # Validate the actual blend for the next-day horizon. Other horizons retain
+    # v1 exactly: the supplied research data did not support changing those.
+    validation = None
+    if any(24 <= (p.start_utc-issued_at).total_seconds()/3600 < 48 for p in points):
+        from .adaptive_validation import validated_blend
+        validation = validated_blend(known, issued_at, price_scale, base, LOCAL)
+    reasons = [*run.reasons, "Adaptieve mix is experimenteel; nauwkeurigheid wordt afzonderlijk gemeten"]
+    if validation is not None:
+        (days, level, weight), analog_index, samples = validation
+        updated = []
+        originals = {p.start_utc: p for p in run.points}
+        for point in points:
+            if not 24 <= (point.start_utc-issued_at).total_seconds()/3600 < 48:
+                updated.append(point)
+                continue
+            original = originals[point.start_utc]
+            analog = analog_index.price(point.start_utc, issued_at, days, level) if weight else None
+            if weight and analog is None:
+                updated.append(point)
+                continue
+            price = (1-weight)*original.price+weight*analog if weight else original.price
+            delta = price-original.price
+            updated.append(replace(original, price=price,
+                lower=original.lower+delta if original.lower is not None else None,
+                upper=original.upper+delta if original.upper is not None else None,
+                source="local-adaptive", reason=f"24–48u: causaal gevalideerde mix, analogiegewicht={weight}, periode={days} dagen, niveaucorrectie={level}"))
+        points = updated
+        reasons.append(f"24–48u-mix gekozen op {samples} eerdere uurdoelen; geen toekomstige doelprijzen of historische weersvintage gebruikt")
+    return replace(run, model_version=VERSIONS["local"], points=points, reasons=reasons)
 
 
 def _market_to_tariff(value: float, settings: Mapping, start: datetime) -> float:

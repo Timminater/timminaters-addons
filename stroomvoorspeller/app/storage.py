@@ -238,7 +238,7 @@ class Store:
                 AND (? IS NULL OR json_extract(inputs_json,'$.tariff_entity')=?)
                 AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?)
                 AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
-                ORDER BY issued_at DESC LIMIT 1""",
+                ORDER BY issued_at DESC,rowid DESC LIMIT 1""",
                 (evaluation_mode, method, method, model_version, model_version,
                  entity_id, entity_id, price_field, price_field, tariff_unit, tariff_unit)).fetchone()
             if not run: return None, []
@@ -323,7 +323,7 @@ class Store:
                   AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
                   AND COALESCE(json_extract(inputs_json,'$.evaluation_mode'),'live')=?
                   AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.method'),'local')=?)
-                """ + version_clause + " ORDER BY issued_at",
+                """ + version_clause + " ORDER BY issued_at,rowid DESC",
                 (utc_iso(since_issued), utc_iso(ended_by), entity_id, price_field, tariff_unit, tariff_unit,
                  evaluation_mode, method, method, *([model_version] if model_version is not None else []))).fetchall()
             by_day: dict[Any, list[Any]] = {}

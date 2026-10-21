@@ -183,6 +183,7 @@ def export_archive(service, days=30):
                     yield {'id': row['id'], 'issued_at': row['issued_at'], 'model_version': row['model_version'],
                            'quality': row['quality'], 'method': inputs.get('method', 'local'),
                            'evaluation_mode': inputs.get('evaluation_mode', 'live'),
+                           'test_horizon_hours': inputs.get('test_horizon_hours'),
                            'unit': inputs.get('tariff_unit'), 'price_field': inputs.get('price_field', 'tax_included'),
                            'series_id': alias(price_archive_key(inputs.get('tariff_entity', ''), inputs.get('price_field', 'tax_included'), inputs.get('tariff_unit'))),
                            'weather_snapshot': weather(inputs.get('weather_snapshot')), 'weather_model': weather(inputs.get('weather_model'))}
