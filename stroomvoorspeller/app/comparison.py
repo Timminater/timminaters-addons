@@ -39,6 +39,7 @@ def comparison(service):
               "pairing_notice": "Gepaarde MAE gebruikt dezelfde uitgiftetijd en doelkwartieren van ingeschakelde methoden met resultaten."}
     maps = {"live": {}, "historical": {}}
     for method, label in METHODS.items():
+        if method == "timestral": label = f"Timestral-{settings['timestral_model']} (lokaal)"
         item = {"id": method, "label": label, "enabled": settings["forecast_methods"][method],
                 "status": statuses.get("method:" + method, {}), "historical_supported": True}
         for mode in maps:

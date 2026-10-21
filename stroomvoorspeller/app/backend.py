@@ -196,6 +196,9 @@ class AppService:
         value.setdefault("epex_multiplier", 1.0)
         value.setdefault("epex_offset_eur_kwh", 0.0)
         value.pop("timestral_url", None)
+        from .timestral_models import MODELS
+        value.setdefault("timestral_model", "209M" if "timestral_context_days" in value or (self.store.data_dir / "models" / "timestral-209m").exists() else "28M")
+        value["timestral_models"] = MODELS
         value.setdefault("timestral_context_days", 28)
         value.setdefault("history_days", 90)
         return value
@@ -206,11 +209,13 @@ class AppService:
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
                    "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
-                   "timestral_context_days", "history_days"}
+                   "timestral_model", "timestral_context_days", "history_days"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        from .timestral_models import model_spec
+        model_spec(merged["timestral_model"])
         from .methods import METHODS
         methods = merged["forecast_methods"]
         if (not isinstance(methods, dict) or set(methods) != set(METHODS)
@@ -314,7 +319,7 @@ class AppService:
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
         for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_profile", "epex_tariff_confirmed",
-                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_context_days", "history_days"):
+                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_context_days", "history_days"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
@@ -840,11 +845,12 @@ class AppService:
 
     def _runtime_settings(self, settings, method):
         return {**settings, "_data_dir": str(self.store.data_dir),
-                "_cancel": lambda: self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method)}
+                "_cancel": lambda: self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method)
+                or (method == "timestral" and self.get_settings()["timestral_model"] != settings["timestral_model"])}
 
-    def timestral_status(self):
+    def timestral_status(self, model=None):
         from .local_runtime import timestral_status
-        return {**timestral_status(self.store.data_dir), "job": dict(self._download_job)}
+        return {**timestral_status(self.store.data_dir, model if model is not None else self.get_settings()["timestral_model"]), "job": dict(self._download_job)}
 
     def _run_methods(self, history, now, weather, used_weather, settings, entity, force, extra_reasons):
         from .methods import adaptive_forecast, epex_forecast, timestral_forecast, configured_version, VERSIONS
@@ -1030,7 +1036,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if path == "/api/methods":
                     from .comparison import comparison
                     return self._send(200, comparison(service))
-                if path == "/api/timestral": return self._send(200, service.timestral_status())
+                if path == "/api/timestral": return self._send(200, service.timestral_status(query.get("model", [None])[0]))
                 if path == "/api/history-job": return self._send(200, dict(service._history_job))
                 if path == "/api/health": return self._send(200, {"ok": True, "service": "stroomvoorspeller"})
                 if path == "/api/status": return self._send(200, service.status())
@@ -1091,7 +1097,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                     if not 0 < size <= 1024: raise ValueError("Downloadbevestiging ontbreekt")
                     body = json.loads(self.rfile.read(size))
                     if not isinstance(body, dict): raise ValueError("Downloadbevestiging ontbreekt")
-                    return self._send(202, start_download(service, body.get("confirmed")))
+                    return self._send(202, start_download(service, body.get("confirmed"), body.get("model")))
                 except (ValueError, TypeError) as exc: return self._send(400, {"error": str(exc)})
             if path == "/api/history-test":
                 from .comparison import start_history_test

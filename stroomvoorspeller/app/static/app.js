@@ -241,15 +241,24 @@
     try { await api('api/history-test', {method: 'POST'}); await loadMethods(); }
     catch (error) { state.historyError = error.message; setText('history-progress', error.message); $('history-test').disabled = false; }
   }
+  function updateTimestralModel() {
+    const selected = $('timestral-model').value;
+    const spec = state.settings?.timestral_models?.[selected];
+    $('timestral-consent').checked = false;
+    $('timestral-license').href = `https://huggingface.co/mistralai/Timestral-${selected}/blob/${spec?.revision || 'main'}/LICENSE`;
+    $('timestral-model-help').textContent = `Gewichten circa ${Math.round((spec?.bytes || 0) / 1000000)} MB. Download alleen na bevestiging; inferentie gebruikt uitsluitend lokale bestanden. PyTorch blijft onderdeel van de add-on, ook bij een klein model.`;
+  }
   let modelTimer = null;
   async function loadTimestralStatus() {
     try {
-      const status = await api('api/timestral');
+      const selected = $('timestral-model').value;
+      const status = await api('api/timestral?model=' + encodeURIComponent(selected));
+      if ($('timestral-model').value !== selected) return;
       const running = status.job?.state === 'running';
       const mb = value => Math.round((value || 0) / 1024 / 1024);
       $('timestral-download').disabled = running;
       $('timestral-download').textContent = running ? 'Download bezig…' : status.ready ? 'Controleer / herstel modeldownload' : 'Download Timestral-model';
-      setText('timestral-download-status', status.ready ? 'Timestral staat lokaal klaar. Inschakelen start geen nieuwe download.' : status.job?.state === 'failed' ? status.job.message : running ? `${status.job.message} · ${mb(status.downloaded_bytes)} / ${mb(status.download_bytes)} MB` : 'Model nog niet gedownload. Inschakelen alleen start geen download.');
+      setText('timestral-download-status', status.ready ? `Timestral-${status.size} staat lokaal klaar. Inschakelen start geen nieuwe download.` : status.job?.state === 'failed' && status.job.size === selected ? status.job.message : running ? status.job.size !== selected ? status.job.message : `${status.job.message} · ${mb(status.downloaded_bytes)} / ${mb(status.download_bytes)} MB` : 'Model nog niet gedownload. Inschakelen alleen start geen download.');
       if (modelTimer) clearTimeout(modelTimer);
       if (running) modelTimer = setTimeout(loadTimestralStatus, 2500);
     } catch (error) { setText('timestral-download-status', error.message); }
@@ -257,7 +266,7 @@
   async function downloadTimestral() {
     if (!$('timestral-consent').checked) { setText('timestral-download-status', 'Bevestig eerst de download en lees de modellicentie.'); return; }
     $('timestral-download').disabled = true;
-    try { await api('api/timestral/download', {method: 'POST', body: JSON.stringify({confirmed: true})}); await loadTimestralStatus(); }
+    try { await api('api/timestral/download', {method: 'POST', body: JSON.stringify({confirmed: true, model: $('timestral-model').value})}); await loadTimestralStatus(); }
     catch (error) { setText('timestral-download-status', error.message); $('timestral-download').disabled = false; }
   }
   function activateView(view, focus = false) {
@@ -324,6 +333,8 @@
     $('epex-multiplier').value = s.epex_multiplier ?? 1;
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
+    $('timestral-model').value = s.timestral_model || '28M';
+    updateTimestralModel();
     $('timestral-consent').checked = false;
     void loadTimestralStatus();
     $('timestral-context').value = s.timestral_context_days ?? 28;
@@ -353,6 +364,7 @@
     settings.epex_multiplier = Number($('epex-multiplier').value);
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
+    settings.timestral_model = $('timestral-model').value;
     settings.timestral_context_days = Number($('timestral-context').value);
     settings.history_days = Number($('history-days').value);
     if (priceSource === 'energy_charts_nl' && settings.price_choice === 'all_in' && (!$('supplier-fee').value || (settings.supplier === 'tibber' && !settings.supplier_fee_confirmed))) { show('settings-error', true); $('settings-error').textContent = 'Vul de gecontroleerde inkoopvergoeding incl. btw in en bevestig de btw-basis.'; return; }
@@ -408,6 +420,7 @@
   }
   function init() {
     $('history-test').addEventListener('click', testHistory);
+    $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
     $('epex-profile').addEventListener('change', () => {

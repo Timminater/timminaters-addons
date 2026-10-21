@@ -8,15 +8,16 @@ import os
 from pathlib import Path
 import sys
 
-from .local_runtime import MODEL, REVISION, WEIGHTS_SHA256, WEIGHTS_BYTES
+from .local_runtime import WEIGHTS_SHA256, WEIGHTS_BYTES
+from .timestral_models import model_spec
 
-CONFIG_SHA256 = "1764139bb6d37ee5ff543f470495c086cfa6c373f7134fc61c7e3d844538bfd8"
+CONFIG_SHA256 = model_spec("209M")["config_sha256"]
 # Timestral's official package uses absolute 'timestral' imports internally.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "vendor"))
 
 
-def model_dir():
-    return Path(os.environ["DATA_DIR"]) / "models" / "timestral-209m"
+def model_dir(size="209M"):
+    return Path(os.environ["DATA_DIR"]) / "models" / model_spec(size)["folder"]
 
 
 def digest(path):
@@ -24,12 +25,15 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def verify_model(folder):
+def verify_model(folder, spec=None):
+    size = spec["bytes"] if spec else WEIGHTS_BYTES
+    sha = spec["sha256"] if spec else WEIGHTS_SHA256
+    config_sha = spec["config_sha256"] if spec else CONFIG_SHA256
     try:
         valid = ((folder / "LICENSE").is_file()
-                 and (folder / "model.safetensors").stat().st_size == WEIGHTS_BYTES
-                 and digest(folder / "model.safetensors") == WEIGHTS_SHA256
-                 and digest(folder / "config.json") == CONFIG_SHA256)
+                 and (folder / "model.safetensors").stat().st_size == size
+                 and digest(folder / "model.safetensors") == sha
+                 and digest(folder / "config.json") == config_sha)
     except OSError:
         valid = False
     if not valid:
@@ -39,16 +43,17 @@ def verify_model(folder):
 
 def download_timestral(payload):
     from huggingface_hub import snapshot_download
-    folder = model_dir()
+    spec = model_spec(payload.get("model_size", "209M"))
+    folder = model_dir(payload.get("model_size", "209M"))
     folder.mkdir(parents=True, exist_ok=True)
-    snapshot_download(MODEL, revision=REVISION, token=False, local_dir=folder,
+    snapshot_download(spec["repo"], revision=spec["revision"], token=False, local_dir=folder,
                       allow_patterns=["config.json", "model.safetensors", "LICENSE"], max_workers=1)
-    verify_model(folder)
+    verify_model(folder, spec)
     marker = folder / "verified.json"
     temporary = marker.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"revision": REVISION, "sha256": WEIGHTS_SHA256}))
+    temporary.write_text(json.dumps({"revision": spec["revision"], "sha256": spec["sha256"]}))
     temporary.replace(marker)
-    return {"ready": True, "revision": REVISION}
+    return {"ready": True, "revision": spec["revision"], "model": spec["repo"]}
 
 
 def validate_timestral(payload):
@@ -65,10 +70,11 @@ def validate_timestral(payload):
 
 def infer_timestral(payload):
     context, horizon = validate_timestral(payload)
-    folder = model_dir()
+    spec = model_spec(payload.get("model_size", "209M"))
+    folder = model_dir(payload.get("model_size", "209M"))
     if not (folder / "verified.json").is_file():
         raise ValueError("Download en bevestig Timestral eerst in Instellingen")
-    verify_model(folder)
+    verify_model(folder, spec)
     import numpy as np
     import torch
     from timestral import TimestralForecaster
@@ -77,7 +83,7 @@ def infer_timestral(payload):
     model = TimestralForecaster.from_pretrained(folder, device="cpu", token=False, local_files_only=True)
     forecast = model.forecast(np.asarray([np.nan if v is None else v for v in context], dtype=np.float32),
                               prediction_length=horizon, clip_nonnegative=False)
-    return {"model": MODEL, "revision": REVISION,
+    return {"model": spec["repo"], "revision": spec["revision"],
             "median": forecast.median.reshape(-1).tolist(),
             "lower": forecast.quantile(.1).reshape(-1).tolist(),
             "upper": forecast.quantile(.9).reshape(-1).tolist()}

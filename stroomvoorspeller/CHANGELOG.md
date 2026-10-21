@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- Timestral-modelkeuze: 5M, 28M, 123M of 209M. Nieuwe installaties krijgen 28M als standaard; bestaande 209M-instellingen, bestanden en scores blijven behouden.
+- Handmatige download per variant, eigen modelmap en gepinde revisie met SHA-256 voor gewichten en configuratie. Wisselen start geen download.
+- Gekozen variant zichtbaar in de methodevergelijking, met aparte scores en kalibratie per variant. Een lopende berekening met het vorige model wordt gestopt.
+- Downloadgrootte en licentielink volgen de selectie; toestemming moet opnieuw worden aangevinkt na wisselen.
+
 ## 0.2.3
 
 - 25 leveranciersvoorstellen uit de Tweakers-tabel (peildatum 04-08-2026), met expliciete btw-basis en bronvermelding.

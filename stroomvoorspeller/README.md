@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.3`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.4`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -67,13 +67,13 @@ Zie [architectuur](docs/ARCHITECTUUR.md), [model en afwijkingen](docs/MODEL.md) 
 ## Rekenmethoden en historische vergelijking
 
 Onder Instellingen kun je **Lokaal adaptief**, **Oorspronkelijke v4**,
-**EpexPredictor NL** en **Timestral-209M** afzonderlijk in- of uitschakelen.
+**EpexPredictor NL** en **Timestral** afzonderlijk in- of uitschakelen.
 Alleen Lokaal adaptief staat standaard aan. Kies één actieve methode voor de
 grafiek en MQTT; ingeschakelde alternatieven bewaren hun eigen prognoses.
 
 Onder Analyse vergelijk je live resultaten en kun je beschikbare bestaande
 kwartierhistorie handmatig laten terugrekenen, zonder historische en live scores
-te vermengen. Alle methoden rekenen in de add-on. Timestral vereist een afzonderlijk bevestigde modeldownload; er is geen externe rekenservice nodig.
+te vermengen. Alle methoden rekenen in de add-on. Timestral biedt keuze uit 5M, 28M, 123M en 209M (nieuwe installaties: 28M; bestaande 209M behouden) en vereist een afzonderlijk bevestigde modeldownload; er is geen externe rekenservice nodig.
 Zie [methoden, resourcebeheer en historische tests](docs/METHODS.md) voor installatie,
 tariefomrekening, beperkingen en licenties.
 

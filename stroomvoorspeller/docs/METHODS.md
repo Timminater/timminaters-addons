@@ -83,30 +83,37 @@ geen leveranciersformule. Een gewijzigde omrekening of trainingsperiode begint
 een eigen Epex-evaluatiereeks. De onderliggende marktbron gebruikt CC BY 4.0;
 bronvermelding blijft EpexPredictor, Energy-Charts/Fraunhofer ISE en Open-Meteo.
 
-## Ingebouwde Timestral-209M en handmatige download
+## Ingebouwde Timestral-modelkeuze en handmatige download
 
 De officiële Timestral-bibliotheek is ingebouwd op commit
 `a534bdbd244d64f3d9d743f46c7bf6fc330ed4ff` (Apache-2.0). Er is geen aparte
 machine, container, server-URL of luisterpoort nodig.
 
-1. Open Instellingen en lees de informatie bij **Timestral lokaal installeren**.
+1. Open Instellingen en kies **5M, 28M, 123M of 209M** bij **Timestral lokaal installeren**. 28M is de standaard voor nieuwe installaties; bestaande 209M-instellingen en downloads blijven behouden.
 2. Lees de modellicentie en vink de downloadbevestiging aan.
 3. Klik **Download Timestral-model** en wacht op de lokale gereedmelding.
-4. Schakel Timestral in en kies het eventueel als actieve methode.
+4. Schakel Timestral in, kies het eventueel als actieve methode en sla de instellingen op. Opslaan activeert de gekozen variant; vooraf downloaden verandert de opgeslagen selectie niet.
 
 Alleen inschakelen start **geen download**. De downloadactie is afzonderlijk en
 werkt ook als de methode nog uit staat. Het endpoint
-`POST /api/timestral/download` vereist `{"confirmed": true}`; status en voortgang
-staan op `GET /api/timestral`. De modeldownload doet een expliciete aanvraag bij
+`POST /api/timestral/download` vereist `{"confirmed": true, "model": "28M"}`; zonder model geldt de opgeslagen keuze. Status en voortgang staan op `GET /api/timestral?model=28M` (zonder query: opgeslagen keuze). Alleen deze vier modelnamen worden geaccepteerd. De modeldownload doet een expliciete aanvraag bij
 Hugging Face, controleert de gepinde bestanden en bewaart ze onder
-`/data/models/timestral-209m`. Na een herstart of update blijven die bestanden
+`/data/models/timestral-5m`, `timestral-28m`, `timestral-123m` of `timestral-209m`. Na een herstart of update blijven die bestanden
 behouden. Een onderbroken download kan handmatig worden hervat. Bij een bezet
 ML-proces verschijnt een melding; probeer de download dan opnieuw na die run.
 
-De checkpoint is vastgezet op
-`9874d252ab0aae16f7f7c999f98f98d6ad7d8365`. De gewichten zijn 837.271.648 bytes
-(circa 800 MiB); daarnaast is ruimte voor de image, metadata en eventuele
-onvolledige download nodig. SHA-256 van gewichten én configuratie wordt
+Elke variant heeft een eigen gepinde revisie, SHA-256 voor gewichten en configuratie en een aparte map. De vaste gegevens staan in `app/timestral_models.py`.
+
+| Model | Gewichten (decimale MB, afgerond) | Gebruik |
+| --- | ---: | --- |
+| 5M | 21 MB | Zuinige optie |
+| 28M | 111 MB | Standaard voor nieuwe installaties |
+| 123M | 490 MB | Optioneel voor krachtigere systemen |
+| 209M | 837 MB | Grootste optie, bestaande installatie behouden |
+
+Downloadgrootte is geen RAM-specificatie. PyTorch blijft in de image aanwezig, ongeacht de gekozen variant. Eerder gedownloade varianten blijven op schijf; slechts één variant wordt gebruikt bij een run. Wisselen start een eigen score- en kalibratiereeks op basis van modelgrootte, revisie en contextlengte; de oorspronkelijke 209M-identiteit blijft exact behouden. De vergelijking toont de momenteel geselecteerde variant en diens scores. Terugschakelen maakt de eerdere scores weer beschikbaar; varianten worden niet gelijktijdig vergeleken. Een lopende inferentie met de vorige variant wordt gestopt.
+
+Naast de gewichten is ruimte nodig voor image, metadata en eventueel onvolledige downloads. SHA-256 van gewichten én configuratie wordt
 gecontroleerd; ook vóór inferentie worden de checks herhaald. De modellicentie
 wordt mee gedownload. De gewichten hebben een **Modified MIT**-licentie met een
 beperking voor bedrijven/werkgevers boven USD 20 miljoen geconsolideerde
@@ -119,7 +126,7 @@ Gaten blijven ontbrekend en negatieve prijzen worden toegestaan. De q10–q90-ba
 is modelonzekerheid, geen lokaal bewezen 80%-dekking.
 
 De context is instelbaar van 2 tot 90 dagen (standaard 28). Gebruik bij voorkeur
-minimaal 4 GB beschikbare RAM; dat is een startbudget, geen garantie voor elk
+bij grotere modellen minimaal 4 GB beschikbare RAM; dat is een startbudget, geen garantie voor elk
 apparaat of elke context. Minder context/threads bespaart resources. Tijdens
 ontwikkeling werkte 28 dagen context met zeven dagen horizon offline binnen een
 containerlimiet van 4 GiB RAM en twee CPU's. Deze controle zegt niets over de

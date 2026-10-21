@@ -16,7 +16,7 @@ UTC = timezone.utc
 LOCAL = ZoneInfo("Europe/Amsterdam")
 STEP = timedelta(minutes=15)
 METHODS = {"local": "Lokaal adaptief", "v4": "Oorspronkelijke v4",
-           "epex": "EpexPredictor NL (lokaal)", "timestral": "Timestral-209M (lokaal)"}
+           "epex": "EpexPredictor NL (lokaal)", "timestral": "Timestral (lokaal)"}
 VERSIONS = {"local": "adaptive-quarter-1", "epex": "epex-local-nl-1", "timestral": "timestral-local-209m-1"}
 TIMESTRAL_REVISION = "9874d252ab0aae16f7f7c999f98f98d6ad7d8365"
 
@@ -33,7 +33,10 @@ def epex_version(settings: Mapping) -> str:
 def timestral_version(settings: Mapping) -> str:
     payload = [settings.get("timestral_context_days", 28)]
     digest = hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:12]
-    return VERSIONS["timestral"] + ":" + TIMESTRAL_REVISION[:12] + ":" + digest
+    from .timestral_models import model_spec
+    size = settings.get("timestral_model", "209M")
+    spec = model_spec(size)
+    return "timestral-local-" + size.lower() + "-1:" + spec["revision"][:12] + ":" + digest
 
 
 def configured_version(method: str, settings: Mapping) -> str | None:
@@ -183,8 +186,10 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
     if horizon < 1:
         raise ValueError("Alle kwartieren binnen de horizon zijn al bekend")
     payload = (runner or run_local)("timestral", {"context": context, "prediction_length": horizon}, settings, timeout=180)
-    if payload.get("model") != "mistralai/Timestral-209M" or payload.get("revision") != TIMESTRAL_REVISION:
-        raise ValueError("Lokale Timestral-module gebruikt niet het ingestelde 209M-model")
+    from .timestral_models import model_spec
+    spec = model_spec(settings.get("timestral_model", "209M"))
+    if payload.get("model") != spec["repo"] or payload.get("revision") != spec["revision"]:
+        raise ValueError("Lokale Timestral-module gebruikt niet het ingestelde model")
     arrays = [payload.get(key) for key in ("median", "lower", "upper")]
     if any(not isinstance(a, list) or len(a) != horizon for a in arrays):
         raise ValueError("Lokale Timestral-module levert onjuiste voorspellinglengte")
@@ -198,5 +203,5 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
             points.append(ForecastPoint(start, start + STEP, value, lower, upper, source="timestral",
                                        reason="Timestral q10–q90; dekking voor dit tarief nog niet gekalibreerd"))
     return ForecastRun(timestral_version(settings), issued_at, points, "voorlopig",
-                       ["Timestral-209M op prijshistorie; zonder historische weerscovariaten",
+                       [spec["repo"].split("/")[-1] + " op prijshistorie; zonder historische weerscovariaten",
                         "q10–q90 is modelonzekerheid, geen lokaal bewezen 80%-dekking"])
