@@ -31,7 +31,7 @@ van methode gewisseld; de foutstatus en uitgiftetijd blijven zichtbaar.
 
 ## Lokaal adaptief en oorspronkelijke v4
 
-Lokaal adaptief combineert v4 (25%) met een historisch kwartierpatroon (75%). Een
+De oorspronkelijke adaptieve berekening combineert v4 (25%) met een historisch kwartierpatroon (75%). V2 behoudt dit voor 0–24 uur en vanaf 48 uur; voor 24–48 uur geldt de hieronder beschreven gevalideerde mix. Een
 validatievenster van zeven dagen kiest uit 7-, 14- en 28-daagse patronen, met of
 zonder niveaucorrectie op de laatste twee dagen. De validatie-invoer moet vóór de
 gesimuleerde uitgiftetijd beschikbaar zijn. Bij te weinig validatiepunten valt
@@ -142,7 +142,7 @@ Recorder-data en uurstatistieken kunnen geen echte kwartierdata vervangen. Voor
 states gelden.
 
 **Test bestaande historie** onder Analyse start handmatig een begrensde
-achtergrondtaak: maximaal zeven recente uitgiftedagen, per dag 96 toekomstige
+achtergrondtaak: maximaal zeven recente uitgiftedagen, per dag 192 toekomstige
 UTC-kwartieren, met minimaal zestien dagen prijsarchief. Alleen ingeschakelde
 methoden draaien. Ook Epex kan nu lokaal opnieuw trainen voor elke historische
 uitgifte. Timestral vereist vooraf lokaal gedownloade gewichten.
