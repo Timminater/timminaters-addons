@@ -1017,7 +1017,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
         def _path(self) -> tuple[str, dict[str, list[str]]]:
             split = urlsplit(self.path)
             path = split.path
-            marker = path.find("/api/")
+            marker = path.rfind("/api/")
             if marker >= 0: path = path[marker:]
             elif path.endswith("/api"): path = "/api"
             return path, parse_qs(split.query)
@@ -1033,6 +1033,23 @@ def make_handler(service: AppService, static_dir: str | None = None):
         def do_GET(self) -> None:
             path, query = self._path()
             try:
+                if path == "/api/storage":
+                    from .data_management import storage_status
+                    return self._send(200, storage_status(service, int(query.get("days", ["90"])[0])))
+                if path == "/api/export":
+                    from .data_management import export_archive
+                    import shutil
+                    with export_archive(service, int(query.get("days", ["30"])[0])) as archive:
+                        archive.seek(0, 2); size = archive.tell(); archive.seek(0)
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        self.send_header("Content-Disposition", 'attachment; filename="stroomvoorspeller-analyse.zip"')
+                        self.send_header("Content-Length", str(size))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("X-Content-Type-Options", "nosniff")
+                        self.end_headers()
+                        shutil.copyfileobj(archive, self.wfile, length=65536)
+                    return
                 if path == "/api/methods":
                     from .comparison import comparison
                     return self._send(200, comparison(service))
@@ -1090,6 +1107,20 @@ def make_handler(service: AppService, static_dir: str | None = None):
 
         def do_POST(self) -> None:
             path, _ = self._path()
+            if path == "/api/storage/cleanup":
+                from .data_management import cleanup
+                try:
+                    if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+                        raise ValueError("Gebruik application/json voor een opruimopdracht")
+                    size = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < size <= 2048: raise ValueError("Opruimkeuze ontbreekt")
+                    body = json.loads(self.rfile.read(size))
+                    if not isinstance(body, dict): raise ValueError("Opruimkeuze ontbreekt")
+                    return self._send(200, cleanup(service, body))
+                except (ValueError, TypeError) as exc: return self._send(400, {"error": str(exc)})
+                except Exception:
+                    LOG.exception("Opruimen mislukt")
+                    return self._send(503, {"error": "Opruimen is niet afgerond; controleer vrije ruimte en probeer later opnieuw"})
             if path == "/api/timestral/download":
                 from .local_runtime import start_download
                 try:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.5
+
+- Opslagindicator met uitsplitsing voor database, Timestral-modellen, Epex-cache en overige appdata.
+- Bevestigde opruimacties voor gegevens ouder dan een instelbaar aantal dagen, Epex-cache en ongebruikte Timestral-modellen; gekozen model en instellingen blijven behouden. Database wordt na verwijderen zo mogelijk verkleind.
+- Lokale analyse-export als ZIP: prijzen en publicatiehistorie, prognoses, modelversies, relevante weerinvoer en geselecteerde instellingen. Entiteiten geanonimiseerd; geen tokens, locatiecoördinaten, ruwe HA-antwoorden of modelgewichten.
+- Export begrensd tot 32 MiB met selecteerbare periode; geen automatische upload. Opslagbeheer werkt ook via ingress en op mobiel.
+
 ## 0.2.4
 
 - Timestral-modelkeuze: 5M, 28M, 123M of 209M. Nieuwe installaties krijgen 28M als standaard; bestaande 209M-instellingen, bestanden en scores blijven behouden.

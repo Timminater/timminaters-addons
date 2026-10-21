@@ -23,3 +23,5 @@
 .analysis-panel,.analysis-summary,.analysis-grid,.analysis-card,.analysis-metric{min-width:0}
 .analysis-panel{grid-template-columns:minmax(0,1fr)}
 .analysis-panel .table-scroll{max-width:100%;overflow-x:auto}
+#storage-card .top-actions{flex-wrap:wrap;gap:10px;margin:14px 0}#storage-card .settings-two{margin:16px 0;align-items:end}#storage-card .settings-two input{max-width:100%}#storage-card .button{white-space:normal}#storage-message{font-size:12px;line-height:1.5}
+@media(max-width:760px){.topbar{height:auto;min-height:76px;flex-wrap:wrap;gap:10px;padding-top:12px;padding-bottom:12px}.topbar>.top-actions{flex-wrap:wrap;justify-content:flex-end}#storage-card .settings-two{grid-template-columns:1fr}}

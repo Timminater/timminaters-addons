@@ -413,12 +413,66 @@
     catch (error) { show('notice', true); $('notice').textContent = `Berekenen mislukt: ${error.message}`; }
     finally { button.disabled = false; button.textContent = '↻ Bereken nu'; }
   }
+  function storageBytes(value) {
+    if (value < 1024) return `${value} B`;
+    const unit = value >= 1073741824 ? 'GiB' : value >= 1048576 ? 'MiB' : 'KiB';
+    const divisor = unit === 'GiB' ? 1073741824 : unit === 'MiB' ? 1048576 : 1024;
+    return `${(value / divisor).toLocaleString('nl-NL', {maximumFractionDigits: 1})} ${unit}`;
+  }
+  function renderStorage(data) {
+    setText('storage-open', `Opslag: ${storageBytes(data.total_bytes)}`);
+    setText('storage-summary', `${storageBytes(data.total_bytes)} appdata · ${storageBytes(data.free_bytes)} vrij op het bestandssysteem`);
+    setText('storage-breakdown', `Database: ${storageBytes(data.database_bytes)} · Timestral: ${storageBytes(data.timestral_bytes)} · Epex-cache: ${storageBytes(data.epex_cache_bytes)} · Overig: ${storageBytes(data.other_bytes)}`);
+    const count = data.removable;
+    setText('storage-preview', `Ouder dan ${data.days} dagen: ${count.quarter_prices} kwartierprijzen, ${count.quarter_price_revisions} revisies, ${count.hourly_history} uurprijzen, ${count.forecast_runs} prognoseruns en ${count.input_snapshots} bronsnapshots. Punten van verwijderde runs verdwijnen ook.`);
+  }
+  async function loadStorage() {
+    try { renderStorage(await api('api/storage?days=' + encodeURIComponent($('storage-days').value))); }
+    catch (error) { setText('storage-message', error.message); }
+  }
+  async function cleanStorage(action) {
+    const days = Number($('storage-days').value);
+    if (!Number.isInteger(days) || days < 7 || days > 3650) { setText('storage-message', 'Kies 7 t/m 3650 hele dagen.'); return; }
+    const texts = {history: `Alle historie, revisies, bronsnapshots en prognoseruns ouder dan ${days} dagen definitief verwijderen? Dit vermindert de beschikbare analyse- en trainingshistorie.`, epex_cache: 'Epex-cache definitief verwijderen? De volgende Epex-run moet opnieuw brondata ophalen en trainen.', unused_models: 'Alle gedownloade Timestral-modellen behalve het momenteel opgeslagen gekozen model definitief verwijderen? Opnieuw gebruiken vereist een handmatige download.'};
+    await loadStorage();
+    if (!window.confirm(texts[action])) return;
+    const buttons = ['storage-clean-history', 'storage-clean-cache', 'storage-clean-models'];
+    buttons.forEach(id => $(id).disabled = true);
+    setText('storage-message', 'Bezig met opruimen en zo nodig verkleinen van de database…');
+    try {
+      const result = await api('api/storage/cleanup', {method: 'POST', body: JSON.stringify({action, days, confirmed: true})});
+      renderStorage(result.storage); setText('storage-message', result.message);
+      state.analysisLoaded = false; await loadAll();
+    } catch (error) { setText('storage-message', error.message); }
+    finally { buttons.forEach(id => $(id).disabled = false); }
+  }
+  async function exportData() {
+    const button = $('data-export'); button.disabled = true;
+    setText('storage-message', 'Analyse-export voorbereiden…');
+    try {
+      const response = await fetch(new URL('api/export?days=' + encodeURIComponent($('export-days').value), document.baseURI), {credentials: 'same-origin', cache: 'no-store'});
+      if (!response.ok) { const error = await response.json(); throw new Error(error.error || 'Export mislukt'); }
+      const blob = await response.blob(); const url = URL.createObjectURL(blob);
+      const link = document.createElement('a'); link.href = url; link.download = 'stroomvoorspeller-analyse.zip';
+      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+      setText('storage-message', 'Export gedownload. Je kunt het ZIP-bestand zelf delen in de chat; er is niets automatisch verstuurd.');
+    } catch (error) { setText('storage-message', error.message); }
+    finally { button.disabled = false; }
+  }
   async function loadAll() {
     try { state.settings = await api('api/settings'); } catch (_) { state.settings = null; }
     try { updateStatus(await api('api/status')); } catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); return; }
+    await loadStorage();
     await loadDashboard(); if (state.activeView === 'analysis') await loadAnalysis();
   }
   function init() {
+    $('storage-open').addEventListener('click', () => { activateView('analysis'); $('storage-card').scrollIntoView({behavior: 'smooth'}); void loadStorage(); });
+    $('storage-refresh').addEventListener('click', loadStorage);
+    $('storage-days').addEventListener('change', loadStorage);
+    $('storage-clean-history').addEventListener('click', () => cleanStorage('history'));
+    $('storage-clean-cache').addEventListener('click', () => cleanStorage('epex_cache'));
+    $('storage-clean-models').addEventListener('click', () => cleanStorage('unused_models'));
+    $('data-export').addEventListener('click', exportData);
     $('history-test').addEventListener('click', testHistory);
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
