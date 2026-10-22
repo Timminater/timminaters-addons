@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7
+
+- Rustiger Overzicht met expliciet model en versie bij de prognose; bronnen, kwaliteit en goedkope momenten zijn uitklapbaar.
+- Analyse met foutbalken, prognoselijnen naast werkelijke tarieven en dagelijkse fouten, gefilterd op methoden, live/historisch, periode en horizon. Alleen gemeenschappelijke uitgiftes en doelkwartieren worden onderling vergeleken.
+- Opslag en export verplaatst naar Data & opslag; oude detailtabellen blijven uitklapbaar beschikbaar.
+- Timestral krijgt instelbare expliciete weekendinformatie in Nederlandse tijd, met aparte scores en kalibratie. Bestaande modelgewichten blijven behouden. Geen vaste weekendkorting of nauwkeurigheidsgarantie.
+
 ## 0.2.6
 
 - Lokaal adaptief v2 valideert voor 24–48 uur de uiteindelijke mix met v4, inclusief volledig terugvallen op v4. Alleen eerder geëindigde en beschikbare validatiedoelen worden gebruikt; andere horizons houden de v1-berekening.

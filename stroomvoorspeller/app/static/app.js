@@ -112,7 +112,7 @@
     const count = data.length, barW = 7; let firstPredX = null, previousDay = '';
     const showTooltip = (slot, x) => {
       const unit = slot.unit || state.settings?.tariff_unit || 'EUR/kWh';
-      const lines = [fmtFullDateTime.format(slot.startDate), `${statusNames[slot.status]} · ${fmtPrice(slot.value, unit)}`];
+      const lines = [fmtFullDateTime.format(slot.startDate), ...(slot.status === 'predicted' ? [methodName(state.dashboard?.method?.id || state.settings?.active_method, state.dashboard?.model_version, state.dashboard?.method?.timestral_model)] : []), `${statusNames[slot.status]} · ${fmtPrice(slot.value, unit)}`];
       if (slot.status === 'predicted' && Number.isFinite(Number(slot.lower)) && Number.isFinite(Number(slot.upper)) && slot.lower != null && slot.upper != null) lines.push(`Indicatieve marge: ${fmtPrice(slot.lower, unit)} tot ${fmtPrice(slot.upper, unit)}`);
       tooltip.textContent = lines.join('\n'); show('chart-tooltip', true);
       tooltip.style.left = `${Math.max(4, Math.min(scroll.clientWidth - tooltip.offsetWidth - 4, x - scroll.scrollLeft + 12))}px`;
@@ -163,11 +163,19 @@
     for (const [title, entries] of groups) {
       if (!entries.length) continue;
       const section = document.createElement('section'); section.className = 'window-group'; const h = document.createElement('div'); h.className = 'group-title'; h.textContent = title; section.append(h);
-      entries.slice(0, 3).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = humanTime(w.start, true), end = humanTime(w.end, true); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
+      entries.slice(0, 2).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = humanTime(w.start, true), end = humanTime(w.end, true); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
     }
     if (!shown) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Geen compleet, aaneengesloten venster gevonden voor deze duur.'; root.append(empty); }
   }
   function renderDashboard(data) {
+    const method = data.method?.id || state.settings?.active_method;
+    const shown = methodName(method, data.model_version, data.method?.timestral_model);
+    const enabled = data.method?.enabled ?? state.settings?.forecast_methods?.[method];
+    setText('shown-model', shown);
+    setText('shown-quality', data.quality?.label || 'Voorlopig');
+    setText('shown-model-state', enabled === false ? 'Uitgeschakeld · alleen bekende tarieven' : data.updated_at ? `Dit model levert de prognose in de grafiek en voor MQTT.${method === 'timestral' ? data.model_version?.includes('-calendar-1:') ? ' Weekendinformatie: aan.' : ' Zonder expliciete weekendinformatie.' : ''}` : 'Geselecteerd · nog geen prognose beschikbaar');
+    setText('shown-model-issued', data.updated_at ? `Uitgegeven ${humanTime(data.updated_at, true)}` : 'Bekende tarieven blijven zichtbaar zonder modelberekening.');
+    setText('chart-model', data.updated_at ? `Prognose: ${shown}` : enabled === false ? 'Alleen bekende tarieven' : `Geselecteerd: ${shown} · wacht op prognose`);
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
     setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || describePriceSource(data.source || {})); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', data.source?.price_source === 'energy_charts_nl' && current.status === 'known' ? 'Bekende marktprijs' : current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
     const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('band-note', q.uncertainty || 'De getoonde marge is een ongekalibreerde modelindicatie, geen betrouwbaarheidsinterval of vaste prijs.'); $('forecast-legend').lastChild.textContent = q.band_calibrated ? ' Voorspeld met empirische band' : ' Voorspeld met indicatieve marge'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
@@ -182,6 +190,8 @@
   function appendCell(row, value) { const cell = document.createElement('td'); cell.textContent = value == null ? '—' : String(value); row.append(cell); }
   function renderAnalysis(data) {
     state.analysis = data; state.analysisLoaded = true;
+    const detailTitle = document.querySelector('.analysis-details > summary');
+    if (detailTitle) detailTitle.textContent = 'Details actieve methode · ' + methodName(state.settings?.active_method, state.dashboard?.model_version, state.settings?.timestral_model);
     const unit = data.unit || state.settings?.tariff_unit || '';
     const summary = $('analysis-summary'); summary.replaceChildren();
     const addMetric = (label, value) => { const card = document.createElement('div'); card.className = 'card analysis-metric'; const caption = document.createElement('span'); caption.textContent = label; const strong = document.createElement('strong'); strong.textContent = value; card.append(caption, strong); summary.append(card); };
@@ -215,16 +225,26 @@
   }
   let historyTimer = null;
   async function loadMethods() {
-    const data = await api('api/methods');
+    if (!state.compareInitialized) {
+      for (const id of ['local', 'v4', 'epex', 'timestral']) $(`compare-${id}`).checked = state.settings?.forecast_methods?.[id] ?? (id === 'local');
+      state.compareInitialized = true;
+    }
+    const request = state.compareRequest = (state.compareRequest || 0) + 1;
+    const selected = ['local', 'v4', 'epex', 'timestral'].filter(id => $(`compare-${id}`).checked);
+    const query = new URLSearchParams({mode: $('comparison-mode').value, horizon: $('comparison-horizon').value, days: $('comparison-days').value, methods: selected.join(',') || 'none'});
+    let data;
+    try { data = await api('api/methods?' + query); } catch (error) { if (request !== state.compareRequest) return; throw error; }
+    if (request !== state.compareRequest) return;
+    renderPerformance(data);
     const body = $('method-comparisons'); body.replaceChildren();
     const score = value => `${fmtPrice(value?.mae, data.unit)} / ${value?.n ?? 0}`;
     for (const method of data.methods || []) {
       const row = document.createElement('tr');
       appendCell(row, `${method.label}${method.id === data.active_method && method.enabled ? ' (actief)' : ''}`);
       appendCell(row, !method.enabled ? 'Uit' : method.status?.error || (method.status?.last_success ? 'Gereed' : 'Wacht op berekening'));
-      appendCell(row, score(method.live)); appendCell(row, score(method.live?.paired));
+      appendCell(row, score(method.live));
       appendCell(row, method.historical_supported ? score(method.historical) : 'Niet beschikbaar');
-      appendCell(row, method.historical_supported ? score(method.historical?.paired) : '—'); body.append(row);
+      body.append(row);
     }
     const horizons = $('method-horizons'); horizons.replaceChildren();
     for (const method of data.methods || []) {
@@ -276,13 +296,17 @@
     catch (error) { setText('timestral-download-status', error.message); $('timestral-download').disabled = false; }
   }
   function activateView(view, focus = false) {
-    state.activeView = view; const analysis = view === 'analysis';
-    $('dashboard-panel').hidden = analysis; $('analysis-panel').hidden = !analysis;
-    $('dashboard-tab').classList.toggle('is-active', !analysis); $('analysis-tab').classList.toggle('is-active', analysis);
-    $('dashboard-tab').setAttribute('aria-selected', String(!analysis)); $('analysis-tab').setAttribute('aria-selected', String(analysis));
-    $('dashboard-tab').tabIndex = analysis ? -1 : 0; $('analysis-tab').tabIndex = analysis ? 0 : -1;
-    if (focus) $(analysis ? 'analysis-tab' : 'dashboard-tab').focus();
-    if (analysis && !state.analysisLoaded) void loadAnalysis();
+    state.activeView = view;
+    for (const id of ['dashboard', 'analysis', 'data']) {
+      const active = id === view;
+      $(id + '-panel').hidden = !active;
+      $(id + '-tab').classList.toggle('is-active', active);
+      $(id + '-tab').setAttribute('aria-selected', String(active));
+      $(id + '-tab').tabIndex = active ? 0 : -1;
+    }
+    if (focus) $(view + '-tab').focus();
+    if (view === 'analysis') void loadAnalysis();
+    if (view === 'data') void loadStorage();
   }
   function optionFor(entity) { const o = document.createElement('option'); o.value = entity.entity_id; o.textContent = `${entity.friendly_name || entity.entity_id} · ${entity.entity_id}`; return o; }
   async function loadEntities() {
@@ -339,6 +363,7 @@
     $('epex-multiplier').value = s.epex_multiplier ?? 1;
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
+    $('timestral-calendar').checked = s.timestral_calendar !== false;
     $('timestral-model').value = s.timestral_model || '28M';
     updateTimestralModel();
     $('timestral-consent').checked = false;
@@ -370,6 +395,7 @@
     settings.epex_multiplier = Number($('epex-multiplier').value);
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
+    settings.timestral_calendar = $('timestral-calendar').checked;
     settings.timestral_model = $('timestral-model').value;
     settings.timestral_context_days = Number($('timestral-context').value);
     settings.history_days = Number($('history-days').value);
@@ -465,6 +491,87 @@
     } catch (error) { setText('storage-message', error.message); }
     finally { button.disabled = false; }
   }
+  const modelColors = {local: '#087e69', v4: '#466ac6', epex: '#bf6b20', timestral: '#9a52b3'};
+  function methodName(method, version, size) {
+    if (method === 'timestral') return `Timestral ${size || state.settings?.timestral_model || ''}`.trim();
+    if (method === 'local' && version?.startsWith('local-v4-')) return 'Lokale v4 (oude berekening)';
+    if (method === 'local') return /adaptive-quarter-(\d+)/.test(version || '') ? `Lokaal adaptief v${version.match(/adaptive-quarter-(\d+)/)[1]}` : 'Lokaal adaptief';
+    return {v4: 'Oorspronkelijke v4', epex: 'EpexPredictor NL'}[method] || 'Nog niet gekozen';
+  }
+  function renderPerformance(data) {
+    state.comparison = data;
+    const view = data.view || {}, unit = data.unit || state.settings?.tariff_unit || '';
+    const names = Object.fromEntries((data.methods || []).map(m => [m.id, m.label]));
+    setText('compare-timestral-label', names.timestral || 'Timestral');
+    for (const id of ['local', 'v4', 'epex', 'timestral']) $(`compare-${id}`).parentElement.style.setProperty('--method-color', modelColors[id]);
+    const mode = view.mode === 'historical' ? 'Historische reconstructie' : 'Live voorspellingen';
+    setText('comparison-context', view.selected?.length ? `${mode} · ${view.n || 0} vergelijkbare voorspellingen per methode · ${view.available?.length || 0} methode(n)` : 'Geen methoden geselecteerd.');
+    const warnings = [];
+    if (view.mode === 'historical') warnings.push('Reconstructie met huidige archiefdata; geen bewijs van live prestaties.');
+    if (view.missing?.length) warnings.push(`Nog geen resultaten in dit venster: ${view.missing.map(m => names[m]).join(', ')}.`);
+    if (view.available?.length === 1) warnings.push('Eén methode heeft resultaten; er is nog geen onderlinge vergelijking.');
+    if (view.available?.length > 1 && !view.n) warnings.push('Er zijn resultaten, maar nog geen gemeenschappelijke uitgiftes en doelkwartieren. Er wordt geen rangorde berekend.');
+    $('comparison-warning').textContent = warnings.join(' '); show('comparison-warning', warnings.length > 0);
+    const bars = $('performance-bars'); bars.replaceChildren();
+    const finite = (view.metrics || []).filter(m => m.n && m.mae != null && Number.isFinite(Number(m.mae)));
+    const maximum = Math.max(0, ...finite.map(m => m.mae));
+    for (const metric of view.metrics || []) {
+      const row = document.createElement('div'); row.className = 'performance-bar-row';
+      const label = document.createElement('span'); label.className = 'performance-method'; label.textContent = metric.label;
+      const track = document.createElement('div'); track.className = 'performance-track';
+      const fill = document.createElement('div'); fill.className = 'performance-fill'; fill.style.background = modelColors[metric.id];
+      fill.style.width = `${metric.n && maximum ? metric.mae / maximum * 100 : 0}%`; track.append(fill);
+      const value = document.createElement('strong'); value.textContent = metric.n ? fmtPrice(metric.mae, unit) : 'Nog geen score';
+      const detail = document.createElement('small'); detail.textContent = `${metric.n || 0} paren · bias ${metric.n ? fmtPrice(metric.bias, unit) : '—'}`;
+      row.append(label, track, value, detail); bars.append(row);
+    }
+    if (!view.metrics?.length) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = 'Nog geen vergelijkbare resultaten voor deze selectie.'; bars.append(empty); }
+    renderPerformanceChart();
+  }
+  function renderPerformanceChart() {
+    const data = state.comparison; if (!data) return;
+    const view = data.view || {}, errors = $('comparison-chart-kind').value === 'errors';
+    const svg = $('comparison-chart'); svg.replaceChildren();
+    const legend = $('comparison-legend'); legend.replaceChildren();
+    const models = view.metrics || [], names = Object.fromEntries(models.map(m => [m.id, m.label]));
+    const series = [];
+    if (!errors) series.push({id: 'actual', label: 'Werkelijk tarief (gepubliceerd)', color: '#263d43'});
+    models.forEach(m => series.push({id: m.id, label: m.label, color: modelColors[m.id]}));
+    for (const item of series) { const label = document.createElement('span'); label.style.setProperty('--method-color', item.color); label.textContent = item.label; legend.append(label); }
+    const rows = errors ? (view.daily || []).map(r => ({time: new Date(`${r.date}T12:00:00Z`), values: r.mae, n: r.n})) : (view.points || []).map(r => ({time: new Date(r.start), issued: r.issued_at, values: {...r.predictions, actual: r.actual}}));
+    const populated = rows.length && view.n;
+    show('comparison-empty-state', !populated); svg.hidden = !populated; svg.style.display = populated ? 'block' : 'none'; show('comparison-legend', !!populated); show('comparison-chart-note', !!populated);
+    setText('comparison-empty-state', view.selected?.length ? 'Nog geen gemeenschappelijke punten. Kies eventueel Historische reconstructie of een andere periode.' : 'Selecteer minimaal één methode.');
+    setText('comparison-chart-title', errors ? 'Voorspelfout per uitgiftedag' : 'Prognoses naast werkelijke tarieven');
+    setText('comparison-chart-note', errors ? `Dagelijkse MAE in ${data.unit || ''}; lager is beter. ${view.notice || ''}` : `Maximaal 192 recente doelkwartieren in ${data.unit || ''}. Beweeg over een punt voor tijd, uitgifte en tarieven. Gaten blijven zichtbaar. ${view.notice || ''}`);
+    if (!populated) return;
+    const width = 960, height = 310, pad = {l: 68, r: 24, t: 20, b: 44};
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.setAttribute('aria-label', `${errors ? 'Dagelijkse voorspelfout' : 'Tarieven en prognoses'}, ${rows.length} tijdstippen, ${Object.values(names).join(', ')}`);
+    const values = rows.flatMap(r => Object.values(r.values)).filter(v => v != null && Number.isFinite(Number(v))).map(Number);
+    let min = Math.min(...values), max = Math.max(...values); const spread = Math.max(max-min, .001);
+    min = errors ? 0 : min-spread*.12; max += spread*.12; if (max <= min) max = min+.01;
+    const left = rows[0].time.getTime(), right = rows[rows.length-1].time.getTime();
+    const x = time => pad.l+(time-left)/Math.max(1,right-left)*(width-pad.l-pad.r);
+    const y = value => pad.t+(max-value)/(max-min)*(height-pad.t-pad.b);
+    const el = (tag,attrs={},parent=svg) => { const node=document.createElementNS('http://www.w3.org/2000/svg',tag); for(const [k,v] of Object.entries(attrs))node.setAttribute(k,String(v));parent.append(node);return node; };
+    for(let i=0;i<=4;i++) { const value=min+(max-min)*i/4, yy=y(value);el('line',{x1:pad.l,x2:width-pad.r,y1:yy,y2:yy,stroke:'#e2ebea'});const label=el('text',{x:pad.l-9,y:yy+4,'text-anchor':'end',fill:'#647c7a','font-size':11});label.textContent=fmtNumber.format(value); }
+    // Use actual UTC spacing so DST repeats and missing quarters remain distinct.
+    const maxGap = errors ? 36*3600000 : 900000*1.5;
+    for(const item of series) {
+      let path='',previous=null;
+      for(const row of rows) {
+        const value=row.values[item.id];if(value == null || !Number.isFinite(Number(value))){previous=null;continue;}
+        path += `${previous && row.time-previous<=maxGap ? 'L' : 'M'}${x(row.time)} ${y(value)} `;previous=row.time;
+        const point=el('circle',{cx:x(row.time),cy:y(value),r:rows.length<20?3:2,fill:item.color,tabindex:row===rows[0]||row===rows[rows.length-1]?0:-1});
+        const tip=el('title',{},point);tip.textContent=`${item.label} · ${humanTime(row.time,true)} · ${fmtPrice(value,data.unit)}${row.issued ? ` · uitgifte ${humanTime(row.issued,true)}` : ` · ${row.n} paren`}`;
+      }
+      el('path',{d:path,fill:'none',stroke:item.color,'stroke-width':item.id==='actual'?2.5:1.7,'stroke-dasharray':item.id==='actual'?'':'5 2','pointer-events':'none'});
+    }
+    const indices=new Set([0,Math.floor((rows.length-1)/3),Math.floor((rows.length-1)*2/3),rows.length-1]);
+    for(const i of indices){const label=el('text',{x:x(rows[i].time),y:height-15,'text-anchor':i===0?'start':i===rows.length-1?'end':'middle',fill:'#647c7a','font-size':11});label.textContent=errors?fmtDate.format(rows[i].time):humanTime(rows[i].time,true);}
+  }
+
   async function loadAll() {
     try { state.settings = await api('api/settings'); } catch (_) { state.settings = null; }
     try { updateStatus(await api('api/status')); } catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); return; }
@@ -472,7 +579,7 @@
     await loadDashboard(); if (state.activeView === 'analysis') await loadAnalysis();
   }
   function init() {
-    $('storage-open').addEventListener('click', () => { activateView('analysis'); $('storage-card').scrollIntoView({behavior: 'smooth'}); void loadStorage(); });
+    $('storage-open').addEventListener('click', () => { activateView('data'); $('storage-card').scrollIntoView({behavior: 'smooth'}); void loadStorage(); });
     $('storage-refresh').addEventListener('click', loadStorage);
     $('storage-days').addEventListener('change', loadStorage);
     $('storage-clean-history').addEventListener('click', () => cleanStorage('history'));
@@ -480,6 +587,8 @@
     $('storage-clean-models').addEventListener('click', () => cleanStorage('unused_models'));
     $('data-export').addEventListener('click', exportData);
     $('history-test').addEventListener('click', testHistory);
+    for (const id of ['comparison-mode', 'comparison-horizon', 'comparison-days', 'compare-local', 'compare-v4', 'compare-epex', 'compare-timestral']) $(id).addEventListener('change', () => { state.comparison = null; $('comparison-chart').replaceChildren(); $('performance-bars').replaceChildren(); setText('comparison-context', 'Vergelijking laden…'); loadMethods().catch(error => { setText('comparison-warning', error.message); show('comparison-warning', true); }); });
+    $('comparison-chart-kind').addEventListener('change', renderPerformanceChart);
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
@@ -488,9 +597,11 @@
       updateEpexProfile();
     });
     $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
-    $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('analysis-refresh').addEventListener('click', loadAnalysis);
-    for (const [button, view] of [[$('dashboard-tab'), 'dashboard'], [$('analysis-tab'), 'analysis']]) button.addEventListener('keydown', event => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); activateView(view === 'dashboard' ? 'analysis' : 'dashboard', true); } });
-    window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); });
+    $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('data-tab').addEventListener('click', () => activateView('data')); $('analysis-refresh').addEventListener('click', loadAnalysis);
+    for (const [index, view] of ['dashboard', 'analysis', 'data'].entries()) $(view + '-tab').addEventListener('keydown', event => {
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const views = ['dashboard', 'analysis', 'data']; activateView(views[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3], true); }
+    });
+    window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); if (state.comparison) renderPerformanceChart(); });
     loadAll(); state.timer = setInterval(loadAll, 60000);
   }
   document.addEventListener('DOMContentLoaded', init);

@@ -199,6 +199,7 @@ class AppService:
         from .timestral_models import MODELS
         value.setdefault("timestral_model", "209M" if "timestral_context_days" in value or (self.store.data_dir / "models" / "timestral-209m").exists() else "28M")
         value["timestral_models"] = MODELS
+        value.setdefault("timestral_calendar", True)
         value.setdefault("timestral_context_days", 28)
         value.setdefault("history_days", 90)
         return value
@@ -209,13 +210,15 @@ class AppService:
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
                    "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
-                   "timestral_model", "timestral_context_days", "history_days"}
+                   "timestral_model", "timestral_calendar", "timestral_context_days", "history_days"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
         from .timestral_models import model_spec
         model_spec(merged["timestral_model"])
+        if type(merged["timestral_calendar"]) is not bool:
+            raise ValueError("Timestral-weekendinformatie moet aan of uit staan")
         from .methods import METHODS
         methods = merged["forecast_methods"]
         if (not isinstance(methods, dict) or set(methods) != set(METHODS)
@@ -319,7 +322,7 @@ class AppService:
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
         for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_profile", "epex_tariff_confirmed",
-                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_context_days", "history_days"):
+                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_calendar", "timestral_context_days", "history_days"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
@@ -761,6 +764,8 @@ class AppService:
                 "quality": forecast_quality,
                 "updated_at": run["issued_at"] if run else None,
                 "model_version": run["model_version"] if run else None,
+                "method": {"id": settings["active_method"], "enabled": settings["forecast_methods"].get(settings["active_method"], False),
+                           "timestral_model": settings.get("timestral_model") if settings["active_method"] == "timestral" else None},
                 "archive": archive,
                 "source": {"tariff_entity": entity, "price_field": settings.get("price_field"),
                            "price_source": settings.get("price_source"),
@@ -846,7 +851,7 @@ class AppService:
     def _runtime_settings(self, settings, method):
         return {**settings, "_data_dir": str(self.store.data_dir),
                 "_cancel": lambda: self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method)
-                or (method == "timestral" and self.get_settings()["timestral_model"] != settings["timestral_model"])}
+                or (method == "timestral" and (self.get_settings()["timestral_model"] != settings["timestral_model"] or self.get_settings()["timestral_calendar"] != settings["timestral_calendar"]))}
 
     def timestral_status(self, model=None):
         from .local_runtime import timestral_status
@@ -1052,7 +1057,10 @@ def make_handler(service: AppService, static_dir: str | None = None):
                     return
                 if path == "/api/methods":
                     from .comparison import comparison
-                    return self._send(200, comparison(service))
+                    selected = query.get("methods", [None])[0]
+                    selected = None if selected is None else [] if selected == "none" else selected.split(",")
+                    return self._send(200, comparison(service, mode=query.get("mode", ["live"])[0],
+                        horizon=query.get("horizon", ["all"])[0], selected=selected, days=int(query.get("days", ["45"])[0])))
                 if path == "/api/timestral": return self._send(200, service.timestral_status(query.get("model", [None])[0]))
                 if path == "/api/history-job": return self._send(200, dict(service._history_job))
                 if path == "/api/health": return self._send(200, {"ok": True, "service": "stroomvoorspeller"})

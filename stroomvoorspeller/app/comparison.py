@@ -27,7 +27,13 @@ def _scores(rows):
             "bias": mean(errors) if errors else None}
 
 
-def comparison(service):
+def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
+    if mode not in {"live", "historical"} or horizon not in {"all", "0-24u", "24-48u", "48-168u"}:
+        raise ValueError("Kies live/historisch en een bekende voorspelhorizon")
+    if type(days) is not int or not 1 <= days <= 45: raise ValueError("Kies 1 t/m 45 dagen")
+    if selected is not None and (not isinstance(selected, list) or any(m not in METHODS for m in selected)):
+        raise ValueError("Onbekende vergelijkingsmethode")
+    view_mode, lookback_days = mode, days
     settings = service.get_settings()
     entity = service._price_identity(settings)
     now = service.clock().astimezone(UTC)
@@ -39,7 +45,7 @@ def comparison(service):
               "pairing_notice": "Gepaarde MAE gebruikt dezelfde uitgiftetijd en doelkwartieren van ingeschakelde methoden met resultaten."}
     maps = {"live": {}, "historical": {}}
     for method, label in METHODS.items():
-        if method == "timestral": label = f"Timestral-{settings['timestral_model']} (lokaal)"
+        if method == "timestral": label = f"Timestral-{settings['timestral_model']}" + (" · weekendinfo" if settings["timestral_calendar"] else " · zonder kalender")
         item = {"id": method, "label": label, "enabled": settings["forecast_methods"][method],
                 "status": statuses.get("method:" + method, {}), "historical_supported": True}
         for mode in maps:
@@ -47,7 +53,7 @@ def comparison(service):
                                                       method=method, evaluation_mode=mode,
                 model_version=configured_version(method, settings)) if entity else (None, [])
             version = latest["model_version"] if latest else None
-            runs = service.store.daily_stored_forecasts(entity, now - timedelta(days=45), now,
+            runs = service.store.daily_stored_forecasts(entity, now - timedelta(days=lookback_days), now,
                 settings["price_field"], settings["tariff_unit"], method=method,
                 model_version=version, evaluation_mode=mode) if latest else []
             days, zone = {}, ZoneInfo("Europe/Amsterdam")
@@ -82,7 +88,58 @@ def comparison(service):
         for item in result["methods"]:
             item[mode]["paired"] = (_scores(methods[item["id"]][key] for key in shared)
                                      if item["id"] in available else _scores([]))
+    view = comparison_view(result, maps, view_mode, horizon, selected, lookback_days)
+    participants = view["available"]
+    if entity and len(participants) >= 2:
+        versions = {m["id"]: m[view_mode]["version"] for m in result["methods"] if m["id"] in participants}
+        cohorts = service.store.common_daily_forecasts(entity, now-timedelta(days=lookback_days), now,
+            settings["price_field"],settings["tariff_unit"],versions,view_mode)
+        chart_maps = {view_mode: {m: {} for m in METHODS}}
+        for method, runs in cohorts.items():
+            for run in runs:
+                for point in run["points"]:
+                    start = point["start_utc"]
+                    if start in truth and point.get("price") is not None and math.isfinite(point["price"]):
+                        chart_maps[view_mode][method][run["issued_at"],start] = (point["price"],truth[start])
+        aligned = comparison_view(result,chart_maps,view_mode,horizon,view["selected"],lookback_days)
+        if aligned["n"]:
+            view = aligned
+        else:
+            view.update(n=0,paired=False,points=[],daily=[])
+            view["metrics"] = [{**m,**_scores([])} for m in view["metrics"]]
+    result["view"] = view
     return result
+
+
+def comparison_view(result, maps, mode, horizon, selected, days):
+    """Charts only compare identical issue/target pairs, never latest guesses."""
+    methods = {m["id"]: m for m in result["methods"]}
+    selected = list(dict.fromkeys(selected if selected is not None else [m for m, row in methods.items() if row["enabled"]]))
+    limits = {"all": (0, 168), "0-24u": (0,24), "24-48u": (24,48), "48-168u": (48,168)}
+    low, high = limits[horizon]
+    rows = {m: {key: value for key, value in maps[mode][m].items()
+                if low <= (_dt(key[1])-_dt(key[0])).total_seconds()/3600 < high} for m in selected}
+    available = [m for m in selected if rows[m]]
+    shared = set.intersection(*(set(rows[m]) for m in available)) if available else set()
+    metrics = [{"id": m, "label": methods[m]["label"], "version": methods[m][mode]["version"],
+                **_scores(rows[m][key] for key in shared)} for m in available]
+    daily = {}
+    latest = {}
+    for key in sorted(shared):
+        issued, start = key
+        day = _dt(issued).astimezone(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+        daily.setdefault(day, {m: [] for m in available})
+        for m in available: daily[day][m].append(rows[m][key])
+        if start not in latest or issued > latest[start][0]: latest[start] = key
+    points = [{"start": start, "issued_at": latest[start][0], "actual": rows[available[0]][latest[start]][1],
+               "predictions": {m: rows[m][latest[start]][0] for m in available}}
+              for start in sorted(latest)[-192:]] if available else []
+    return {"mode": mode, "horizon": horizon, "days": days, "selected": selected,
+            "missing": [m for m in selected if m not in available], "available": available,
+            "paired": len(available) >= 2 and bool(shared), "n": len(shared), "metrics": metrics, "points": points,
+            "daily": [{"date": day, "n": len(next(iter(values.values()))),
+                       "mae": {m: _scores(values[m])["mae"] for m in available}} for day, values in sorted(daily.items())],
+            "notice": "Dezelfde uitgiftetijd en doelkwartieren per methode; bij meerdere uitgiftes wordt in de prijsgrafiek de nieuwste gezamenlijke gekozen. Overlappende doelen zijn geen onafhankelijke metingen."}
 
 
 def start_history_test(service):

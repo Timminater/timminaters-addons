@@ -1,6 +1,6 @@
 # Opslag beheren en analysegegevens exporteren
 
-Klik bovenaan op **Opslag** of open **Analyse → Opslag en data-export**. De indicator wordt bij het laden en vervolgens ongeveer iedere minuut bijgewerkt; met Vernieuwen kun je zelf opnieuw meten.
+Klik bovenaan op **Opslag** of open **Data & opslag → Opslag en data-export**. De indicator wordt bij het laden en vervolgens ongeveer iedere minuut bijgewerkt; met Vernieuwen kun je zelf opnieuw meten.
 
 De app telt bestandsgroottes in de datamap: SQLite-database en WAL/journal, Timestral-modelmappen, Epex-cache en overige bestanden. Symbolische links worden niet gevolgd. Dit is de logische bestandsgrootte, niet een filesystemquotum of de exacte hoeveelheid toegewezen schijfblokken. De add-on-image en Home Assistant-backups buiten de datamap vallen erbuiten. De vrije ruimte geldt voor het hele onderliggende bestandssysteem.
 

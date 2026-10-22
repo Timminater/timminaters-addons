@@ -121,7 +121,7 @@ maandomzet. Zie de [modellicentie](https://huggingface.co/mistralai/Timestral-20
 
 Inferentie gebruikt uitsluitend de lokale bestanden, met offline-modus aan.
 Ontbrekende of beschadigde bestanden veroorzaken een melding; nooit een
-stilzwijgende download. De adapter gebruikt prijshistorie, zonder weerscovariaten.
+stilzwijgende download. De adapter gebruikt prijshistorie en standaard expliciete weekendinformatie; er worden geen weerscovariaten meegegeven.
 Gaten blijven ontbrekend en negatieve prijzen worden toegestaan. De q10–q90-band
 is modelonzekerheid, geen lokaal bewezen 80%-dekking.
 
@@ -176,3 +176,26 @@ Modelidentiteit `adaptive-quarter-2` start een eigen score- en kalibratiereeks. 
 De wijziging is getoetst met een door de gebruiker aangeleverde, geanonimiseerde export. Er worden geen individuele prijsrecords of bestanden uit die export meegeleverd. Op 13 volledige dagelijkse uitgiftes (7–19 oktober 2026, 1.248 doelen per methode) daalde de historische MAE voor 24–48 uur van 5,6723 naar 5,0828 cent/kWh, circa 10,4%. Op de drie apart gehouden volledige uitgiftes van 17–19 oktober (288 doelen) was dat 3,9508 naar 3,8488 cent/kWh, circa 2,6%. De productie-implementatie reproduceerde die uitkomsten exact; de eerste 24 uur bleven identiek.
 
 Dit is beperkt bewijs uit één installatie en één korte periode. De laatste dagen waren eerder in verkennende analyses bekeken en zijn geen volledig onafhankelijke nieuwe dataset. Het resultaat is geen garantie voor live verbetering, andere leveranciers, andere seizoenen of langere horizons. Modelselectie vond binnen elke uitgifte uitsluitend op eerdere gegevens plaats; toekomstige live prestaties moeten de winst bevestigen. Eenvoudige vaste foutcorrecties en een onderzocht regressiemodel leverden geen consistente verbetering en zijn niet ingebouwd.
+
+
+## Weekendinformatie en visuele modelvergelijking
+
+Timestral kreeg tot versie 0.2.6 alleen prijswaarden op een regelmatige UTC-grid, zonder expliciete datums of kalendercodes. Het kan een weekpatroon herkennen, maar kent zo geen expliciete zaterdag/zondag. Vanaf 0.2.7 geeft de app standaard één categorische bekende covariaat mee: weekend versus werkdag volgens `Europe/Amsterdam`, voor alle context- én doelkwartieren. De grid blijft UTC met stappen van 15 minuten; Nederlandse daggrenzen en zomer-/wintertijd worden bij het bepalen van de code toegepast. De modelbibliotheek encodeert categorieën uitsluitend tegen de beschikbare contextprijzen, zonder toekomstige doelprijzen. Een weekendprijs hoeft niet lager te zijn; er wordt geen vaste korting of plafond toegevoegd. Feestdagen zijn geen aparte covariaat.
+
+Deze optie is uit te zetten met **Geef Timestral expliciete weekendinformatie** (`timestral_calendar: false`). Alleen kalenderinformatie verandert: bestaande gewichten en de gepinde revisie blijven behouden, zonder nieuwe download. Kalender aan/uit heeft een aparte modelidentiteit en dus eigen scores en kalibratie. Oude resultaten blijven in het archief en komen weer beschikbaar als je de oude configuratie kiest. Weinig context kan betekenen dat er nauwelijks eerdere weekenden aanwezig zijn; gebruik bij voorkeur minimaal 14 dagen, standaard 28. De kalendercode bepaalt niet zelf een leverancierstarief of belastingopslag.
+
+### Beperkte controle op de aangeleverde export
+
+Met 28M zijn zeven dagelijkse reconstructies van 13–19 oktober 2026 op alleen eerdere prijzen uitgevoerd (192 doelen per uitgifte). Alleen het weekend-signaal verlaagde de gemiddelde fout van 3,160 naar 3,030 cent/kWh op 0–24 uur, en van 3,478 naar 3,293 cent/kWh op 24–48 uur. De uitkomsten wisselden per dag; dit is één installatie, één kleine verkennende periode, geen onafhankelijke live toets en geen garantie voor andere modelgroottes. Een uitgebreidere proef met weekdag én kwartierpositie deed het slechter en is niet ingebouwd. Alle vier modelgroottes zijn wel technisch met de weekendcovariaat offline uitgevoerd, inclusief negatieve-prijsruimte en eindige geordende kwantielen.
+
+### Grafieken in Analyse
+
+Kies **Live voorspellingen** of **Historische reconstructie**, de uitgifteperiode (maximaal 45 dagen), de horizon en de methoden. De checkboxes bepalen alleen wat wordt vergeleken; ze schakelen geen berekeningen in. Opslag- en exportacties staan apart op Data & opslag.
+
+De foutbalken tonen MAE en bias op exact dezelfde uitgifte/doel-paren. Eerst worden gemeenschappelijke uitgiftes gevonden, daarna wordt per Nederlandse dag de gezamenlijke uitgifte het dichtst bij 12:00 gekozen. Zo veroorzaakt een ander update-interval niet ten onrechte een lege vergelijking. Alleen metadata en de gekozen prognosepunten worden gelezen; gecomprimeerde invoerhistorie wordt niet uitgepakt voor de grafiek.
+
+De tarieflijn toont maximaal 192 recente gemeenschappelijke doelkwartieren. Bij meerdere gemeenschappelijke uitgiftes voor een doel wordt de nieuwste gekozen, voor alle methoden dezelfde. Werkelijk betekent hier het later gepubliceerde tarief; een kwartier hoeft nog niet verstreken te zijn als de day-ahead-prijs al definitief bekend is. Tooltips vermelden de oorspronkelijke uitgiftetijd. Gaten worden niet geïnterpoleerd. De andere grafiek toont dagelijkse MAE gegroepeerd op uitgiftedag. Overlappende doelen zijn geen onafhankelijke waarnemingen.
+
+Methoden zonder resultaten worden expliciet gemeld en niet als nul fout weergegeven. Zonder gemeenschappelijke uitgiftes/doelen komt er geen rangorde. Eén methode met resultaten wordt expliciet als één methode getoond. De huidige gekozen Timestral-variant en kalenderconfiguratie bepalen welke scoreversie wordt opgehaald. Losse cijfers onder de uitklapbare tabellen kunnen een andere doelset hebben dan de vergelijkingsgrafiek; gebruik de grafieken voor een onderlinge vergelijking.
+
+API: `GET /api/methods?mode=live&horizon=24-48u&days=14&methods=local,v4`. Horizons zijn `all`, `0-24u`, `24-48u`, `48-168u`; `methods=none` geeft een lege selectie. Het bestaande antwoord blijft behouden en bevat aanvullend `view` met gemeenschappelijke scores, dagfouten, grafiekpunten, ontbrekende methoden en selectie-informatie. De tijdlijn bevat nu ook de methode-ID, ingeschakelde status en gekozen Timestral-grootte; de modelversie hoort bij de daadwerkelijk teruggegeven prognose.

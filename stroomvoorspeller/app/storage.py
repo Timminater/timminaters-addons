@@ -361,6 +361,47 @@ class Store:
                                   if packed else inputs.get("history", []))
         return result
 
+    def common_daily_forecasts(self, entity_id, since, until, price_field, tariff_unit, versions, mode):
+        """Choose a shared issue first, then one shared cohort per local day.
+
+        Selecting each method's nearest-noon run independently can throw away
+        valid common runs when methods have different update frequencies.
+        Only metadata is scanned; histories are not decompressed.
+        """
+        if not versions: return {}
+        zone = ZoneInfo("Europe/Amsterdam")
+        with self._connect() as db:
+            candidates = db.execute("""SELECT id,issued_at,model_version,
+                COALESCE(json_extract(inputs_json,'$.method'),'local') AS method
+                FROM forecast_runs WHERE issued_at>=? AND issued_at<=?
+                AND json_extract(inputs_json,'$.tariff_entity')=?
+                AND COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?
+                AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
+                AND COALESCE(json_extract(inputs_json,'$.evaluation_mode'),'live')=?
+                ORDER BY issued_at,rowid DESC""",
+                (utc_iso(since),utc_iso(until),entity_id,price_field,tariff_unit,tariff_unit,mode)).fetchall()
+            origins = {m: {} for m in versions}
+            for row in candidates:
+                method = row['method']
+                if method in versions and row['model_version'] == versions[method]:
+                    origins[method].setdefault(row['issued_at'], row['id'])
+            shared = set.intersection(*(set(rows) for rows in origins.values()))
+            by_day = {}
+            for stamp in shared:
+                issued = datetime.fromisoformat(stamp.replace('Z','+00:00'))
+                day = issued.astimezone(zone).date()
+                noon = datetime.combine(day,datetime.min.time(),zone)+timedelta(hours=12)
+                priority = (abs((issued-noon).total_seconds()),stamp)
+                if day not in by_day or priority < by_day[day][0]: by_day[day] = (priority, stamp)
+            selected = [row[1] for _,row in sorted(by_day.items())]
+            if not selected: return {m: [] for m in versions}
+            ids = [origins[m][stamp] for m in versions for stamp in selected]
+            marks = ','.join('?' for _ in ids)
+            points = db.execute(f"SELECT run_id,start_utc,price FROM forecast_points WHERE run_id IN ({marks}) ORDER BY start_utc",ids).fetchall()
+            grouped = {}
+            for row in points: grouped.setdefault(row['run_id'],[]).append(dict(row))
+            return {m: [{'issued_at':stamp,'points':grouped.get(origins[m][stamp],[])} for stamp in selected] for m in versions}
+
     def actual_quarters(self, entity_id: str, ended_by: datetime) -> dict[str, float]:
         """Final locally archived quarter prices whose complete interval ended by time."""
         end = utc_iso(ended_by)

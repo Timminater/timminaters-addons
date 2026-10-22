@@ -36,7 +36,7 @@ def timestral_version(settings: Mapping) -> str:
     from .timestral_models import model_spec
     size = settings.get("timestral_model", "209M")
     spec = model_spec(size)
-    return "timestral-local-" + size.lower() + "-1:" + spec["revision"][:12] + ":" + digest
+    return "timestral-local-" + size.lower() + ("-calendar-1:" if settings.get("timestral_calendar", False) else "-1:") + spec["revision"][:12] + ":" + digest
 
 
 def configured_version(method: str, settings: Mapping) -> str | None:
@@ -212,11 +212,14 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
     horizon = min(max_points, max(0, int((_quarter_start(issued_at) + max_points * STEP - end) / STEP)))
     if horizon < 1:
         raise ValueError("Alle kwartieren binnen de horizon zijn al bekend")
-    payload = (runner or run_local)("timestral", {"context": context, "prediction_length": horizon}, settings, timeout=180)
+    payload = (runner or run_local)("timestral", {"context": context, "prediction_length": horizon, "context_start": begin.isoformat(),
+        "calendar": settings.get("timestral_calendar", False)}, settings, timeout=180)
     from .timestral_models import model_spec
     spec = model_spec(settings.get("timestral_model", "209M"))
     if payload.get("model") != spec["repo"] or payload.get("revision") != spec["revision"]:
         raise ValueError("Lokale Timestral-module gebruikt niet het ingestelde model")
+    if settings.get("timestral_calendar", False) and payload.get("calendar") is not True:
+        raise ValueError("Lokale Timestral-module mist de gekozen weekendinformatie")
     arrays = [payload.get(key) for key in ("median", "lower", "upper")]
     if any(not isinstance(a, list) or len(a) != horizon for a in arrays):
         raise ValueError("Lokale Timestral-module levert onjuiste voorspellinglengte")
@@ -231,4 +234,6 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
                                        reason="Timestral q10–q90; dekking voor dit tarief nog niet gekalibreerd"))
     return ForecastRun(timestral_version(settings), issued_at, points, "voorlopig",
                        [spec["repo"].split("/")[-1] + " op prijshistorie; zonder historische weerscovariaten",
+                        "Expliciete weekendinformatie in Nederlandse tijd" if settings.get("timestral_calendar", False) else "Zonder expliciete kalenderinformatie; weekpatronen uitsluitend uit prijzen",
+                        "Minder dan 14 dagen context: beperkte weekendhistorie" if len(context) < 14*96 else "Meerdere weken context beschikbaar",
                         "q10–q90 is modelonzekerheid, geen lokaal bewezen 80%-dekking"])

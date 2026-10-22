@@ -65,6 +65,10 @@ def validate_timestral(payload):
         raise ValueError("Timestral-prijzen moeten eindig zijn; gebruik null voor ontbrekende waarden")
     if sum(v is not None for v in context) < 192:
         raise ValueError("Minstens 192 echte kwartieren nodig")
+    if type(payload.get("calendar", False)) is not bool: raise ValueError("Ongeldige Timestral-kalenderkeuze")
+    if payload.get("calendar"):
+        from .timestral_calendar import weekend_covariate
+        weekend_covariate(payload.get("context_start"), len(context)+horizon)
     return context, horizon
 
 
@@ -81,9 +85,16 @@ def infer_timestral(payload):
     torch.set_num_threads(payload["threads"])
     # A local folder + local_files_only + offline environment: NEVER download here.
     model = TimestralForecaster.from_pretrained(folder, device="cpu", token=False, local_files_only=True)
+    calendar = payload.get("calendar", False)
+    if type(calendar) is not bool: raise ValueError("Ongeldige Timestral-kalenderkeuze")
+    kwargs = {}
+    if calendar:
+        from .timestral_calendar import weekend_covariate
+        codes = weekend_covariate(payload.get("context_start"), len(context)+horizon)
+        kwargs["categorical_known_covariates"] = np.asarray(codes, dtype=np.float32)[None, :, :]
     forecast = model.forecast(np.asarray([np.nan if v is None else v for v in context], dtype=np.float32),
-                              prediction_length=horizon, clip_nonnegative=False)
-    return {"model": spec["repo"], "revision": spec["revision"],
+                              prediction_length=horizon, clip_nonnegative=False, **kwargs)
+    return {"model": spec["repo"], "revision": spec["revision"], "calendar": calendar,
             "median": forecast.median.reshape(-1).tolist(),
             "lower": forecast.quantile(.1).reshape(-1).tolist(),
             "upper": forecast.quantile(.9).reshape(-1).tolist()}
