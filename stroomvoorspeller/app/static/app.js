@@ -8,6 +8,7 @@
   const fmtDate = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short' });
   const fmtTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   const fmtDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const fmtWindowDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const fmtNumber = new Intl.NumberFormat('nl-NL', { minimumFractionDigits: 3, maximumFractionDigits: 5 });
   const fmtFullDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   function setText(id, value, fallback = '—') { const e = $(id); if (e) e.textContent = value == null || value === '' ? fallback : String(value); }
@@ -24,6 +25,7 @@
   function dateKey(d) { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
   function fmtPrice(value, unit) { if (value == null || value === '') return '—'; const n = Number(value); return Number.isFinite(n) ? `${fmtNumber.format(n)} ${unit || ''}`.trim() : '—'; }
   function humanTime(value, withDate = false) { const d = safeDate(value); return d ? (withDate ? fmtDateTime : fmtTime).format(d) : '—'; }
+  function windowTime(value) { const d = safeDate(value); if (!d) return '—'; const text = fmtWindowDateTime.format(d); return text.charAt(0).toUpperCase() + text.slice(1); }
   function setConnection(online, text) { const e = $('connection-status'); e.classList.toggle('offline', !online); e.innerHTML = `<i></i> ${online ? 'Lokaal verbonden' : 'Niet verbonden'}`; if (text) e.title = text; }
   async function api(path, options = {}) {
     const response = await fetch(new URL(path.replace(/^\//, ''), document.baseURI), { cache: 'no-store', credentials: 'same-origin', ...options, headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(options.headers || {}) } });
@@ -163,7 +165,7 @@
     for (const [title, entries] of groups) {
       if (!entries.length) continue;
       const section = document.createElement('section'); section.className = 'window-group'; const h = document.createElement('div'); h.className = 'group-title'; h.textContent = title; section.append(h);
-      entries.slice(0, 2).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = humanTime(w.start, true), end = humanTime(w.end, true); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
+      entries.slice(0, 2).forEach((w, i) => { const row = document.createElement('div'); row.className = 'window-item'; const rank = document.createElement('span'); rank.className = 'window-rank'; rank.textContent = String(i + 1); const desc = document.createElement('span'); const start = windowTime(w.start), end = windowTime(w.end); const strong = document.createElement('strong'); strong.textContent = `${start} – ${end}`; const small = document.createElement('small'); small.textContent = `${w.slots ?? ''}${w.slots != null ? ' kwartieren · ' : ''}${title === 'Bekend' ? 'volledig bekend' : 'bevat prognose'}`; desc.append(strong, small); const price = document.createElement('span'); price.className = 'window-price'; price.textContent = fmtPrice(w.average_price, unit); row.append(rank, desc, price); section.append(row); shown++; }); root.append(section);
     }
     if (!shown) { const empty = document.createElement('div'); empty.className = 'empty-state'; empty.textContent = 'Geen compleet, aaneengesloten venster gevonden voor deze duur.'; root.append(empty); }
   }

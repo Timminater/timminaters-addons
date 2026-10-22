@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.8
+
+- Goedkoopste momenten staan altijd zichtbaar op Overzicht, zonder uitvouwen.
+- Begin- en eindtijden van goedkope momenten tonen ook de weekdag, bijvoorbeeld Za 24 okt, 13:15 – Za 24 okt, 14:15.
+
 ## 0.2.7
 
 - Rustiger Overzicht met expliciet model en versie bij de prognose; bronnen, kwaliteit en goedkope momenten zijn uitklapbaar.
