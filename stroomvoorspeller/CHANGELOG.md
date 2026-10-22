@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+
+- De kop van de interface gebruikt weer het echte Stroomvoorspeller-appicoon in plaats van het tijdelijke bliksemteken.
+
 ## 0.2.8
 
 - Goedkoopste momenten staan altijd zichtbaar op Overzicht, zonder uitvouwen.
