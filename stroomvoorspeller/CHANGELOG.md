@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.10
+
+- Historische tabel en vergelijkingsgrafieken tonen nu aparte horizons voor elke dag tot zeven dagen vooruit.
+- Historische tests hebben een keuze tussen 48 uur en 7 dagen per uitgifte. De zevendaagse test gebruikt maximaal zeven oudere uitgiftes met een volledig verstreken horizon; minimaal 21 dagen prijsarchief nodig. De lichtere 48-uursoptie blijft beschikbaar vanaf 16 dagen.
+- Instellingen verduidelijken de weerinvoer per methode: lokale bron voor adaptief/v4, vier vaste punten uit het Epex-NL-profiel en geen weerinvoer voor Timestral. Geen nieuwe weerlocaties of internationale Epex-stap toegevoegd.
+
 ## 0.2.9
 
 - De kop van de interface gebruikt weer het echte Stroomvoorspeller-appicoon in plaats van het tijdelijke bliksemteken.

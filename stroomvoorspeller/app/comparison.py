@@ -15,6 +15,8 @@ from .model import forecast_quarters
 from .storage import utc_iso
 
 UTC = timezone.utc
+HORIZONS = {f"{low}-{low+24}u": (low, low+24) for low in range(0,168,24)}
+HORIZONS["48-168u"] = (48,168)
 
 
 def _dt(value):
@@ -28,7 +30,7 @@ def _scores(rows):
 
 
 def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
-    if mode not in {"live", "historical"} or horizon not in {"all", "0-24u", "24-48u", "48-168u"}:
+    if mode not in {"live", "historical"} or horizon not in {"all", *HORIZONS}:
         raise ValueError("Kies live/historisch en een bekende voorspelhorizon")
     if type(days) is not int or not 1 <= days <= 45: raise ValueError("Kies 1 t/m 45 dagen")
     if selected is not None and (not isinstance(selected, list) or any(m not in METHODS for m in selected)):
@@ -63,7 +65,7 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
                 key = (abs((_dt(run["issued_at"]) - noon).total_seconds()), run["issued_at"])
                 if day not in days or key < days[day][0]:
                     days[day] = key, run
-            scored, buckets = {}, {"0-24u": [], "24-48u": [], "48-168u": []}
+            scored, buckets = {}, {key: [] for key in HORIZONS}
             for _, run in days.values():
                 issue = _dt(run["issued_at"])
                 for point in run["points"]:
@@ -77,7 +79,8 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
                     if not all(math.isfinite(v) for v in pair):
                         continue
                     scored[(run["issued_at"], start)] = pair
-                    buckets["0-24u" if hours < 24 else "24-48u" if hours < 48 else "48-168u"].append(pair)
+                    for name, (low, high) in HORIZONS.items():
+                        if low <= hours < high: buckets[name].append(pair)
             maps[mode][method] = scored
             item[mode] = {**_scores(scored.values()), "version": version, "days": len(days),
                           "horizons": [{"horizon": k, **_scores(v)} for k, v in buckets.items()]}
@@ -115,7 +118,7 @@ def comparison_view(result, maps, mode, horizon, selected, days):
     """Charts only compare identical issue/target pairs, never latest guesses."""
     methods = {m["id"]: m for m in result["methods"]}
     selected = list(dict.fromkeys(selected if selected is not None else [m for m, row in methods.items() if row["enabled"]]))
-    limits = {"all": (0, 168), "0-24u": (0,24), "24-48u": (24,48), "48-168u": (48,168)}
+    limits = {"all": (0,168), **HORIZONS}
     low, high = limits[horizon]
     rows = {m: {key: value for key, value in maps[mode][m].items()
                 if low <= (_dt(key[1])-_dt(key[0])).total_seconds()/3600 < high} for m in selected}
@@ -142,8 +145,10 @@ def comparison_view(result, maps, mode, horizon, selected, days):
             "notice": "Dezelfde uitgiftetijd en doelkwartieren per methode; bij meerdere uitgiftes wordt in de prijsgrafiek de nieuwste gezamenlijke gekozen. Overlappende doelen zijn geen onafhankelijke metingen."}
 
 
-def start_history_test(service):
-    """Single background job; at most seven daily issues and 48h each."""
+def start_history_test(service, horizon_hours=48):
+    """Single bounded job; up to seven daily issues, 48h or 168h each."""
+    if type(horizon_hours) is not int or horizon_hours not in {48,168}:
+        raise ValueError("Kies 48 of 168 uur voor de historische test")
     with service._history_job_lock:
         if service._history_thread and service._history_thread.is_alive():
             return dict(service._history_job)
@@ -157,21 +162,22 @@ def start_history_test(service):
         now = service.clock().astimezone(UTC)
         rows = service.store.quarters(service._archive_entity(entity, settings), end=now)
         rows = [r for r in rows if r.get("quality") in {"valid", "published"} and _dt(r["end_utc"]) <= now]
-        if not rows or _dt(rows[-1]["end_utc"]) - _dt(rows[0]["start_utc"]) < timedelta(days=16):
-            raise ValueError("Minimaal 16 dagen echte kwartierhistorie nodig; vernieuw eerst de prijsbron")
-        service._history_job = {"state": "running", "completed": 0, "total": 0, "errors": [], "methods": methods}
+        required_days = 14 + horizon_hours//24
+        if not rows or _dt(rows[-1]["end_utc"]) - _dt(rows[0]["start_utc"]) < timedelta(days=required_days):
+            raise ValueError(f"Minimaal {required_days} dagen echte kwartierhistorie nodig voor {horizon_hours} uur; vernieuw eerst de prijsbron of kies 48 uur")
+        service._history_job = {"state": "running", "completed": 0, "total": 0, "errors": [], "methods": methods, "horizon_hours": horizon_hours}
         service._history_thread = threading.Thread(target=_history_worker,
-            args=(service, settings, entity, rows, now, methods), daemon=True, name="forecast-history")
+            args=(service, settings, entity, rows, now, methods, horizon_hours), daemon=True, name="forecast-history")
         service._history_thread.start()
         return dict(service._history_job)
 
 
-def _history_worker(service, settings, entity, rows, now, methods):
+def _history_worker(service, settings, entity, rows, now, methods, horizon_hours):
     job = service._history_job
     try:
         first = _dt(rows[0]["start_utc"]) + timedelta(days=14)
-        last = min(now, _dt(rows[-1]["end_utc"])) - timedelta(days=1)
-        last = last.replace(hour=0, minute=0, second=0, microsecond=0)
+        last = min(now, _dt(rows[-1]["end_utc"])) - timedelta(hours=horizon_hours)
+        last = max(first, last.replace(hour=0, minute=0, second=0, microsecond=0))
         issues = [last - timedelta(days=d) for d in reversed(range(7)) if last - timedelta(days=d) >= first]
         job["total"] = len(issues) * len(methods)
         scale = 1000 if settings["tariff_unit"] == "EUR/kWh" else 1
@@ -191,16 +197,16 @@ def _history_worker(service, settings, entity, rows, now, methods):
                     continue
                 try:
                     if method == "local":
-                        run = adaptive_forecast(history, issue, max_points=192, price_scale=scale, base=forecast_quarters)
+                        run = adaptive_forecast(history, issue, max_points=horizon_hours*4, price_scale=scale, base=forecast_quarters)
                     elif method == "v4":
-                        run = forecast_quarters(history, issue, max_points=192, price_scale=scale)
+                        run = forecast_quarters(history, issue, max_points=horizon_hours*4, price_scale=scale)
                     elif method == "epex":
-                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=192)
+                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
                     else:
-                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=192)
+                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,
                               "tariff_unit": settings["tariff_unit"], "price_field": settings["price_field"],
-                              "history": history, "weather_model": None, "price_scale": scale, "test_horizon_hours": 48}
+                              "history": history, "weather_model": None, "price_scale": scale, "test_horizon_hours": horizon_hours}
                     identity = json.dumps([inputs, run.model_version, utc_iso(issue)], sort_keys=True, default=str)
                     run_id = "historical-" + hashlib.sha256(identity.encode()).hexdigest()
                     inputs["reconstructed_at"] = utc_iso(now)

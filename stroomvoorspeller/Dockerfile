@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim-bookworm
 
-LABEL io.hass.version="0.2.9" \
+LABEL io.hass.version="0.2.10" \
       io.hass.type="app" \
       io.hass.arch="aarch64|amd64"
 

@@ -101,3 +101,40 @@ def test_http_filters_and_timeline_model_identity(tmp_path):
         assert timeline['model_version'] is None  # selected, not falsely labelled as computed
     finally:
         server.shutdown();server.server_close();thread.join(timeout=3)
+
+
+@pytest.mark.parametrize('hour,expected',[(48,'48-72u'),(72,'72-96u'),(96,'96-120u'),(120,'120-144u'),(144,'144-168u')])
+def test_later_daily_horizons_use_exact_boundaries(hour,expected):
+    from datetime import timedelta
+    from app.storage import utc_iso
+    issue=datetime(2026,10,1,tzinfo=timezone.utc)
+    rows={(utc_iso(issue),utc_iso(issue+timedelta(hours=h))):(.3,.2) for h in (hour-.25,hour,hour+23.75,hour+24)}
+    view=comparison_view(result(),{'live':{'local':rows}},'live',expected,['local'],14)
+    assert view['n']==2
+    assert [p['start'] for p in view['points']]==[utc_iso(issue+timedelta(hours=h)) for h in (hour,hour+23.75)]
+
+
+def test_history_http_horizon_is_forwarded_and_invalid_choices_rejected(tmp_path,monkeypatch):
+    import json,threading
+    from http.server import ThreadingHTTPServer
+    from urllib.request import Request,urlopen
+    from urllib.error import HTTPError
+    from app.backend import make_handler
+    from app.comparison import start_history_test
+    app=AppService(store=Store(tmp_path));choices=[]
+    def start(service,horizon_hours):
+        if horizon_hours not in (48,168):return start_history_test(service,horizon_hours)
+        choices.append(horizon_hours);return {'state':'running','horizon_hours':horizon_hours}
+    monkeypatch.setattr('app.comparison.start_history_test',start)
+    server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(app))
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    root=f'http://127.0.0.1:{server.server_port}/api/history-test'
+    try:
+        for suffix,horizon in (('',48),('?horizon_hours=168',168)):
+            with urlopen(Request(root+suffix,method='POST')) as response:
+                assert response.status==202 and json.load(response)['horizon_hours']==horizon
+        assert choices==[48,168]
+        for suffix in ('?horizon_hours=72','?horizon_hours=bad'):
+            with pytest.raises(HTTPError) as exc:urlopen(Request(root+suffix,method='POST'))
+            assert exc.value.code==400
+    finally:server.shutdown();server.server_close();thread.join(timeout=2)

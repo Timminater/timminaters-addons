@@ -290,3 +290,44 @@ def test_epex_mapping_change_does_not_reuse_old_calibration(tmp_path):
     assert app._latest_forecast('sensor.prices', 'tax_included', 'EUR/kWh') == (None, [])
     assert app._method_store().daily_stored_forecasts('sensor.prices', NOW - STEP,
                 NOW + timedelta(days=1), 'tax_included', 'EUR/kWh') == []
+
+
+def test_week_history_covers_all_days_with_past_only_inputs(tmp_path, monkeypatch):
+    from app.methods import configured_version
+    app=service(tmp_path)
+    app.put_settings({'forecast_methods':{'local':True,'v4':True,'epex':True,'timestral':True}})
+    settings=app.get_settings();archive=app._archive_entity('sensor.prices',settings)
+    app.store.upsert_quarters([{**r,'entity_id':archive} for r in history(30)])
+    calls=[]
+    def replay(method):
+        def run(rows,issue,*args,max_points,**kwargs):
+            assert max_points==672
+            assert all(datetime.fromisoformat(r['end_utc'].replace('Z','+00:00'))<=issue for r in rows)
+            assert issue+max_points*STEP<=NOW
+            calls.append((method,issue))
+            return ForecastRun(configured_version(method,settings) or method+'-test',issue,
+                [ForecastPoint(issue+i*STEP,issue+(i+1)*STEP,.2) for i in range(max_points)],'voorlopig',[])
+        return run
+    for method,fn in [('local','adaptive_forecast'),('v4','forecast_quarters'),('epex','epex_forecast'),('timestral','timestral_forecast')]:
+        monkeypatch.setattr('app.comparison.'+fn,replay(method))
+    start_history_test(app,168);app._history_thread.join(timeout=30)
+    assert app._history_job['state']=='completed'
+    assert app._history_job['horizon_hours']==168 and len(calls)==28
+    report=comparison(app,mode='historical',horizon='144-168u')
+    assert report['view']['n']==7*96 and report['view']['paired']
+    for method in report['methods']:
+        scores={h['horizon']:h for h in method['historical']['horizons']}
+        assert all(scores[f'{h}-{h+24}u']['n']==7*96 for h in range(0,168,24))
+        assert scores['48-168u']['n']==5*7*96
+        assert method['live']['n']==0
+    assert app.store.latest_forecast()[0] is None
+
+
+def test_history_horizon_validation_and_short_archive(tmp_path):
+    app=service(tmp_path);settings=app.get_settings()
+    archive=app._archive_entity('sensor.prices',settings)
+    app.store.upsert_quarters([{**r,'entity_id':archive} for r in history(18)])
+    with pytest.raises(ValueError,match='21 dagen'):start_history_test(app,168)
+    for choice in (0,24,169,True,'168'):
+        with pytest.raises(ValueError,match='48 of 168'):start_history_test(app,choice)
+    assert app._history_thread is None

@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.9`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.10`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -90,3 +90,5 @@ Lokaal adaptief v2 valideert voor de horizon 24–48 uur ook de mix met v4 op ee
 **Overzicht** toont de geselecteerde methode en de daadwerkelijk getoonde modelversie bij de grafiek. Goedkoopste momenten zijn altijd zichtbaar, met weekdag bij begin- en eindtijd. Aanvullende bron- en kwaliteitsdetails zijn uitklapbaar. **Analyse** vergelijkt live of historische prestaties met foutbalken, tarieflijnen en dagelijkse fouten; kies methoden, periode en horizon. De grafieken gebruiken dezelfde uitgiftetijd en doelkwartieren. Ontbrekende gemeenschappelijke resultaten worden zichtbaar gemeld. Opslag en export staan op **Data & opslag**.
 
 Timestral krijgt standaard expliciete zaterdag/zondag-informatie in Nederlandse tijd. De optie is onder Instellingen uit te zetten voor vergelijking met de oorspronkelijke prijsreeksvariant. Dit is geen vaste weekendkorting of garantie op lagere/betere tarieven. De score- en kalibratiereeksen blijven gescheiden. Zie [Timestral-weekendinformatie en modelvergelijking](docs/METHODS.md#weekendinformatie-en-visuele-modelvergelijking).
+
+De historische tabel en grafiekfilters onderscheiden nu elke voorspelddag tot zeven dagen vooruit. Kies bij **Test bestaande historie** tussen 7 dagen (meer rekenwerk, minimaal 21 dagen archief) en de lichtere 48 uur (minimaal 16 dagen). Voor dag 3–7 is een nieuwe zevendaagse test nodig. De weerinvoer verschilt per methode; zie [weerlocaties per methode](docs/METHODS.md#weerlocaties-per-methode).

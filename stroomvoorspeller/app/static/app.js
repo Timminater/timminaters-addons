@@ -251,22 +251,22 @@
     const horizons = $('method-horizons'); horizons.replaceChildren();
     for (const method of data.methods || []) {
       const row = document.createElement('tr'); appendCell(row, method.label);
-      for (const name of ['0-24u', '24-48u']) appendCell(row, score(method.historical?.horizons?.find(h => h.horizon === name)));
+      for (const name of ['0-24u', '24-48u', '48-72u', '72-96u', '96-120u', '120-144u', '144-168u']) appendCell(row, score(method.historical?.horizons?.find(h => h.horizon === name)));
       horizons.append(row);
     }
     setText('method-pairing', data.pairing_notice);
     setText('history-notice', data.historical_notice);
     const job = data.history_job || {};
-    const running = job.state === 'running'; $('history-test').disabled = running;
+    const running = job.state === 'running'; $('history-test').disabled = running; $('history-test-horizon').disabled = running;
     const labels = {idle: 'Nog geen historische test gestart.', running: 'Historische test bezig', completed: 'Historische test afgerond', completed_with_errors: 'Afgerond met fouten', failed: 'Historische test mislukt', cancelled: 'Historische test gestopt'};
-    setText('history-progress', state.historyError || `${labels[job.state] || job.state} ${job.total ? `${job.completed || 0}/${job.total}` : ''} ${(job.errors || []).map(e => `${e.method || ''}: ${e.message}`).join(' · ')}`);
+    setText('history-progress', state.historyError || `${labels[job.state] || job.state}${job.horizon_hours ? ` · ${job.horizon_hours} uur per uitgifte` : ''} ${job.total ? `${job.completed || 0}/${job.total}` : ''} ${(job.errors || []).map(e => `${e.method || ''}: ${e.message}`).join(' · ')}`);
     if (historyTimer) clearTimeout(historyTimer);
     if (running) historyTimer = setTimeout(() => loadMethods().catch(error => { setText('history-progress', error.message); $('history-test').disabled = false; }), 2500);
   }
   async function testHistory() {
     state.historyError = null;
     $('history-test').disabled = true;
-    try { await api('api/history-test', {method: 'POST'}); await loadMethods(); }
+    try { await api('api/history-test?horizon_hours=' + encodeURIComponent($('history-test-horizon').value), {method: 'POST'}); await loadMethods(); }
     catch (error) { state.historyError = error.message; setText('history-progress', error.message); $('history-test').disabled = false; }
   }
   function updateTimestralModel() {

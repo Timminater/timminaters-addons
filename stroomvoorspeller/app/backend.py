@@ -1114,7 +1114,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 return self._send(503, {"error": str(exc)})
 
         def do_POST(self) -> None:
-            path, _ = self._path()
+            path, query = self._path()
             if path == "/api/storage/cleanup":
                 from .data_management import cleanup
                 try:
@@ -1140,7 +1140,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 except (ValueError, TypeError) as exc: return self._send(400, {"error": str(exc)})
             if path == "/api/history-test":
                 from .comparison import start_history_test
-                try: return self._send(202, start_history_test(service))
+                try: return self._send(202, start_history_test(service, int(query.get("horizon_hours", ["48"])[0])))
                 except ValueError as exc: return self._send(400, {"error": str(exc)})
             if path != "/api/calculate": return self._send(404, {"error": "not found"})
             try:

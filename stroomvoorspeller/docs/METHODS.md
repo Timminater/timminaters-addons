@@ -142,8 +142,12 @@ Recorder-data en uurstatistieken kunnen geen echte kwartierdata vervangen. Voor
 states gelden.
 
 **Test bestaande historie** onder Analyse start handmatig een begrensde
-achtergrondtaak: maximaal zeven recente uitgiftedagen, per dag 192 toekomstige
-UTC-kwartieren, met minimaal zestien dagen prijsarchief. Alleen ingeschakelde
+achtergrondtaak: maximaal zeven uitgiftedagen. Kies 48 uur (192 UTC-kwartieren,
+minimaal zestien dagen prijsarchief) of 7 dagen (672 UTC-kwartieren, minimaal
+21 dagen prijsarchief) per uitgifte. De UI kiest standaard 7 dagen; de API houdt
+zonder parameter 48 uur voor bestaande clients. Uitgiftes liggen minstens de
+gekozen horizon terug, zodat alle doelkwartieren verstreken zijn. Bij slechts
+het minimale archief zijn minder dan zeven uitgiftes beschikbaar. Alleen ingeschakelde
 methoden draaien. Ook Epex kan nu lokaal opnieuw trainen voor elke historische
 uitgifte. Timestral vereist vooraf lokaal gedownloade gewichten.
 
@@ -169,7 +173,7 @@ De keuze gebruikt maximaal zeven eerdere dagelijkse uitgiftemomenten om 00:00 UT
 
 Minimaal 14 dagen historie is nodig. Bij onvoldoende validatie of een ontbrekende gekozen analogie blijft de bestaande berekening gelden. Voor horizon 0–24 uur en vanaf 48 uur blijft de v1-berekening ongewijzigd. Grenzen van bestaande voorlopige banden worden met de puntcorrectie verschoven; ze worden niet smaller gemaakt en krijgen geen nieuwe dekkingsclaim. Caches voor niveaus en analogieën voorkomen herhaalde scans. Geen NumPy, PyTorch, modeldownload of externe rekenservice nodig.
 
-Modelidentiteit `adaptive-quarter-2` start een eigen score- en kalibratiereeks. Oude `adaptive-quarter-1`-runs blijven in het archief en in exports. De UI toont de nieuwste modelversie per methode; voor een historische vergelijking moet de test opnieuw worden uitgevoerd. Historische tests leveren nu maximaal 192 kwartieren per uitgifte, met aparte zichtbaarheid van 0–24 en 24–48 uur. Aantallen kunnen verschillen; beoordeel dezelfde horizons en doelkwartieren.
+Modelidentiteit `adaptive-quarter-2` start een eigen score- en kalibratiereeks. Oude `adaptive-quarter-1`-runs blijven in het archief en in exports. De UI toont de nieuwste modelversie per methode; voor een historische vergelijking moet de test opnieuw worden uitgevoerd. Sinds 0.2.10 kan de historische test 192 of 672 kwartieren per uitgifte leveren, met aparte zichtbaarheid van elke dag tot zeven dagen vooruit. Aantallen kunnen verschillen; beoordeel dezelfde horizons en doelkwartieren.
 
 ### Onderbouwing en beperking
 
@@ -198,4 +202,33 @@ De tarieflijn toont maximaal 192 recente gemeenschappelijke doelkwartieren. Bij 
 
 Methoden zonder resultaten worden expliciet gemeld en niet als nul fout weergegeven. Zonder gemeenschappelijke uitgiftes/doelen komt er geen rangorde. Eén methode met resultaten wordt expliciet als één methode getoond. De huidige gekozen Timestral-variant en kalenderconfiguratie bepalen welke scoreversie wordt opgehaald. Losse cijfers onder de uitklapbare tabellen kunnen een andere doelset hebben dan de vergelijkingsgrafiek; gebruik de grafieken voor een onderlinge vergelijking.
 
-API: `GET /api/methods?mode=live&horizon=24-48u&days=14&methods=local,v4`. Horizons zijn `all`, `0-24u`, `24-48u`, `48-168u`; `methods=none` geeft een lege selectie. Het bestaande antwoord blijft behouden en bevat aanvullend `view` met gemeenschappelijke scores, dagfouten, grafiekpunten, ontbrekende methoden en selectie-informatie. De tijdlijn bevat nu ook de methode-ID, ingeschakelde status en gekozen Timestral-grootte; de modelversie hoort bij de daadwerkelijk teruggegeven prognose.
+API: `GET /api/methods?mode=live&horizon=24-48u&days=14&methods=local,v4`. Horizons zijn `all`, `0-24u`, `24-48u`, `48-72u`, `72-96u`, `96-120u`, `120-144u`, `144-168u` en de samenvatting `48-168u`; `methods=none` geeft een lege selectie. Het bestaande antwoord blijft behouden en bevat aanvullend `view` met gemeenschappelijke scores, dagfouten, grafiekpunten, ontbrekende methoden en selectie-informatie. De tijdlijn bevat nu ook de methode-ID, ingeschakelde status en gekozen Timestral-grootte; de modelversie hoort bij de daadwerkelijk teruggegeven prognose.
+
+
+## Weerlocaties per methode
+
+Lokaal adaptief en oorspronkelijke v4 delen de ingestelde weerbron: één
+Open-Meteo-coördinaat, of de gekozen HA-reeksen voor zon, wind en temperatuur.
+De herkomst van HA-reeksen wordt door die integraties bepaald; de app voegt
+zelf geen landelijke of Europese locaties toe. Historische reconstructies van
+deze twee methoden krijgen geen actuele weersverwachting achteraf mee.
+
+De ingebouwde EpexPredictor gebruikt een eigen Open-Meteo-invoer met vier
+vaste punten uit het upstream NL-profiel: (52.69, 6.11), (52.36, 4.90),
+(50.51, 5.41) en (53.36, 4.98). Het derde punt ligt feitelijk in België.
+Wind op 80 meter, temperatuur, straling, luchtdruk en luchtvochtigheid komen
+per punt als afzonderlijke kenmerken binnen. De persoonlijke weerlocatie in
+Instellingen verandert deze Epex-invoer niet. De in upstream ondersteunde
+regio's zijn geen bewijs dat deze lokale NL single-stage-uitvoering al die
+regio's gebruikt: de internationale tweede modelstap is niet ingebouwd.
+
+Timestral ontvangt prijsreeksen en optioneel weekendinformatie, geen weerdata.
+Deze release verandert de weerinvoer niet en claimt geen nauwkeurigheidswinst
+door extra locaties.
+
+`POST /api/history-test?horizon_hours=168` start de zevendaagse reconstructie;
+`horizon_hours=48` is de lichtere variant en blijft de API-standaard. Alleen
+48 en 168 zijn toegestaan. De taakstatus vermeldt `horizon_hours`. Oude
+48-uursruns behouden ontbrekende scores voor dag 3–7; daarvoor is een nieuwe
+test nodig. De methodecijfers blijven eigen doelsets gebruiken; voor een
+onderlinge rangorde gebruikt de grafiek exact gedeelde uitgiftes en doelen.
