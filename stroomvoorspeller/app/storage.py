@@ -198,12 +198,14 @@ class Store:
                              (utc_iso(issued_at), source, json.dumps(payload, separators=(",", ":"), allow_nan=False), error))
             return int(cur.lastrowid)
 
-    def latest_snapshot(self, source: str, successful_only: bool = False) -> dict[str, Any] | None:
+    def latest_snapshot(self, source: str, successful_only: bool = False, *, as_of: datetime | None = None) -> dict[str, Any] | None:
         with self._connect() as db:
             sql = "SELECT * FROM input_snapshots WHERE source=?"
+            args = [source]
+            if as_of is not None: sql += " AND issued_at<=?"; args.append(utc_iso(as_of))
             if successful_only: sql += " AND error IS NULL"
             sql += " ORDER BY issued_at DESC,id DESC LIMIT 1"
-            row = db.execute(sql, (source,)).fetchone()
+            row = db.execute(sql, args).fetchone()
         if not row:
             return None
         item = dict(row)

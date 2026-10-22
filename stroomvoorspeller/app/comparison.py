@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 import threading
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from zoneinfo import ZoneInfo
@@ -47,7 +47,7 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
               "pairing_notice": "Gepaarde MAE gebruikt dezelfde uitgiftetijd en doelkwartieren van ingeschakelde methoden met resultaten."}
     maps = {"live": {}, "historical": {}}
     for method, label in METHODS.items():
-        if method == "timestral": label = f"Timestral-{settings['timestral_model']}" + (" · weekendinfo" if settings["timestral_calendar"] else " · zonder kalender")
+        if method == "timestral": label = f"Timestral-{settings['timestral_model']}" + (" · weekendinfo" if settings["timestral_calendar"] else " · zonder kalender") + (" · met weer" if settings["timestral_weather"] else " · zonder weer")
         item = {"id": method, "label": label, "enabled": settings["forecast_methods"][method],
                 "status": statuses.get("method:" + method, {}), "historical_supported": True}
         for mode in maps:
@@ -186,6 +186,16 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
             # reconstruction uses ended intervals, never future target prices.
             history = [{**r, "published_at": r["end_utc"]} for r in rows
                        if issue - timedelta(days=90) <= _dt(r["start_utc"]) and _dt(r["end_utc"]) <= issue]
+            archived_weather=service.store.latest_snapshot("weather",successful_only=True,as_of=issue)
+            archived_weather=archived_weather["payload"] if archived_weather else None
+            if archived_weather:
+                observed=_dt(archived_weather["observed_at"])
+                if not timedelta(0)<=issue-observed<=timedelta(hours=6) or archived_weather.get("profile")!=settings.get("weather_region"):
+                    archived_weather=None
+                elif archived_weather.get("profile")=="local" and archived_weather.get("location")!={"latitude":settings["latitude"],"longitude":settings["longitude"]}:
+                    archived_weather=None
+            from .weather import model_weather
+            historical_weather=model_weather(archived_weather) if archived_weather else None
             for method in methods:
                 current = service.get_settings()
                 if (service._stop.is_set() or service._price_identity(current) != entity
@@ -197,16 +207,19 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
                     continue
                 try:
                     if method == "local":
-                        run = adaptive_forecast(history, issue, max_points=horizon_hours*4, price_scale=scale, base=forecast_quarters)
+                        run = adaptive_forecast(history, issue, weather=historical_weather, max_points=horizon_hours*4, price_scale=scale, base=forecast_quarters)
                     elif method == "v4":
-                        run = forecast_quarters(history, issue, max_points=horizon_hours*4, price_scale=scale)
+                        run = forecast_quarters(history, issue, weather=historical_weather, max_points=horizon_hours*4, price_scale=scale)
                     elif method == "epex":
                         run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
                     else:
-                        run = timestral_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
+                        run = timestral_forecast(history, issue, {**service._runtime_settings(settings, method), "_weather":archived_weather}, max_points=horizon_hours*4)
+                    if method in {"local","v4"} and archived_weather and archived_weather.get("profile") in {"nl","europe"}:
+                        from .weather_regions import signature
+                        run=replace(run,model_version=run.model_version+":regional-1-"+signature(settings))
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,
                               "tariff_unit": settings["tariff_unit"], "price_field": settings["price_field"],
-                              "history": history, "weather_model": None, "price_scale": scale, "test_horizon_hours": horizon_hours}
+                              "history": history, "weather_model": historical_weather, "weather_snapshot":archived_weather, "price_scale": scale, "test_horizon_hours": horizon_hours}
                     identity = json.dumps([inputs, run.model_version, utc_iso(issue)], sort_keys=True, default=str)
                     run_id = "historical-" + hashlib.sha256(identity.encode()).hexdigest()
                     inputs["reconstructed_at"] = utc_iso(now)

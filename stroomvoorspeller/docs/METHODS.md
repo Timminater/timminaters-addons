@@ -45,7 +45,7 @@ De add-on bevat de oorspronkelijke LightGBM-modelmodules van
 [b3nn0/EpexPredictor](https://github.com/b3nn0/EpexPredictor) op commit
 `676ed37da4968c4a94d3fece39b948d5988ff580`, inclusief BSD-3-Clause-licentie.
 Training en voorspelling vinden lokaal plaats, met de Nederlandse configuratie
-en vier Nederlandse weerlocaties. Dit is het **NL single-stage-model**, niet de
+en het ingestelde weergebied (vanaf 0.2.11 standaard vier Nederlandse punten). Dit is het **NL single-stage-model**, niet de
 volledige internationale tweetrapsstapel van de publieke service. Daardoor zijn
 de prestatiecijfers van die service niet rechtstreeks van toepassing.
 
@@ -121,7 +121,7 @@ maandomzet. Zie de [modellicentie](https://huggingface.co/mistralai/Timestral-20
 
 Inferentie gebruikt uitsluitend de lokale bestanden, met offline-modus aan.
 Ontbrekende of beschadigde bestanden veroorzaken een melding; nooit een
-stilzwijgende download. De adapter gebruikt prijshistorie en standaard expliciete weekendinformatie; er worden geen weerscovariaten meegegeven.
+stilzwijgende download. De adapter gebruikt prijshistorie en standaard expliciete weekendinformatie. Vanaf 0.2.11 zijn regionale weerscovariaten optioneel, standaard uit; zie hieronder.
 Gaten blijven ontbrekend en negatieve prijzen worden toegestaan. De q10–q90-band
 is modelonzekerheid, geen lokaal bewezen 80%-dekking.
 
@@ -207,24 +207,92 @@ API: `GET /api/methods?mode=live&horizon=24-48u&days=14&methods=local,v4`. Horiz
 
 ## Weerlocaties per methode
 
-Lokaal adaptief en oorspronkelijke v4 delen de ingestelde weerbron: één
-Open-Meteo-coördinaat, of de gekozen HA-reeksen voor zon, wind en temperatuur.
-De herkomst van HA-reeksen wordt door die integraties bepaald; de app voegt
-zelf geen landelijke of Europese locaties toe. Historische reconstructies van
-deze twee methoden krijgen geen actuele weersverwachting achteraf mee.
+Vanaf 0.2.11 bepaalt `weather_region` het gebied: `local` (één bevestigde
+coördinaat), `nl` (standaard, vier punten) of `europe` (tien punten). De NL-grid
+is geïnspireerd op EpexPredictor: (52.69, 6.11), (52.36, 4.90), (51.45, 5.47)
+en (53.36, 4.98). Het oude zuidelijke punt (50.51, 5.41) lag in België en is
+voor deze grid vervangen door een punt in Noord-Brabant. De uitgebreide grid
+voegt Duitsland west/noord, België, Noord-Frankrijk, Denemarken en het Verenigd
+Koninkrijk toe. De exacte punten staan in `app/weather_regions.py`.
 
-De ingebouwde EpexPredictor gebruikt een eigen Open-Meteo-invoer met vier
-vaste punten uit het upstream NL-profiel: (52.69, 6.11), (52.36, 4.90),
-(50.51, 5.41) en (53.36, 4.98). Het derde punt ligt feitelijk in België.
-Wind op 80 meter, temperatuur, straling, luchtdruk en luchtvochtigheid komen
-per punt als afzonderlijke kenmerken binnen. De persoonlijke weerlocatie in
-Instellingen verandert deze Epex-invoer niet. De in upstream ondersteunde
-regio's zijn geen bewijs dat deze lokale NL single-stage-uitvoering al die
-regio's gebruikt: de internationale tweede modelstap is niet ingebouwd.
+Adaptief en v4 gebruiken een ongewogen gemiddelde per uur van zon, wind en
+temperatuur over alle punten. Dit is een benadering; er zijn geen verzonnen
+productiegewichten of getrainde geografische wegingen. Het bestaande v4-model
+blijft de onderliggende prijsberekening. De normalisatie met De Bilt is niet
+opnieuw voor heel Europa gevalideerd. HA-weerreeksen blijven een apart alternatief;
+de app kan hun geografische herkomst niet controleren.
 
-Timestral ontvangt prijsreeksen en optioneel weekendinformatie, geen weerdata.
-Deze release verandert de weerinvoer niet en claimt geen nauwkeurigheidswinst
-door extra locaties.
+Epex gebruikt per punt afzonderlijke kenmerken voor wind op 80 meter,
+temperatuur, straling, luchtdruk en luchtvochtigheid, zoals de upstream
+WeatherStore. Elk gebied krijgt een eigen featurecache/modelmap en versie.
+De gekozen HA-weerbron verandert de Epex-invoer niet. Buitenlands weer toevoegen
+is nog steeds het lokale NL single-stage-model: buitenlandse prijsmodellen en
+de internationale tweede Epex-stap zijn hiermee niet ingebouwd.
+
+### Timestral met weer
+
+Timestral kan zonder weer voorspellen doordat het een voorgetraind tijdreeksmodel
+is. Eerdere prijzen bevatten dagritmes, weekritmes en eerdere invloeden van vraag,
+weer en markt. Dat levert geen kennis van een nog niet in prijzen zichtbare
+weersomslag. De optie `timestral_weather` voegt daarom drie numerieke bekende
+covariaten toe: gebiedsgemiddelde zon, wind en temperatuur. Standaard uit voor
+een bewuste vergelijking en minder rekenwerk. Meer punten/variabelen garanderen
+geen lagere fout; er is nog geen lokale nauwkeurigheidswinst aangetoond.
+
+De gedeelde Open-Meteo-batch bevat 35 dagen historie en acht voorspellingsdagen.
+Uurwaarden worden op de UTC-kwartiergrid herhaald, niet als afzonderlijke
+kwartiermetingen gepresenteerd. Oude ontbrekende context blijft gemaskeerd;
+minimaal 192 echte weerkwartieren per kenmerk en een volledige toekomstige
+weerreeks zijn nodig. Bij 90 dagen prijscontext ontbreekt dus weer voor het
+oudste gedeelte. Er worden geen toekomstige doelprijzen als covariaat gebruikt.
+De gewichten blijven dezelfde; alle vier Timestral-groottes zijn offline met
+numeriek weer plus weekendinformatie technisch uitgevoerd. Dit is geen
+nauwkeurigheidstest. Er is geen nieuwe download nodig.
+
+De optie vereist Open-Meteo; de HA-invoer levert geen historische weercontext.
+Een ontbrekende, verkeerde of meer dan zes uur oude weersnapshot leidt tot een
+zichtbare methodefout, geen stilzwijgende prijsvariant met hetzelfde scorelabel.
+Weer aan/uit en gebied krijgen eigen Timestral-scoreversies. Nieuwe regionale
+adaptief/v4-runs hebben een versieachtervoegsel en Epex heeft een nieuwe
+feature-identiteit. Oude prognoses blijven opgeslagen.
+
+Historische tests voor adaptief/v4 en Timestral zoeken uitsluitend snapshots die
+vóór de gesimuleerde uitgifte waren opgeslagen, van het juiste gebied en hooguit
+zes uur oud. Oude installaties zonder zulke verwachtingen kunnen Timestral met
+weer niet eerlijk reconstrueren: de taak meldt dat per uitgifte. Schakel voor
+een prijsreeksvergelijking de weeroptie tijdelijk uit. Adaptief/v4 zonder zo'n
+snapshot blijven expliciet de oude berekening zonder regionale weersinvoer.
+Epex houdt zijn al bestaande gereconstrueerde historische weerbron; die scores
+zijn geen bewijs met oorspronkelijke datavintages.
+
+### Aanvraaglimieten en cache
+
+Locaties worden gebundeld. Alle Open-Meteo-aanvragen vanuit de hoofdapp en
+Epex-processen lopen door `weather_cache.py`, met een bestandslock en blijvende
+budgetstatus onder `/data/weather-cache`. Er is geen force-bypass:
+
+- Actuele datasets per gebied/variabelenset minimaal drie uur cache. Datums
+  schuiven in een actuele query zonder een extra aanvraag binnen die termijn.
+- Historische ranges hebben dertig dagen cache en blijven op bereik gescheiden. Epex groepeert historische data per kalendermaand, zodat opeenvolgende tests dezelfde aanvragen hergebruiken.
+- Maximaal twaalf aanvragen per minuut en 48 per UTC-dag, plus een conservatief
+  gewogen budget van 512 locatie/periode-eenheden per dag. Dit is een eigen
+  limiet, geen exacte weergave van Open-Meteo's quotaberekening.
+- Elke poging wordt vóór de netwerkactie geregistreerd, inclusief mislukkingen.
+  Normale fouten hebben één uur afkoeling; 429/503 pauzeren alle nieuwe
+  aanvragen minstens zes uur of langer volgens `Retry-After`.
+- Geldige cache kan tijdens afkoeling worden gelezen. De hoofdapp accepteert
+  bij uitval alleen de juiste bron/het juiste gebied tot zes uur oud; Timestral
+  verlangt bovendien volledige doeldekking. Gaten worden niet verzonnen.
+- Herstarten, handmatig rekenen en het legen van de Epex-featurecache wissen
+  het gedeelde aanvraagbudget niet. De payloadcache wordt tot ongeveer 64 MiB
+  begrensd; deze opslag telt mee onder Overig. Geen automatisch ophalen als
+  uitsluitend Timestral zonder weer aan staat of alle methoden uit staan.
+
+De hoofdapp en Epex delen de bescherming; hun uur-/kwartierdatasets zijn aparte
+cache-items. Er wordt dus niet beweerd dat ze altijd één identieke bronaanvraag
+kunnen delen. Bij nieuwe gebieden of de eerste Epex-training kan het initiële
+historiebereik meerdere begrensde aanvragen vereisen. Providers kunnen alsnog
+een eigen blokkade of lagere limiet toepassen; de app probeert dan niet door.
 
 `POST /api/history-test?horizon_hours=168` start de zevendaagse reconstructie;
 `horizon_hours=48` is de lichtere variant en blijft de API-standaard. Alleen

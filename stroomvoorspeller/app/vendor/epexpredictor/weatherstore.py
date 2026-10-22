@@ -1,10 +1,8 @@
 import asyncio
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import override
 
-import aiohttp
 import pandas as pd
 from .datastore import DataStore
 from .priceregion import PriceRegion
@@ -22,10 +20,6 @@ class WeatherStore(DataStore):
     storage_dir: str|None
 
     update_lock: asyncio.Lock
-
-    # Shared across all WeatherStore instances: OpenMeteo dislikes concurrent
-    # requests, so we serialize every call to its API globally.
-    _openmeteo_lock: asyncio.Lock = asyncio.Lock()
 
     def __init__(self, region : PriceRegion, storage_dir: str|None =None):
         super().__init__(region, storage_dir, "weather_v2")
@@ -46,35 +40,42 @@ class WeatherStore(DataStore):
             else:
                 host = "api.open-meteo.com"
 
-            url = f"https://{host}/v1/forecast?latitude={lats}&longitude={lons}&azimuth=0&tilt=0&start_date={rstart.date().isoformat()}&end_date={rend.date().isoformat()}&minutely_15=wind_speed_80m,temperature_2m,global_tilted_irradiance,pressure_msl,relative_humidity_2m&timezone=UTC"
-            log.info(f"{self.region.bidding_zone_entsoe}: Fetching weather data: {url}")
-
+            # Whole historical months share cache across adjacent backtests.
+            # Each API range remains <=31 days; current month stops at today.
+            ranges=[(rstart.date(),rend.date())]
+            if host.startswith("historical-"):
+                from calendar import monthrange
+                ranges=[];first=rstart.date().replace(day=1)
+                while first<=rend.date():
+                    last=first.replace(day=monthrange(first.year,first.month)[1])
+                    ranges.append((first,min(last,datetime.now(timezone.utc).date())))
+                    first=last+timedelta(days=1)
             try:
-                # Serialize all OpenMeteo calls globally; it dislikes concurrency.
-                async with WeatherStore._openmeteo_lock:
-                    async with aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=45)) as session:
-                        async with session.get(url) as resp:
-                            data = await resp.text()
-
-                            data = json.loads(data)
-                            frames = []
-                            for i, fc in enumerate(data):
-                                df = pd.DataFrame()
-
-                                df["time"] = fc["minutely_15"]["time"]
-                                df[f"wind_{i}"] = fc["minutely_15"]["wind_speed_80m"]
-                                df[f"temp_{i}"] = fc["minutely_15"]["temperature_2m"]
-                                df[f"irradiance_{i}"] = fc["minutely_15"]["global_tilted_irradiance"]
-                                df[f"pressure_{i}"] = fc["minutely_15"]["pressure_msl"]
-                                df[f"humidity_{i}"] = fc["minutely_15"]["relative_humidity_2m"]
-
-                                df.set_index("time", inplace=True)
-                                df = df.dropna()
-                                frames.append(df)
-
-                            df = pd.concat(frames, axis=1).reset_index()
-                            df["time"] = pd.to_datetime(df["time"], utc=True)
-                            df.set_index("time", inplace=True)
+                from ...weather_cache import cached_json
+                import os
+                chunks=[]
+                for first,last in ranges:
+                    url = f"https://{host}/v1/forecast?latitude={lats}&longitude={lons}&azimuth=0&tilt=0&start_date={first.isoformat()}&end_date={last.isoformat()}&minutely_15=wind_speed_80m,temperature_2m,global_tilted_irradiance,pressure_msl,relative_humidity_2m&timezone=UTC"
+                    data, _ = await asyncio.to_thread(cached_json,url,os.environ.get("DATA_DIR","/data"))
+                    if isinstance(data,dict): data=[data]
+                    if not isinstance(data,list) or len(data)!=len(self.region.latitudes):
+                        raise ValueError("Epex-weerbron mist locaties")
+                    frames = []
+                    for i, fc in enumerate(data):
+                        df = pd.DataFrame()
+                        df["time"] = fc["minutely_15"]["time"]
+                        df[f"wind_{i}"] = fc["minutely_15"]["wind_speed_80m"]
+                        df[f"temp_{i}"] = fc["minutely_15"]["temperature_2m"]
+                        df[f"irradiance_{i}"] = fc["minutely_15"]["global_tilted_irradiance"]
+                        df[f"pressure_{i}"] = fc["minutely_15"]["pressure_msl"]
+                        df[f"humidity_{i}"] = fc["minutely_15"]["relative_humidity_2m"]
+                        df.set_index("time", inplace=True)
+                        frames.append(df.dropna())
+                    df = pd.concat(frames, axis=1)
+                    df.index=pd.to_datetime(df.index,utc=True)
+                    chunks.append(df)
+                df=pd.concat(chunks).sort_index()
+                df=df[~df.index.duplicated(keep="last")]
 
                 updated = self._update_data(df) or updated
             except Exception as e:

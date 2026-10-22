@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.10`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.11`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -27,7 +27,7 @@ In productie verzorgt Supervisor de toegang via Ingress op containerpoort 8099. 
 1. Open na installatie de pagina **Stroomvoorspeller** in de Home Assistant-zijbalk.
 2. Kies een tariefsensor. `sensor.zonneplan_current_quarter_hourly_electricity_tariff` is alleen een voorstel; de App controleert of de sensor op deze installatie bestaat.
 3. Controleer prijsveld en eenheid. Als de sensor geen eenheid meelevert, kies die expliciet. De App leidt de eenheid nooit uit de getalsgrootte af.
-4. Kies Open-Meteo of HA-weerentiteiten. De Home-locatie van deze HA-installatie wordt als voorstel ingevuld. Controleer die en sla Instellingen op voordat zij voor Open-Meteo wordt gebruikt; de App bewaart de bevestigde locatie lokaal.
+4. Kies het weergebied: Nederland (vier punten, standaard), Nederland en buurlanden (tien punten), of één lokale locatie. Voor die laatste optie kun je de voorgestelde Home-locatie controleren en opslaan. HA-weerentiteiten blijven een alternatief voor adaptief/v4; Epex gebruikt altijd zijn eigen regionale Open-Meteo-data. Timestral-weer is een afzonderlijke, standaard uitgeschakelde optie.
 5. Bekijk de horizontaal scrollbare tijdlijn met alle bekende en voorspelde kwartieren, de kwartiertabel, goedkoopste aaneengesloten vensters en het kwaliteitsblok. Een rode stippellijn markeert de huidige tijd. De grafiek begint bij nul, behalve wanneer negatieve prijzen of modelmarges voorkomen. Wijs een balk aan, gebruik het toetsenbord of tik erop om tijd, prijs en eventuele indicatieve marge te zien.
 6. Gebruik **Bereken nu** voor een directe nieuwe modelrun. Onder **Instellingen** kies je het automatische controle- en berekeninterval: 5, 15, 30, 60 of 120 minuten. Bij een automatische cyclus rekent het model alleen opnieuw wanneer de invoer is veranderd. De Open-Meteo-bron blijft maximaal één keer per uur bevraagd.
 
@@ -92,3 +92,5 @@ Lokaal adaptief v2 valideert voor de horizon 24–48 uur ook de mix met v4 op ee
 Timestral krijgt standaard expliciete zaterdag/zondag-informatie in Nederlandse tijd. De optie is onder Instellingen uit te zetten voor vergelijking met de oorspronkelijke prijsreeksvariant. Dit is geen vaste weekendkorting of garantie op lagere/betere tarieven. De score- en kalibratiereeksen blijven gescheiden. Zie [Timestral-weekendinformatie en modelvergelijking](docs/METHODS.md#weekendinformatie-en-visuele-modelvergelijking).
 
 De historische tabel en grafiekfilters onderscheiden nu elke voorspelddag tot zeven dagen vooruit. Kies bij **Test bestaande historie** tussen 7 dagen (meer rekenwerk, minimaal 21 dagen archief) en de lichtere 48 uur (minimaal 16 dagen). Voor dag 3–7 is een nieuwe zevendaagse test nodig. De weerinvoer verschilt per methode; zie [weerlocaties per methode](docs/METHODS.md#weerlocaties-per-methode).
+
+Vanaf 0.2.11 zijn meerdere weerpunten instelbaar onder **Weersverwachting → Weergebied**. De Europese optie voegt Duitsland, België, Frankrijk, Denemarken en het Verenigd Koninkrijk toe. Meer locaties geven extra invoer, geen garantie op betere scores. **Geef Timestral regionale weerinformatie** voegt historische en toekomstige zon, wind en temperatuur toe; standaard uit voor vergelijking en minder rekenwerk. Actuele Open-Meteo-datasets worden minimaal drie uur hergebruikt, met een gedeeld blijvend budget en afkoeling bij bronfouten. Zie [weerlocaties per methode](docs/METHODS.md#weerlocaties-per-methode).

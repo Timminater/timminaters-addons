@@ -38,3 +38,5 @@ Er wordt niets automatisch verstuurd. Upload de ZIP zelf in de chat om voorspelf
 - `GET /api/export?days=30`: ZIP als attachment. Bij bezette berekening, ongeldige periode of te grote export volgt een uitlegbare foutmelding.
 
 Gebruik deze endpoints via de bestaande Home Assistant-ingress. Er is geen extra poort of externe opslagdienst nodig.
+
+Vanaf 0.2.11 bevat een run ook het opgeslagen weergebied en de Timestral-weerkeuze waar beschikbaar. Regionale uurwaarden blijven bruikbaar voor analyse; exacte locatiecoördinaten blijven uitgesloten. De gedeelde Open-Meteo-payloadcache telt mee onder Overig, wordt automatisch begrensd en het blijvende aanvraagbudget wordt niet gewist door Epex-cache opruimen.

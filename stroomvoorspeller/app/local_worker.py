@@ -69,6 +69,9 @@ def validate_timestral(payload):
     if payload.get("calendar"):
         from .timestral_calendar import weekend_covariate
         weekend_covariate(payload.get("context_start"), len(context)+horizon)
+    if "weather" in payload:
+        from .timestral_weather import validate_covariates
+        validate_covariates(payload["weather"],len(context),horizon)
     return context, horizon
 
 
@@ -92,9 +95,11 @@ def infer_timestral(payload):
         from .timestral_calendar import weekend_covariate
         codes = weekend_covariate(payload.get("context_start"), len(context)+horizon)
         kwargs["categorical_known_covariates"] = np.asarray(codes, dtype=np.float32)[None, :, :]
+    if "weather" in payload:
+        kwargs["known_covariates"] = np.asarray(payload["weather"],dtype=np.float32)[None,:,:]
     forecast = model.forecast(np.asarray([np.nan if v is None else v for v in context], dtype=np.float32),
                               prediction_length=horizon, clip_nonnegative=False, **kwargs)
-    return {"model": spec["repo"], "revision": spec["revision"], "calendar": calendar,
+    return {"model": spec["repo"], "revision": spec["revision"], "calendar": calendar, "weather": "weather" in payload,
             "median": forecast.median.reshape(-1).tolist(),
             "lower": forecast.quantile(.1).reshape(-1).tolist(),
             "upper": forecast.quantile(.9).reshape(-1).tolist()}
@@ -115,7 +120,14 @@ async def infer_epex(payload):
     end = start + timedelta(minutes=15 * count)
     folder = Path(os.environ["DATA_DIR"]) / "models" / "epex"
     folder.mkdir(parents=True, exist_ok=True)
-    predictor = PricePredictor(PriceRegionName.NL.to_region(), str(folder))
+    region = PriceRegionName.NL.to_region()
+    if payload.get("weather_region"):
+        from dataclasses import replace
+        from .weather_regions import locations,signature
+        points=locations(payload["weather_region"],payload.get("latitude"),payload.get("longitude"))
+        region=replace(region,latitudes=[p[1] for p in points],longitudes=[p[2] for p in points])
+        folder=folder/("regional-1-"+signature(payload));folder.mkdir(parents=True,exist_ok=True)
+    predictor = PricePredictor(region, str(folder))
     await predictor.load_from_persistence()
     # Even a cache containing published day-ahead prices may not train on targets.
     predictor.pricestore.horizon_cutoff = start - timedelta(minutes=15)

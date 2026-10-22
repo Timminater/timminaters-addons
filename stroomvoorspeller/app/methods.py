@@ -26,8 +26,12 @@ def epex_version(settings: Mapping) -> str:
     keys = ("epex_tariff_profile", "epex_training_days", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
             "price_source", "price_choice", "tariff_unit", "price_field", "energy_tax_eur_kwh",
             "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
-    digest = hashlib.sha256(json.dumps({k: settings.get(k) for k in keys}, sort_keys=True).encode()).hexdigest()[:12]
-    return VERSIONS["epex"] + ":" + digest
+    values = {k: settings.get(k) for k in keys}
+    if "weather_region" in settings:
+        from .weather_regions import signature
+        values["weather_grid"] = signature(settings)
+    digest = hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()[:12]
+    return VERSIONS["epex"] + ("-regional-1" if "weather_region" in settings else "") + ":" + digest
 
 
 def timestral_version(settings: Mapping) -> str:
@@ -36,7 +40,11 @@ def timestral_version(settings: Mapping) -> str:
     from .timestral_models import model_spec
     size = settings.get("timestral_model", "209M")
     spec = model_spec(size)
-    return "timestral-local-" + size.lower() + ("-calendar-1:" if settings.get("timestral_calendar", False) else "-1:") + spec["revision"][:12] + ":" + digest
+    weather_tag = ""
+    if settings.get("timestral_weather",False):
+        from .weather_regions import signature
+        weather_tag = ":weather-1-"+signature(settings)
+    return "timestral-local-" + size.lower() + ("-calendar-1:" if settings.get("timestral_calendar", False) else "-1:") + spec["revision"][:12] + ":" + digest + weather_tag
 
 
 def configured_version(method: str, settings: Mapping) -> str | None:
@@ -161,7 +169,8 @@ def epex_forecast(history, issued_at, settings, max_points=672, *, runner=None):
         validate_profile_date(settings, issued_at)
     from .local_runtime import run_local
     payload = (runner or run_local)("epex", {"issued_at": issued_at.isoformat(),
-        "training_days": settings.get("epex_training_days", 180), "max_points": max_points}, settings, timeout=600)
+        "training_days": settings.get("epex_training_days", 180), "max_points": max_points,
+        "weather_region": settings.get("weather_region"), "latitude": settings.get("latitude"), "longitude": settings.get("longitude")}, settings, timeout=600)
     known = _prepare_history(history, issued_at, 1)
     points, seen = [], set()
     stop = _quarter_start(issued_at) + max_points * STEP
@@ -187,6 +196,7 @@ def epex_forecast(history, issued_at, settings, max_points=672, *, runner=None):
     return ForecastRun(epex_version(settings), issued_at, sorted(points, key=lambda p: p.start_utc), "voorlopig",
                        ["Lokale EpexPredictor NL single-stage; marktdata Energy-Charts, weerdata Open-Meteo",
                         "NL-model zonder internationale tweede modelstap; prestaties afzonderlijk evalueren",
+                        "Weergebied: "+settings.get("weather_region","upstream NL")+"; Epex gebruikt afzonderlijke kenmerken per punt",
                         "Weer uit lokale cache" if payload.get("weather_cached") else "Weerbron ververst tijdens deze run"])
 
 
@@ -212,14 +222,20 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
     horizon = min(max_points, max(0, int((_quarter_start(issued_at) + max_points * STEP - end) / STEP)))
     if horizon < 1:
         raise ValueError("Alle kwartieren binnen de horizon zijn al bekend")
-    payload = (runner or run_local)("timestral", {"context": context, "prediction_length": horizon, "context_start": begin.isoformat(),
-        "calendar": settings.get("timestral_calendar", False)}, settings, timeout=180)
+    request = {"context": context, "prediction_length": horizon, "context_start": begin.isoformat(),
+        "calendar": settings.get("timestral_calendar", False)}
+    if settings.get("timestral_weather",False):
+        from .timestral_weather import weather_covariates
+        request["weather"] = weather_covariates(settings.get("_weather"),begin,len(context),horizon,issued_at,settings)
+    payload = (runner or run_local)("timestral", request, settings, timeout=180)
     from .timestral_models import model_spec
     spec = model_spec(settings.get("timestral_model", "209M"))
     if payload.get("model") != spec["repo"] or payload.get("revision") != spec["revision"]:
         raise ValueError("Lokale Timestral-module gebruikt niet het ingestelde model")
     if settings.get("timestral_calendar", False) and payload.get("calendar") is not True:
         raise ValueError("Lokale Timestral-module mist de gekozen weekendinformatie")
+    if settings.get("timestral_weather",False) and payload.get("weather") is not True:
+        raise ValueError("Lokale Timestral-module mist de gekozen weerinvoer")
     arrays = [payload.get(key) for key in ("median", "lower", "upper")]
     if any(not isinstance(a, list) or len(a) != horizon for a in arrays):
         raise ValueError("Lokale Timestral-module levert onjuiste voorspellinglengte")
@@ -233,7 +249,8 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
             points.append(ForecastPoint(start, start + STEP, value, lower, upper, source="timestral",
                                        reason="Timestral q10–q90; dekking voor dit tarief nog niet gekalibreerd"))
     return ForecastRun(timestral_version(settings), issued_at, points, "voorlopig",
-                       [spec["repo"].split("/")[-1] + " op prijshistorie; zonder historische weerscovariaten",
+                       [spec["repo"].split("/")[-1] + (" op prijshistorie en regionale weerreeksen" if settings.get("timestral_weather",False) else " op prijshistorie; zonder historische weerscovariaten"),
+                        "Regionale weerkenmerken gebruikt" if settings.get("timestral_weather",False) else "Zonder weerkenmerken",
                         "Expliciete weekendinformatie in Nederlandse tijd" if settings.get("timestral_calendar", False) else "Zonder expliciete kalenderinformatie; weekpatronen uitsluitend uit prijzen",
                         "Minder dan 14 dagen context: beperkte weekendhistorie" if len(context) < 14*96 else "Meerdere weken context beschikbaar",
                         "q10–q90 is modelonzekerheid, geen lokaal bewezen 80%-dekking"])

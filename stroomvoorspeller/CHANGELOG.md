@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.11
+
+- Weergebied instelbaar: één lokale locatie, vier Nederlandse punten (standaard) of tien punten inclusief buurlanden. Adaptief/v4 gebruiken een gebiedsgemiddelde; Epex gebruikt kenmerken per punt en een aparte featurecache.
+- Optionele, standaard uitgeschakelde Timestral-weerkenmerken: historische en toekomstige zon, wind en temperatuur via dezelfde regionale Open-Meteo-aanvraag. Alle vier modelgroottes ondersteund, aparte scoreversie, zonder extra gewichten te downloaden.
+- Gedeelde, persistente Open-Meteo-cache en aanvraaglimieten voor app en Epex-processen. Actuele datasets minimaal drie uur hergebruikt, historische ranges dertig dagen; fouten tellen mee, 429/503 pauzeren aanvragen en respecteren Retry-After. Herstarten en handmatig rekenen omzeilen de limieten niet.
+- Historische weerinvoer voor adaptief/v4 en Timestral gebruikt uitsluitend toen opgeslagen snapshots; ontbrekende oude verwachtingen worden niet door actueel weer vervangen. Geen gegarandeerde nauwkeurigheidswinst door meer locaties.
+
 ## 0.2.10
 
 - Historische tabel en vergelijkingsgrafieken tonen nu aparte horizons voor elke dag tot zeven dagen vooruit.

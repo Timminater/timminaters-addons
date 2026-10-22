@@ -179,6 +179,8 @@ class AppService:
         value.setdefault("tariff_valid_from", "")
         value.setdefault("tariff_valid_to", "")
         value.setdefault("weather_source", "open_meteo")
+        value.setdefault("weather_region", "nl")
+        value.setdefault("timestral_weather", False)
         value.setdefault("weather_entities", {"solar": "", "wind": "", "temperature": ""})
         value.setdefault("latitude", None); value.setdefault("longitude", None)
         value.setdefault("calculation_interval_minutes", DEFAULT_INTERVAL_MINUTES)
@@ -210,13 +212,15 @@ class AppService:
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
                    "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
-                   "timestral_model", "timestral_calendar", "timestral_context_days", "history_days"}
+                   "timestral_model", "timestral_calendar", "timestral_context_days", "history_days", "weather_region", "timestral_weather"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
         from .timestral_models import model_spec
         model_spec(merged["timestral_model"])
+        if type(merged["timestral_weather"]) is not bool: raise ValueError("Timestral-weer moet aan of uit staan")
+        if merged["weather_region"] not in {"local","nl","europe"}: raise ValueError("Kies een geldig weergebied")
         if type(merged["timestral_calendar"]) is not bool:
             raise ValueError("Timestral-weekendinformatie moet aan of uit staan")
         from .methods import METHODS
@@ -294,6 +298,11 @@ class AppService:
                 raise ValueError("Vul een geldige periode voor de tariefcomponenten in") from exc
             if supplier == "tibber" and not fee_confirmed:
                 raise ValueError("Controleer en bevestig of Tibbers tariefvoorstel bij jouw contract past")
+        if merged["weather_region"] == "local":
+            from .weather_regions import locations
+            locations("local", merged.get("latitude"), merged.get("longitude"))
+        if merged["timestral_weather"] and merged["forecast_methods"]["timestral"] and merged.get("weather_source") != "open_meteo":
+            raise ValueError("Kies Open-Meteo voor Timestral met weer; HA mist de benodigde historische weerreeks")
         source = merged.get("weather_source")
         if source not in {"open_meteo", "ha"}:
             raise ValueError("Weerbron moet Open-Meteo of Home Assistant zijn")
@@ -322,7 +331,7 @@ class AppService:
                "weather_source": source, "weather_entities": cleaned_entities, "latitude": lat, "longitude": lon,
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
         for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_profile", "epex_tariff_confirmed",
-                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_calendar", "timestral_context_days", "history_days"):
+                    "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_calendar", "timestral_context_days", "history_days", "weather_region", "timestral_weather"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
@@ -522,8 +531,10 @@ class AppService:
             old_payload = old["payload"]
             matches = old_payload.get("source") == expected_source
             if expected_source == "open_meteo":
-                matches = matches and old_payload.get("location") == {"latitude": settings.get("latitude"),
-                                                                         "longitude": settings.get("longitude")}
+                matches = matches and old_payload.get("profile") == settings["weather_region"]
+                if settings["weather_region"]=="local" or self.open_meteo_fetcher is not fetch_open_meteo:
+                    matches = matches and old_payload.get("location") == {"latitude": settings.get("latitude"),
+                                                                             "longitude": settings.get("longitude")}
             else:
                 matches = matches and old_payload.get("entities") == settings.get("weather_entities")
             if not matches:
@@ -539,7 +550,7 @@ class AppService:
             if old and now - parse_dt(old["issued_at"]) < WEATHER_MAX_AGE:
                 return old["payload"]
             lat, lon = settings.get("latitude"), settings.get("longitude")
-            if lat is None or lon is None:
+            if (lat is None or lon is None) and settings["weather_region"] == "local":
                 suggestion = self._suggested_coordinates()
                 if suggestion:
                     raise WeatherError("Bevestig de voorgestelde HA-coördinaten in Instellingen voor Open-Meteo")
@@ -548,7 +559,11 @@ class AppService:
             # switching HA/Open-Meteo or restarting cannot bypass the hourly cap.
             self.store.save_snapshot(now, "weather_attempt:open_meteo",
                                      {"location": {"latitude": lat, "longitude": lon}})
-            snapshot = self.open_meteo_fetcher(lat, lon, now)
+            if self.open_meteo_fetcher is fetch_open_meteo:
+                from .weather import fetch_regional_weather
+                snapshot = fetch_regional_weather(settings["weather_region"],lat,lon,now,self.store.data_dir)
+            else: snapshot = self.open_meteo_fetcher(lat, lon, now)
+            snapshot["profile"] = settings["weather_region"]
             snapshot["location"] = {"latitude": lat, "longitude": lon}
             return snapshot
         snapshot = fetch_ha_weather(self.ha, settings.get("weather_entities") or {}, now)
@@ -664,7 +679,7 @@ class AppService:
             try:
                 prior_weather = self.store.latest_snapshot("weather", successful_only=True)
                 weather = (self._weather_snapshot(settings, now, force_weather)
-                           if any(settings["forecast_methods"][m] for m in ("local", "v4")) else None)
+                           if any(settings["forecast_methods"][m] for m in ("local", "v4")) or (settings["forecast_methods"]["timestral"] and settings["timestral_weather"] and settings["weather_source"] == "open_meteo") else None)
                 weather_is_new = bool(weather) and (not prior_weather or
                     weather.get("observed_at") != prior_weather["payload"].get("observed_at"))
                 if weather_is_new:
@@ -677,8 +692,14 @@ class AppService:
                 self.store.set_source_status("weather", success=False, attempted_at=now, error=str(exc),
                                              detail={"source": settings.get("weather_source")})
                 old = self.store.latest_snapshot("weather", successful_only=True)
-                if old:
-                    weather = old["payload"]
+                if old and now-parse_dt(old["payload"].get("observed_at",old["issued_at"])) <= timedelta(hours=6):
+                    cached=old["payload"]
+                    matches=cached.get("source")==settings["weather_source"]
+                    if settings["weather_source"]=="open_meteo":
+                        matches=matches and cached.get("profile")==settings["weather_region"]
+                        if settings["weather_region"]=="local": matches=matches and cached.get("location")=={"latitude":settings["latitude"],"longitude":settings["longitude"]}
+                    else: matches=matches and cached.get("entities")==settings["weather_entities"]
+                    if matches: weather=cached
 
             archive_entity = self._archive_entity(entity, settings)
             history = [row for row in self.store.quarters(archive_entity, start=now - timedelta(days=settings["history_days"]), as_of=now)
@@ -765,7 +786,8 @@ class AppService:
                 "updated_at": run["issued_at"] if run else None,
                 "model_version": run["model_version"] if run else None,
                 "method": {"id": settings["active_method"], "enabled": settings["forecast_methods"].get(settings["active_method"], False),
-                           "timestral_model": settings.get("timestral_model") if settings["active_method"] == "timestral" else None},
+                           "timestral_model": settings.get("timestral_model") if settings["active_method"] == "timestral" else None,
+                           "weather_region": (run.get("inputs",{}).get("weather_region") or (run.get("inputs",{}).get("weather_snapshot") or {}).get("profile")) if run else None},
                 "archive": archive,
                 "source": {"tariff_entity": entity, "price_field": settings.get("price_field"),
                            "price_source": settings.get("price_source"),
@@ -851,7 +873,8 @@ class AppService:
     def _runtime_settings(self, settings, method):
         return {**settings, "_data_dir": str(self.store.data_dir),
                 "_cancel": lambda: self._stop.is_set() or not self.get_settings()["forecast_methods"].get(method)
-                or (method == "timestral" and (self.get_settings()["timestral_model"] != settings["timestral_model"] or self.get_settings()["timestral_calendar"] != settings["timestral_calendar"]))}
+                or self.get_settings()["weather_region"] != settings["weather_region"]
+                or (method == "timestral" and (self.get_settings()["timestral_model"] != settings["timestral_model"] or self.get_settings()["timestral_calendar"] != settings["timestral_calendar"] or self.get_settings()["timestral_weather"] != settings["timestral_weather"]))}
 
     def timestral_status(self, model=None):
         from .local_runtime import timestral_status
@@ -863,7 +886,7 @@ class AppService:
             "local": lambda: adaptive_forecast(history, now, used_weather, price_scale=scale, base=_load_forecaster()),
             "v4": lambda: _load_forecaster()(history, issued_at=now, weather=used_weather, price_scale=scale),
             "epex": lambda: epex_forecast(history, now, self._runtime_settings(settings, "epex")),
-            "timestral": lambda: timestral_forecast(history, now, self._runtime_settings(settings, "timestral")),
+            "timestral": lambda: timestral_forecast(history, now, {**self._runtime_settings(settings, "timestral"), "_weather": weather}),
         }
         unit = settings.get("tariff_unit") or ((history[-1].get("unit") if history else None) or "EUR/MWh").replace("€/", "EUR/")
         scale = 1000.0 if unit == "EUR/kWh" else 1.0
@@ -902,11 +925,18 @@ class AppService:
                     if r.get("quality", "valid") in {"valid", "published"}}
                 points = [p for p in _field(run, "points", [])
                           if utc_iso(_field(p, "start_utc")) not in known_starts]
+                weather_for_run=weather if method in {"local","v4"} or (method=="timestral" and settings["timestral_weather"]) else None
+                if weather_for_run and not (method=="timestral" and settings["timestral_weather"]):
+                    weather_for_run={**weather,"hourly":{t:v for t,v in weather.get("hourly",{}).items() if parse_dt(t)>=now.replace(minute=0,second=0,microsecond=0)}}
                 inputs = {"tariff_entity": entity, "tariff_unit": settings["tariff_unit"],
                           "price_field": settings["price_field"], "method": method, "evaluation_mode": "live",
-                          "weather_snapshot": weather, "weather_model": used_weather, "price_scale": scale,
+                          "weather_snapshot": weather_for_run, "weather_model": used_weather if method in {"local","v4"} else None, "price_scale": scale,
+                          "weather_region": settings["weather_region"] if method=="epex" else (weather_for_run or {}).get("profile"), "timestral_weather": settings["timestral_weather"],
                           "history": history, "signature": signature}
                 version = _field(run, "model_version", "unknown")
+                if method in {"local","v4"} and weather and weather.get("profile") in {"nl","europe"}:
+                    from .weather_regions import signature as region_signature
+                    version += ":regional-1-"+region_signature(settings)
                 quality = _field(run, "quality", "voorlopig")
                 self.store.save_forecast(str(uuid.uuid4()), now, version, quality,
                     [*_field(run, "reasons", []), *extra_reasons], inputs,

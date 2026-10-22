@@ -184,6 +184,7 @@ def export_archive(service, days=30):
                            'quality': row['quality'], 'method': inputs.get('method', 'local'),
                            'evaluation_mode': inputs.get('evaluation_mode', 'live'),
                            'test_horizon_hours': inputs.get('test_horizon_hours'),
+                           'weather_region': inputs.get('weather_region'), 'timestral_weather': inputs.get('timestral_weather', False),
                            'unit': inputs.get('tariff_unit'), 'price_field': inputs.get('price_field', 'tax_included'),
                            'series_id': alias(price_archive_key(inputs.get('tariff_entity', ''), inputs.get('price_field', 'tax_included'), inputs.get('tariff_unit'))),
                            'weather_snapshot': weather(inputs.get('weather_snapshot')), 'weather_model': weather(inputs.get('weather_model'))}
@@ -194,7 +195,7 @@ def export_archive(service, days=30):
             settings = {row['key']: json.loads(row['value_json']) for row in db.execute('SELECT key,value_json FROM settings')}
             allowed = ('price_source', 'price_choice', 'supplier', 'tariff_unit', 'price_field', 'energy_tax_eur_kwh', 'vat_percent',
                        'supplier_fee_eur_kwh_incl_vat', 'tariff_valid_from', 'tariff_valid_to', 'forecast_methods', 'active_method',
-                       'timestral_model', 'timestral_calendar', 'timestral_context_days', 'epex_training_days', 'epex_tariff_profile', 'epex_multiplier',
+                       'weather_region', 'timestral_weather', 'timestral_model', 'timestral_calendar', 'timestral_context_days', 'epex_training_days', 'epex_tariff_profile', 'epex_multiplier',
                        'epex_offset_eur_kwh', 'history_days', 'calculation_interval_minutes')
             archive.writestr('settings.json', json.dumps({key: settings[key] for key in allowed if key in settings}))
             archive.writestr('README.txt', 'Stroomvoorspeller analyse-export\n\nJSONL: een JSON-record per regel; timestamps zijn UTC.\nKoppel forecast_points.run_id aan forecast_runs.id. Koppel werkelijke prijzen aan forecast_runs.series_id en forecast_points.start_utc. Gebruik quarter_price_revisions met observed_at/published_at voor een as-of reconstructie. Prijswaarden en banden gebruiken de unit van de run/reeks (EUR/kWh of EUR/MWh). Live en historical niet mengen.\nModelinvoerhistorie is niet per run gedupliceerd: prijsdata bevat 90 extra dagen lookback. Volledige reproduceerbaarheid is niet gegarandeerd als brondata eerder is verwijderd. Instellingen zijn de huidige instellingen, geen configuratiehistorie. Geen ruwe database, snapshots, tokens, locatiecoordinaten, modelgewichten of originele entiteitsnamen. De export kan nog persoonlijke patronen bevatten.\nDeze ZIP is tijdelijk lokaal gemaakt en wordt niet automatisch verstuurd.\n')

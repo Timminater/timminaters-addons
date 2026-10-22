@@ -171,6 +171,33 @@ def model_weather(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"hourly": {}}
     for stamp, values in (snapshot.get("hourly") or {}).items():
+        if snapshot.get("observed_at") and parse_dt(stamp) < parse_dt(snapshot["observed_at"]).replace(minute=0,second=0,microsecond=0): continue
         result["hourly"][stamp] = {"shortwave_radiation": values.get("solar_wm2"),
                                   "wind_ms_10m": values.get("wind_ms"), "temp_c": values.get("temp_c")}
     return result
+
+
+def fetch_regional_weather(profile, latitude, longitude, now, data_dir):
+    """One batch for the grid. 35 past days permit Timestral weather context."""
+    from .weather_regions import locations
+    from .weather_cache import cached_json
+    points=locations(profile,latitude,longitude)
+    query=urllib.parse.urlencode({'latitude':','.join(str(p[1]) for p in points),
+        'longitude':','.join(str(p[2]) for p in points),'hourly':'shortwave_radiation,wind_speed_10m,temperature_2m',
+        'past_days':35,'forecast_days':8,'timezone':'UTC','wind_speed_unit':'ms'})
+    data,fetched=cached_json(OPEN_METEO_URL+'?'+query,data_dir)
+    payloads=data if isinstance(data,list) else [data]
+    if len(payloads)!=len(points): raise WeatherError('Weerbron mist locaties; geen gedeeltelijk gebied gebruikt')
+    observed=datetime.fromtimestamp(fetched,UTC)
+    parsed=[]
+    for payload in payloads:
+        units=payload.get('hourly_units') or {}
+        if units.get('shortwave_radiation') not in {'W/m²','W/m2'} or units.get('wind_speed_10m')!='m/s' or units.get('temperature_2m')!='°C':
+            raise WeatherError('Regionale weerbron retourneerde onverwachte eenheden')
+        parsed.append(_hours_from_arrays(payload,'shortwave_radiation','wind_speed_10m','temperature_2m',now,'open_meteo')['hourly'])
+    shared=set.intersection(*(set(p) for p in parsed))
+    hourly={stamp:{key:sum(p[stamp][key] for p in parsed)/len(parsed) for key in ('solar_wm2','wind_ms','temp_c')} for stamp in sorted(shared)}
+    _validate_coverage(hourly,now)
+    return {'source':'open_meteo','profile':profile,'locations':[{'name':n,'latitude':lat,'longitude':lon} for n,lat,lon in points],
+        'observed_at':observed.isoformat().replace('+00:00','Z'),'hourly':hourly,
+        'aggregation':'Ongewogen gemiddelde van alle punten; geen geschatte productiegewichten'}

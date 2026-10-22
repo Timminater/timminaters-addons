@@ -175,8 +175,8 @@
     const enabled = data.method?.enabled ?? state.settings?.forecast_methods?.[method];
     setText('shown-model', shown);
     setText('shown-quality', data.quality?.label || 'Voorlopig');
-    setText('shown-model-state', enabled === false ? 'Uitgeschakeld · alleen bekende tarieven' : data.updated_at ? `Dit model levert de prognose in de grafiek en voor MQTT.${method === 'timestral' ? data.model_version?.includes('-calendar-1:') ? ' Weekendinformatie: aan.' : ' Zonder expliciete weekendinformatie.' : ''}` : 'Geselecteerd · nog geen prognose beschikbaar');
-    setText('shown-model-issued', data.updated_at ? `Uitgegeven ${humanTime(data.updated_at, true)}` : 'Bekende tarieven blijven zichtbaar zonder modelberekening.');
+    setText('shown-model-state', enabled === false ? 'Uitgeschakeld · alleen bekende tarieven' : data.updated_at ? `Dit model levert de prognose in de grafiek en voor MQTT.${method === 'timestral' ? data.model_version?.includes('-calendar-1:') ? ' Weekendinformatie: aan.' : ' Zonder expliciete weekendinformatie.' : ''}${method === 'timestral' ? data.model_version?.includes(':weather-1-') ? ' Regionale weerinvoer: aan.' : ' Zonder weerinvoer.' : ''}` : 'Geselecteerd · nog geen prognose beschikbaar');
+    setText('shown-model-issued', data.updated_at ? `Uitgegeven ${humanTime(data.updated_at, true)}${data.method?.weather_region ? ' · Weergebied: ' + ({local:'lokaal',nl:'Nederland (4 punten)',europe:'Nederland en buurlanden (10 punten)'}[data.method.weather_region] || data.method.weather_region) : ''}` : 'Bekende tarieven blijven zichtbaar zonder modelberekening.');
     setText('chart-model', data.updated_at ? `Prognose: ${shown}` : enabled === false ? 'Alleen bekende tarieven' : `Geselecteerd: ${shown} · wacht op prognose`);
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
     setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || describePriceSource(data.source || {})); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', data.source?.price_source === 'energy_charts_nl' && current.status === 'known' ? 'Bekende marktprijs' : current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
@@ -320,7 +320,7 @@
     const targets = [['tariff-entity', e => e.domain === 'sensor'], ['solar-entity', e => e.domain === 'sensor'], ['wind-entity', e => e.domain === 'sensor'], ['temperature-entity', e => e.domain === 'sensor']];
     for (const [id, filter] of targets) { const select = $(id); const selected = select.value; select.replaceChildren(); const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = id === 'tariff-entity' ? 'Kies een kwartiertariefsensor' : 'Kies een entiteit'; select.append(prompt); for (const entity of state.entities.filter(filter)) select.append(optionFor(entity)); if (selected) select.value = selected; }
   }
-  function setWeatherFields() { const ha = document.querySelector('input[name="weather_mode"]:checked')?.value === 'ha'; show('ha-weather-fields', ha); show('open-meteo-fields', !ha); }
+  function setWeatherFields() { const ha = document.querySelector('input[name="weather_mode"]:checked')?.value === 'ha'; show('ha-weather-fields', ha); show('open-meteo-fields', $('weather-region').value === 'local'); }
   async function openSettings() {
     if (state.settingsOpening) return;
     state.settingsOpening = true; state.promptedConfig = true;
@@ -365,6 +365,8 @@
     $('epex-multiplier').value = s.epex_multiplier ?? 1;
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
+    $('weather-region').value = s.weather_region || 'nl';
+    $('timestral-weather').checked = s.timestral_weather === true;
     $('timestral-calendar').checked = s.timestral_calendar !== false;
     $('timestral-model').value = s.timestral_model || '28M';
     updateTimestralModel();
@@ -397,6 +399,8 @@
     settings.epex_multiplier = Number($('epex-multiplier').value);
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
+    settings.weather_region = $('weather-region').value;
+    settings.timestral_weather = $('timestral-weather').checked;
     settings.timestral_calendar = $('timestral-calendar').checked;
     settings.timestral_model = $('timestral-model').value;
     settings.timestral_context_days = Number($('timestral-context').value);
@@ -591,6 +595,7 @@
     $('history-test').addEventListener('click', testHistory);
     for (const id of ['comparison-mode', 'comparison-horizon', 'comparison-days', 'compare-local', 'compare-v4', 'compare-epex', 'compare-timestral']) $(id).addEventListener('change', () => { state.comparison = null; $('comparison-chart').replaceChildren(); $('performance-bars').replaceChildren(); setText('comparison-context', 'Vergelijking laden…'); loadMethods().catch(error => { setText('comparison-warning', error.message); show('comparison-warning', true); }); });
     $('comparison-chart-kind').addEventListener('change', renderPerformanceChart);
+    $('weather-region').addEventListener('change', setWeatherFields);
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
