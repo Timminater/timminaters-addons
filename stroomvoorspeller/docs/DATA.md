@@ -40,3 +40,5 @@ Er wordt niets automatisch verstuurd. Upload de ZIP zelf in de chat om voorspelf
 Gebruik deze endpoints via de bestaande Home Assistant-ingress. Er is geen extra poort of externe opslagdienst nodig.
 
 Vanaf 0.2.11 bevat een run ook het opgeslagen weergebied en de Timestral-weerkeuze waar beschikbaar. Regionale uurwaarden blijven bruikbaar voor analyse; exacte locatiecoördinaten blijven uitgesloten. De gedeelde Open-Meteo-payloadcache telt mee onder Overig, wordt automatisch begrensd en het blijvende aanvraagbudget wordt niet gewist door Epex-cache opruimen.
+
+Historische runs met opgehaald GFS-archiefweer bevatten vanaf 0.2.12 een reconstructievlag en een eigen modelversie. De export bewaart de initialisatietijd van de oude weersmodelrun en de gesimuleerde uitgifte, zonder locatiecoördinaten. De cache van historische context en Single Runs deelt de blijvende Open-Meteo-limieten met de overige weerbronnen.

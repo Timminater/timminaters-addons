@@ -14,12 +14,25 @@ def validate_covariates(rows,context,horizon):
 
 
 def weather_covariates(snapshot,begin,context,horizon,issue,settings):
-    if not snapshot or snapshot.get('source')!='open_meteo' or snapshot.get('profile')!=settings.get('weather_region','nl'):
-        raise ValueError('Timestral met weer vereist passende regionale Open-Meteo-data; kies Open-Meteo of zet Timestral-weer uit')
+    if settings.get('weather_source','open_meteo')!='open_meteo':
+        raise ValueError('Timestral met weer gebruikt Open-Meteo; de ingestelde weerbron is Home Assistant')
+    if not snapshot:
+        detail=settings.get('_weather_error') or 'Er is nog geen bruikbare weersnapshot beschikbaar voor deze berekening'
+        raise ValueError('Geen actuele Open-Meteo-weerdata voor Timestral: '+detail)
+    if snapshot.get('source')!='open_meteo':
+        raise ValueError('De beschikbare weersnapshot komt niet van Open-Meteo; deze wordt niet voor Timestral gebruikt')
+    if snapshot.get('profile')!=settings.get('weather_region','nl'):
+        raise ValueError('Open-Meteo-cache hoort bij een ander weergebied; verwacht '+settings.get('weather_region','nl'))
     if snapshot.get('profile')=='local' and snapshot.get('location')!={'latitude':settings.get('latitude'),'longitude':settings.get('longitude')}:
         raise ValueError('Timestral-weerlocatie komt niet overeen')
     observed=datetime.fromisoformat(snapshot['observed_at'].replace('Z','+00:00'))
-    if observed>issue+timedelta(minutes=5) or issue-observed>timedelta(hours=6):
+    reconstructed=snapshot.get('reconstruction') is True
+    if reconstructed:
+        run=datetime.fromisoformat(snapshot['weather_run'].replace('Z','+00:00'))
+        for_issue=datetime.fromisoformat(snapshot['issued_for'].replace('Z','+00:00'))
+        if settings.get('_historical_weather_reconstruction') is not True or for_issue!=issue or run>issue-timedelta(hours=12):
+            raise ValueError('Gereconstrueerd archiefweer is uitsluitend voor de juiste historische uitgifte toegestaan')
+    elif observed>issue+timedelta(minutes=5) or issue-observed>timedelta(hours=6):
         raise ValueError('Geen passende weersverwachting van rond deze uitgifte; historische weerdata wordt niet verzonnen')
     keys=('solar_wm2','wind_ms','temp_c');rows=[[],[],[]]
     for i in range(context+horizon):

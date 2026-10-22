@@ -153,6 +153,12 @@ def export_archive(service, days=30):
                 except (ValueError, TypeError): continue
                 result[stamp] = {key: numeric(row[key]) for key in ('solar_wm2', 'wind_ms', 'temp_c', 'shortwave_radiation', 'wind_ms_10m') if key in row}
             cleaned = {'hourly': result}
+            if value.get('reconstruction') is True: cleaned['reconstruction']=True
+            if value.get('archive_kind')=='single_run_gfs': cleaned['archive_kind']='single_run_gfs'
+            for field in ('weather_run','issued_for'):
+                if value.get(field):
+                    try: cleaned[field]=utc_iso(value[field])
+                    except (ValueError,TypeError): pass
             if value.get('observed_at'):
                 try: cleaned['observed_at'] = utc_iso(value['observed_at'])
                 except (ValueError, TypeError): pass
@@ -184,7 +190,7 @@ def export_archive(service, days=30):
                            'quality': row['quality'], 'method': inputs.get('method', 'local'),
                            'evaluation_mode': inputs.get('evaluation_mode', 'live'),
                            'test_horizon_hours': inputs.get('test_horizon_hours'),
-                           'weather_region': inputs.get('weather_region'), 'timestral_weather': inputs.get('timestral_weather', False),
+                           'weather_reconstruction': inputs.get('weather_reconstruction',False), 'weather_region': inputs.get('weather_region'), 'timestral_weather': inputs.get('timestral_weather', False),
                            'unit': inputs.get('tariff_unit'), 'price_field': inputs.get('price_field', 'tax_included'),
                            'series_id': alias(price_archive_key(inputs.get('tariff_entity', ''), inputs.get('price_field', 'tax_included'), inputs.get('tariff_unit'))),
                            'weather_snapshot': weather(inputs.get('weather_snapshot')), 'weather_model': weather(inputs.get('weather_model'))}

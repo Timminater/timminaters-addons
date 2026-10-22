@@ -256,12 +256,41 @@ Weer aan/uit en gebied krijgen eigen Timestral-scoreversies. Nieuwe regionale
 adaptief/v4-runs hebben een versieachtervoegsel en Epex heeft een nieuwe
 feature-identiteit. Oude prognoses blijven opgeslagen.
 
-Historische tests voor adaptief/v4 en Timestral zoeken uitsluitend snapshots die
-vóór de gesimuleerde uitgifte waren opgeslagen, van het juiste gebied en hooguit
-zes uur oud. Oude installaties zonder zulke verwachtingen kunnen Timestral met
-weer niet eerlijk reconstrueren: de taak meldt dat per uitgifte. Schakel voor
-een prijsreeksvergelijking de weeroptie tijdelijk uit. Adaptief/v4 zonder zo'n
-snapshot blijven expliciet de oude berekening zonder regionale weersinvoer.
+Historische tests zoeken eerst passende snapshots die vóór de gesimuleerde
+uitgifte waren opgeslagen, van het juiste gebied en hooguit zes uur oud.
+Vanaf 0.2.12 kun je ontbrekende snapshots laten ophalen via het weerarchief,
+voor 1, 4 of 10 punten. De UI kiest standaard **Ontbrekend historisch weer
+ophalen (reconstructie)**; **Alleen destijds opgeslagen verwachtingen** blijft
+beschikbaar. De API kiest zonder parameter nog steeds alleen opgeslagen weer.
+
+Het archief gebruikt de [Open-Meteo Single Runs API](https://open-meteo.com/en/docs/single-runs-api)
+met `models=gfs_global`: een specifieke modelrun die minimaal twaalf uur vóór
+de gesimuleerde uitgifte geïnitialiseerd is. Daardoor wordt toekomstig weer
+voor de test niet vervangen door achteraf gemeten weer. Timestral krijgt
+historische context uit het GFS Historical Forecast Archive; alleen uren vóór
+de gekozen modelrun worden daarvan gebruikt. Vanaf die run komen alle waarden
+uit diens verwachting. Maximaal 35 dagen historische weercontext wordt vooraf
+in één gebiedsaanvraag opgehaald en tussen uitgiftes hergebruikt.
+
+Dit blijft een reconstructie: het GFS-model kan verschillen van het live
+Best Match-model en de oorspronkelijke beschikbaarheid op Open-Meteo is niet
+volledig bewezen door alleen de initialisatietijd. De conservatieve twaalfuurmarge
+is een benadering. De Single Runs-bron archiveert GFS vanaf april 2026; bij
+ontbrekende runs, locaties of variabelen worden geen weerwaarden verzonnen.
+Archiefweer wordt niet als live weersnapshot opgeslagen en mag uitsluitend bij
+de bijbehorende historische uitgifte naar Timestral. Het achtervoegsel
+`:weather-archive-gfs-1` houdt de scoreversie apart en de UI vermeldt **archiefweer**.
+De oorspronkelijke opgeslagen variant en archiefvariant worden niet binnen één
+scoreversie gemengd; deze historische scores tellen niet mee voor live kalibratie.
+
+Bij alleen opgeslagen weer worden ontbrekende Timestral-uitgiftes expliciet
+overgeslagen, zonder te adviseren een al correct ingestelde bron te veranderen.
+Bij archieffouten tonen de taakstatus en overgeslagen uitgiftes de bronfout.
+Adaptief/v4 zonder bruikbare oorspronkelijke of aangevraagde archiefinvoer houden
+de bestaande berekening zonder weer. Alle API-aanvragen gebruiken dezelfde cache
+en limieten. De achtergrondtaak wacht kort bij een volle minuutlimiet; een
+opgelegde afkoelperiode of daglimiet wordt niet omzeild.
+
 Epex houdt zijn al bestaande gereconstrueerde historische weerbron; die scores
 zijn geen bewijs met oorspronkelijke datavintages.
 
@@ -294,9 +323,11 @@ kunnen delen. Bij nieuwe gebieden of de eerste Epex-training kan het initiële
 historiebereik meerdere begrensde aanvragen vereisen. Providers kunnen alsnog
 een eigen blokkade of lagere limiet toepassen; de app probeert dan niet door.
 
-`POST /api/history-test?horizon_hours=168` start de zevendaagse reconstructie;
+`POST /api/history-test?horizon_hours=168&weather=archive` start de zevendaagse reconstructie met archiefaanvulling. `weather=stored` (API-standaard) gebruikt alleen destijds opgeslagen verwachtingen;
 `horizon_hours=48` is de lichtere variant en blijft de API-standaard. Alleen
-48 en 168 zijn toegestaan. De taakstatus vermeldt `horizon_hours`. Oude
+48 en 168 zijn toegestaan. De taakstatus vermeldt `horizon_hours` en `weather_mode`. Oude
 48-uursruns behouden ontbrekende scores voor dag 3–7; daarvoor is een nieuwe
 test nodig. De methodecijfers blijven eigen doelsets gebruiken; voor een
 onderlinge rangorde gebruikt de grafiek exact gedeelde uitgiftes en doelen.
+
+Vanaf 0.2.12 wordt de productiecache voor een nieuw gekozen gebied direct geraadpleegd. De oude extra uurblokkering kan daarvoor geen lege snapshot meer teruggeven. De gedeelde cache beslist zelf of een netwerkverzoek nodig en toegestaan is; terugschakelen naar een eerder gebied hergebruikt de bestaande dataset. Bronfouten worden aan de live Timestral-status doorgegeven en afkoeling vermeldt de reden en resterende minuten.

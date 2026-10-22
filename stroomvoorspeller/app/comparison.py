@@ -17,6 +17,7 @@ from .storage import utc_iso
 UTC = timezone.utc
 HORIZONS = {f"{low}-{low+24}u": (low, low+24) for low in range(0,168,24)}
 HORIZONS["48-168u"] = (48,168)
+WEATHER_ARCHIVE_VERSION = ":weather-archive-gfs-1"
 
 
 def _dt(value):
@@ -54,6 +55,10 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
             latest, _ = service.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"],
                                                       method=method, evaluation_mode=mode,
                 model_version=configured_version(method, settings)) if entity else (None, [])
+            if entity and mode=="historical" and method=="timestral" and settings["timestral_weather"]:
+                archived,_=service.store.latest_forecast(entity,settings["price_field"],settings["tariff_unit"],
+                    method=method,evaluation_mode=mode,model_version=configured_version(method,settings)+WEATHER_ARCHIVE_VERSION)
+                if archived and (not latest or archived["issued_at"]>latest["issued_at"]): latest=archived
             version = latest["model_version"] if latest else None
             runs = service.store.daily_stored_forecasts(entity, now - timedelta(days=lookback_days), now,
                 settings["price_field"], settings["tariff_unit"], method=method,
@@ -83,7 +88,8 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
                         if low <= hours < high: buckets[name].append(pair)
             maps[mode][method] = scored
             item[mode] = {**_scores(scored.values()), "version": version, "days": len(days),
-                          "horizons": [{"horizon": k, **_scores(v)} for k, v in buckets.items()]}
+                          "horizons": [{"horizon": k, **_scores(v)} for k, v in buckets.items()],
+                          "weather_reconstruction": bool(version and version.endswith(WEATHER_ARCHIVE_VERSION))}
         result["methods"].append(item)
     for mode, methods in maps.items():
         available = [key for key, values in methods.items() if values and settings["forecast_methods"][key]]
@@ -124,7 +130,7 @@ def comparison_view(result, maps, mode, horizon, selected, days):
                 if low <= (_dt(key[1])-_dt(key[0])).total_seconds()/3600 < high} for m in selected}
     available = [m for m in selected if rows[m]]
     shared = set.intersection(*(set(rows[m]) for m in available)) if available else set()
-    metrics = [{"id": m, "label": methods[m]["label"], "version": methods[m][mode]["version"],
+    metrics = [{"id": m, "label": methods[m]["label"]+(" · archiefweer" if mode=="historical" and methods[m][mode].get("weather_reconstruction") else ""), "version": methods[m][mode]["version"],
                 **_scores(rows[m][key] for key in shared)} for m in available]
     daily = {}
     latest = {}
@@ -145,10 +151,11 @@ def comparison_view(result, maps, mode, horizon, selected, days):
             "notice": "Dezelfde uitgiftetijd en doelkwartieren per methode; bij meerdere uitgiftes wordt in de prijsgrafiek de nieuwste gezamenlijke gekozen. Overlappende doelen zijn geen onafhankelijke metingen."}
 
 
-def start_history_test(service, horizon_hours=48):
+def start_history_test(service, horizon_hours=48, weather_mode="stored"):
     """Single bounded job; up to seven daily issues, 48h or 168h each."""
     if type(horizon_hours) is not int or horizon_hours not in {48,168}:
         raise ValueError("Kies 48 of 168 uur voor de historische test")
+    if weather_mode not in {"stored","archive"}: raise ValueError("Kies opgeslagen verwachtingen of weerarchief")
     with service._history_job_lock:
         if service._history_thread and service._history_thread.is_alive():
             return dict(service._history_job)
@@ -165,14 +172,14 @@ def start_history_test(service, horizon_hours=48):
         required_days = 14 + horizon_hours//24
         if not rows or _dt(rows[-1]["end_utc"]) - _dt(rows[0]["start_utc"]) < timedelta(days=required_days):
             raise ValueError(f"Minimaal {required_days} dagen echte kwartierhistorie nodig voor {horizon_hours} uur; vernieuw eerst de prijsbron of kies 48 uur")
-        service._history_job = {"state": "running", "completed": 0, "total": 0, "errors": [], "methods": methods, "horizon_hours": horizon_hours}
+        service._history_job = {"state": "running", "completed": 0, "total": 0, "errors": [], "skipped": [], "methods": methods, "horizon_hours": horizon_hours, "weather_mode":weather_mode}
         service._history_thread = threading.Thread(target=_history_worker,
-            args=(service, settings, entity, rows, now, methods, horizon_hours), daemon=True, name="forecast-history")
+            args=(service, settings, entity, rows, now, methods, horizon_hours, weather_mode), daemon=True, name="forecast-history")
         service._history_thread.start()
         return dict(service._history_job)
 
 
-def _history_worker(service, settings, entity, rows, now, methods, horizon_hours):
+def _history_worker(service, settings, entity, rows, now, methods, horizon_hours, weather_mode):
     job = service._history_job
     try:
         first = _dt(rows[0]["start_utc"]) + timedelta(days=14)
@@ -181,7 +188,22 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
         issues = [last - timedelta(days=d) for d in reversed(range(7)) if last - timedelta(days=d) >= first]
         job["total"] = len(issues) * len(methods)
         scale = 1000 if settings["tariff_unit"] == "EUR/kWh" else 1
+        needs_archive=weather_mode=="archive" and settings["weather_source"]=="open_meteo" and (
+            any(m in methods for m in ("local","v4")) or ("timestral" in methods and settings["timestral_weather"]))
+        weather_context=None
+        if needs_archive and issues and "timestral" in methods and settings["timestral_weather"]:
+            from .weather import fetch_weather_context
+            try:
+                weather_context=fetch_weather_context(settings["weather_region"],settings["latitude"],settings["longitude"],
+                    issues[0]-timedelta(days=min(35,settings["timestral_context_days"])),issues[-1]-timedelta(hours=12),
+                    now,service.store.data_dir,service._stop)
+            except Exception as exc:
+                job["errors"].append({"method":"historisch weer","message":str(exc)})
         for issue in issues:
+            current=service.get_settings()
+            if service._stop.is_set() or current["weather_region"]!=settings["weather_region"] or current["weather_source"]!=settings["weather_source"] or not any(current["forecast_methods"].get(m) for m in methods):
+                job["state"]="cancelled"
+                return
             # Imported prices were first observed today: deliberately labelled
             # reconstruction uses ended intervals, never future target prices.
             history = [{**r, "published_at": r["end_utc"]} for r in rows
@@ -194,8 +216,19 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
                     archived_weather=None
                 elif archived_weather.get("profile")=="local" and archived_weather.get("location")!={"latitude":settings["latitude"],"longitude":settings["longitude"]}:
                     archived_weather=None
+            weather_error=None
+            reconstructed=False
+            if not archived_weather and needs_archive:
+                from .weather import fetch_archived_weather
+                try:
+                    archived_weather=fetch_archived_weather(settings["weather_region"],settings["latitude"],settings["longitude"],
+                        issue,horizon_hours,now,service.store.data_dir,weather_context,service._stop)
+                    reconstructed=True
+                except Exception as exc:
+                    weather_error=str(exc)
+                    job["errors"].append({"method":"historisch weer","issued_at":utc_iso(issue),"message":weather_error})
             from .weather import model_weather
-            historical_weather=model_weather(archived_weather) if archived_weather else None
+            historical_weather=model_weather(archived_weather,start=issue) if archived_weather else None
             for method in methods:
                 current = service.get_settings()
                 if (service._stop.is_set() or service._price_identity(current) != entity
@@ -205,6 +238,11 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
                 if not current["forecast_methods"].get(method):
                     job["completed"] += 1
                     continue
+                if method=="timestral" and settings["timestral_weather"] and not archived_weather:
+                    job["skipped"].append({"method":method,"issued_at":utc_iso(issue),
+                        "message":weather_error or "Voor deze historische uitgifte is geen destijds opgeslagen Open-Meteo-verwachting voor dit weergebied beschikbaar. Kies historisch weer ophalen om een reconstructie te testen; de huidige broninstelling kan correct zijn."})
+                    job["completed"]+=1
+                    continue
                 try:
                     if method == "local":
                         run = adaptive_forecast(history, issue, weather=historical_weather, max_points=horizon_hours*4, price_scale=scale, base=forecast_quarters)
@@ -213,23 +251,26 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
                     elif method == "epex":
                         run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
                     else:
-                        run = timestral_forecast(history, issue, {**service._runtime_settings(settings, method), "_weather":archived_weather}, max_points=horizon_hours*4)
+                        run = timestral_forecast(history, issue, {**service._runtime_settings(settings, method), "_weather":archived_weather, "_historical_weather_reconstruction":reconstructed}, max_points=horizon_hours*4)
                     if method in {"local","v4"} and archived_weather and archived_weather.get("profile") in {"nl","europe"}:
                         from .weather_regions import signature
                         run=replace(run,model_version=run.model_version+":regional-1-"+signature(settings))
+                    uses_reconstruction=reconstructed and (method in {"local","v4"} or method=="timestral" and settings["timestral_weather"])
+                    if uses_reconstruction: run=replace(run,model_version=run.model_version+WEATHER_ARCHIVE_VERSION,
+                        reasons=[*run.reasons,"Gereconstrueerd GFS-archiefweer; geselecteerde run minstens 12 uur vóór deze uitgifte. Kan afwijken van oorspronkelijke live bron/modelbeschikbaarheid."])
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,
                               "tariff_unit": settings["tariff_unit"], "price_field": settings["price_field"],
-                              "history": history, "weather_model": historical_weather, "weather_snapshot":archived_weather, "price_scale": scale, "test_horizon_hours": horizon_hours}
+                              "history": history, "weather_model": historical_weather, "weather_snapshot":archived_weather, "price_scale": scale, "test_horizon_hours": horizon_hours, "weather_region": settings["weather_region"], "weather_reconstruction":uses_reconstruction}
                     identity = json.dumps([inputs, run.model_version, utc_iso(issue)], sort_keys=True, default=str)
                     run_id = "historical-" + hashlib.sha256(identity.encode()).hexdigest()
                     inputs["reconstructed_at"] = utc_iso(now)
                     service.store.save_forecast(run_id, issue, run.model_version, "historische reconstructie",
-                        [*run.reasons, "Huidig prijsarchief; geen historische weersverwachting/publicatievintage"], inputs,
+                        [*run.reasons, "Huidig prijsarchief; oorspronkelijke prijspublicatievintages kunnen ontbreken"], inputs,
                         [asdict(point) for point in run.points])
                 except Exception as exc:
                     job["errors"] = [*job["errors"], {"method": method, "issued_at": utc_iso(issue), "message": str(exc)}]
                 job["completed"] += 1
-        job["state"] = "completed" if not job["errors"] else "completed_with_errors"
+        job["state"] = "completed_with_errors" if job["errors"] else "completed_with_skips" if job["skipped"] else "completed"
     except Exception as exc:
         job["state"] = "failed"
         job["errors"] = [*job["errors"], {"message": str(exc)}]

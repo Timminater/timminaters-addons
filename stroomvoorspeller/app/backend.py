@@ -544,8 +544,9 @@ class AppService:
         if expected_source == "open_meteo":
             attempt_record = self.store.latest_snapshot("weather_attempt:open_meteo")
             attempted = parse_dt(attempt_record["issued_at"]) if attempt_record else None
-            # Only the external Open-Meteo adapter is capped at one request per hour.
-            if attempted and now - attempted < WEATHER_MAX_AGE:
+            # Legacy injected adapters retain their hourly guard. Production regional
+            # requests use the persistent shared cache/budget, including profile changes.
+            if self.open_meteo_fetcher is not fetch_open_meteo and attempted and now - attempted < WEATHER_MAX_AGE:
                 return old["payload"] if old else None
             if old and now - parse_dt(old["issued_at"]) < WEATHER_MAX_AGE:
                 return old["payload"]
@@ -886,7 +887,7 @@ class AppService:
             "local": lambda: adaptive_forecast(history, now, used_weather, price_scale=scale, base=_load_forecaster()),
             "v4": lambda: _load_forecaster()(history, issued_at=now, weather=used_weather, price_scale=scale),
             "epex": lambda: epex_forecast(history, now, self._runtime_settings(settings, "epex")),
-            "timestral": lambda: timestral_forecast(history, now, {**self._runtime_settings(settings, "timestral"), "_weather": weather}),
+            "timestral": lambda: timestral_forecast(history, now, {**self._runtime_settings(settings, "timestral"), "_weather": weather, "_weather_error": self._last_weather_error}),
         }
         unit = settings.get("tariff_unit") or ((history[-1].get("unit") if history else None) or "EUR/MWh").replace("€/", "EUR/")
         scale = 1000.0 if unit == "EUR/kWh" else 1.0
@@ -1170,7 +1171,7 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 except (ValueError, TypeError) as exc: return self._send(400, {"error": str(exc)})
             if path == "/api/history-test":
                 from .comparison import start_history_test
-                try: return self._send(202, start_history_test(service, int(query.get("horizon_hours", ["48"])[0])))
+                try: return self._send(202, start_history_test(service, int(query.get("horizon_hours", ["48"])[0]), query.get("weather", ["stored"])[0]))
                 except ValueError as exc: return self._send(400, {"error": str(exc)})
             if path != "/api/calculate": return self._send(404, {"error": "not found"})
             try:

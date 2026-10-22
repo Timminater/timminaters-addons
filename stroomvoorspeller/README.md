@@ -12,7 +12,7 @@ Een prognose blijft **voorlopig** tot er minstens 35 dagen met 95% kwartierdekki
 
 ## Installatie en lokale bouw
 
-Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.11`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
+Voeg `https://github.com/Timminater/timminaters-addons` toe als repository in de Home Assistant App-winkel. Vernieuw de winkel, kies **Stroomvoorspeller** en installeer of werk de App bij. De repository verwijst naar de versiegebonden multi-architectuurimage `ghcr.io/timminater/addon-stroomvoorspeller:0.2.12`. Controleer vóór installatie dat de GitHub Actions-build voor deze versie is geslaagd en de image publiek beschikbaar is. Dit document voert geen installatie in een live Home Assistant uit.
 
 De Dockerfile is ook los te bouwen:
 
@@ -94,3 +94,5 @@ Timestral krijgt standaard expliciete zaterdag/zondag-informatie in Nederlandse 
 De historische tabel en grafiekfilters onderscheiden nu elke voorspelddag tot zeven dagen vooruit. Kies bij **Test bestaande historie** tussen 7 dagen (meer rekenwerk, minimaal 21 dagen archief) en de lichtere 48 uur (minimaal 16 dagen). Voor dag 3–7 is een nieuwe zevendaagse test nodig. De weerinvoer verschilt per methode; zie [weerlocaties per methode](docs/METHODS.md#weerlocaties-per-methode).
 
 Vanaf 0.2.11 zijn meerdere weerpunten instelbaar onder **Weersverwachting → Weergebied**. De Europese optie voegt Duitsland, België, Frankrijk, Denemarken en het Verenigd Koninkrijk toe. Meer locaties geven extra invoer, geen garantie op betere scores. **Geef Timestral regionale weerinformatie** voegt historische en toekomstige zon, wind en temperatuur toe; standaard uit voor vergelijking en minder rekenwerk. Actuele Open-Meteo-datasets worden minimaal drie uur hergebruikt, met een gedeeld blijvend budget en afkoeling bij bronfouten. Zie [weerlocaties per methode](docs/METHODS.md#weerlocaties-per-methode).
+
+Vanaf 0.2.12 kan **Test bestaande historie → Weer voor historische test** ontbrekend weer voor 1, 4 of 10 punten uit oude GFS-modelruns ophalen. Dat levert direct een herkenbare reconstructie met archiefweer op, zonder eerst zelf weken aan verwachtingen te verzamelen. Kies **Alleen destijds opgeslagen verwachtingen** voor de oorspronkelijke snapshotvariant. Archiefscores blijven gescheiden van live prestaties; het archiefmodel kan afwijken van de oorspronkelijke live bron. Ook de lege live weercache na wisselen van gebied is hersteld.

@@ -15,6 +15,12 @@ LIVE_TTL = 3*3600
 MAX_BYTES = 8*1024*1024
 
 
+class WeatherMinuteBudget(ValueError):
+    def __init__(self, seconds):
+        self.seconds=seconds
+        super().__init__('Gedeeld weer-API-minuutbudget bereikt; wacht kort voor een nieuwe aanvraag')
+
+
 def _read(path):
     try: return json.loads(path.read_text())
     except (OSError, ValueError): return {}
@@ -33,9 +39,9 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
     switches back to the same grid from bypassing the refresh interval.
     """
     parts=urlsplit(url)
-    if parts.scheme!='https' or parts.hostname not in {'api.open-meteo.com','historical-forecast-api.open-meteo.com'}:
+    if parts.scheme!='https' or parts.hostname not in {'api.open-meteo.com','historical-forecast-api.open-meteo.com','single-runs-api.open-meteo.com'}:
         raise ValueError('Onbekende weerbron')
-    historical=parts.hostname.startswith('historical-')
+    historical=parts.hostname!='api.open-meteo.com'
     params=sorted((k,v) for k,v in parse_qsl(parts.query) if historical or k not in {'start_date','end_date'})
     key=hashlib.sha256((parts.hostname+parts.path+'?'+urlencode(params)).encode()).hexdigest()
     root=Path(root)/'weather-cache';root.mkdir(parents=True,exist_ok=True)
@@ -47,8 +53,11 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
         age=now-cached.get('fetched_at',0)
         if cached.get('data') is not None and 0<=age<ttl:
             return cached['data'],cached['fetched_at']
-        if now<max(state.get('blocked_until',0),cached.get('retry_after',0)):
-            raise ValueError('Weerbron in afkoelperiode; bestaande cache wordt hergebruikt waar volledig')
+        until=max(state.get('blocked_until',0),cached.get('retry_after',0))
+        if now<until:
+            reason=state.get('blocked_reason') if state.get('blocked_until',0)>=cached.get('retry_after',0) else cached.get('error_reason')
+            minutes=max(1,math.ceil((until-now)/60))
+            raise ValueError(f'Open-Meteo in afkoelperiode ({reason or "tijdelijke bronfout"}); volgende poging over {minutes} minuten. Bestaande cache wordt hergebruikt waar volledig')
         day=datetime.fromtimestamp(now,timezone.utc).date().isoformat()
         calls=[t for t in state.get('recent',[]) if now-60<t<=now]
         count=state.get('count',0) if state.get('day')==day else 0
@@ -59,8 +68,9 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
         if 'start_date' in query and 'end_date' in query:
             span=(datetime.fromisoformat(query['end_date'])-datetime.fromisoformat(query['start_date'])).days+1
         cost=points*max(1,math.ceil(span/14))
-        if count>=48 or units+cost>512 or len(calls)>=12:
-            raise ValueError('Gedeeld weer-API-budget bereikt; probeer later opnieuw')
+        if count>=48 or units+cost>512:
+            raise ValueError('Gedeeld weer-API-dagbudget bereikt; probeer later opnieuw')
+        if len(calls)>=12: raise WeatherMinuteBudget(max(1,math.ceil(min(calls)+61-now)))
         state.update(day=day,count=count+1,units=units+cost,recent=[*calls,now])
         _write(statefile,state)  # reserve before I/O, including crashes and failures
         try:
@@ -81,6 +91,7 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
             return data,now
         except Exception as exc:
             delay=3600
+            reason=f'HTTP {exc.code}' if isinstance(exc,HTTPError) else 'timeout' if isinstance(exc,TimeoutError) else 'netwerkfout of ongeldig weerantwoord'
             if isinstance(exc,HTTPError) and exc.code in {429,503}:
                 delay=6*3600
                 value=exc.headers.get('Retry-After','') if exc.headers else ''
@@ -89,7 +100,9 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
                     try: delay=max(delay,parsedate_to_datetime(value).timestamp()-now)
                     except (TypeError,ValueError,OverflowError): pass
                 state['blocked_until']=now+delay
+                state['blocked_reason']=reason
                 _write(statefile,state)
             cached['retry_after']=now+delay
+            cached['error_reason']=reason
             _write(target,cached)
-            raise ValueError('Weerbron niet beschikbaar; aanvragen zijn tijdelijk gepauzeerd') from exc
+            raise ValueError(f'Open-Meteo niet beschikbaar ({reason}); aanvragen zijn tijdelijk gepauzeerd') from exc

@@ -29,7 +29,7 @@ def _num(value: Any, label: str) -> float:
 
 
 def _hours_from_arrays(payload: Mapping[str, Any], solar_key: str, wind_key: str,
-                       temp_key: str, observed_at: datetime, source: str) -> dict[str, Any]:
+                       temp_key: str, observed_at: datetime, source: str, *, coverage_end: datetime | None = None) -> dict[str, Any]:
     hourly = payload.get("hourly")
     if not isinstance(hourly, Mapping) or not isinstance(hourly.get("time"), list):
         raise WeatherError("Weerbron bevat geen uurlijkse tijdreeks")
@@ -57,18 +57,18 @@ def _hours_from_arrays(payload: Mapping[str, Any], solar_key: str, wind_key: str
         out[ts.isoformat(timespec="seconds").replace("+00:00", "Z")] = values
     if not out:
         raise WeatherError("Weerbron bevat geen bruikbare uurlijkse waarden")
-    _validate_coverage(out, observed_at)
+    _validate_coverage(out, observed_at, coverage_end=coverage_end)
     return {"source": source, "observed_at": parse_dt(observed_at).isoformat().replace("+00:00", "Z"), "hourly": out}
 
 
-def _validate_coverage(hourly: Mapping[str, Any], now: datetime) -> None:
+def _validate_coverage(hourly: Mapping[str, Any], now: datetime, *, coverage_end: datetime | None = None) -> None:
     now = parse_dt(now)
     starts = sorted(parse_dt(k) for k in hourly)
     if not starts:
         raise WeatherError("Weerreeks is leeg")
     # A forecast must reach seven days with near-hourly coverage; never silently
     # stretch the last known point over a missing range.
-    target = now + timedelta(days=7) - timedelta(hours=1)
+    target = (parse_dt(coverage_end) if coverage_end else now + timedelta(days=7)) - timedelta(hours=1)
     if starts[-1] < target:
         raise WeatherError("Weerverwachting dekt geen zeven dagen")
     expected = int((starts[-1] - starts[0]).total_seconds() // 3600) + 1
@@ -162,7 +162,7 @@ def fetch_ha_weather(client: HAClient, entities: Mapping[str, str], now: datetim
     return {"source": "ha", "observed_at": parse_dt(now).isoformat().replace("+00:00", "Z"), "hourly": hourly}
 
 
-def model_weather(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def model_weather(snapshot: Mapping[str, Any], *, start: datetime | None = None) -> dict[str, Any]:
     """Translate raw units while avoiding made-up climatology ratios.
 
     solar_ratio is deliberately omitted: a raw radiation forecast cannot be
@@ -171,7 +171,7 @@ def model_weather(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"hourly": {}}
     for stamp, values in (snapshot.get("hourly") or {}).items():
-        if snapshot.get("observed_at") and parse_dt(stamp) < parse_dt(snapshot["observed_at"]).replace(minute=0,second=0,microsecond=0): continue
+        if (start or snapshot.get("observed_at")) and parse_dt(stamp) < parse_dt(start or snapshot["observed_at"]).replace(minute=0,second=0,microsecond=0): continue
         result["hourly"][stamp] = {"shortwave_radiation": values.get("solar_wm2"),
                                   "wind_ms_10m": values.get("wind_ms"), "temp_c": values.get("temp_c")}
     return result
@@ -186,18 +186,67 @@ def fetch_regional_weather(profile, latitude, longitude, now, data_dir):
         'longitude':','.join(str(p[2]) for p in points),'hourly':'shortwave_radiation,wind_speed_10m,temperature_2m',
         'past_days':35,'forecast_days':8,'timezone':'UTC','wind_speed_unit':'ms'})
     data,fetched=cached_json(OPEN_METEO_URL+'?'+query,data_dir)
+    return _regional_snapshot(data,points,profile,datetime.fromtimestamp(fetched,UTC),now)
+
+
+def _regional_snapshot(data,points,profile,observed,now,coverage_end=None):
     payloads=data if isinstance(data,list) else [data]
     if len(payloads)!=len(points): raise WeatherError('Weerbron mist locaties; geen gedeeltelijk gebied gebruikt')
-    observed=datetime.fromtimestamp(fetched,UTC)
     parsed=[]
     for payload in payloads:
         units=payload.get('hourly_units') or {}
         if units.get('shortwave_radiation') not in {'W/m²','W/m2'} or units.get('wind_speed_10m')!='m/s' or units.get('temperature_2m')!='°C':
             raise WeatherError('Regionale weerbron retourneerde onverwachte eenheden')
-        parsed.append(_hours_from_arrays(payload,'shortwave_radiation','wind_speed_10m','temperature_2m',now,'open_meteo')['hourly'])
+        parsed.append(_hours_from_arrays(payload,'shortwave_radiation','wind_speed_10m','temperature_2m',now,'open_meteo',coverage_end=coverage_end)['hourly'])
     shared=set.intersection(*(set(p) for p in parsed))
     hourly={stamp:{key:sum(p[stamp][key] for p in parsed)/len(parsed) for key in ('solar_wm2','wind_ms','temp_c')} for stamp in sorted(shared)}
-    _validate_coverage(hourly,now)
+    _validate_coverage(hourly,now,coverage_end=coverage_end)
     return {'source':'open_meteo','profile':profile,'locations':[{'name':n,'latitude':lat,'longitude':lon} for n,lat,lon in points],
         'observed_at':observed.isoformat().replace('+00:00','Z'),'hourly':hourly,
         'aggregation':'Ongewogen gemiddelde van alle punten; geen geschatte productiegewichten'}
+
+
+def _archive_json(url,data_dir,stop=None):
+    from .weather_cache import cached_json,WeatherMinuteBudget
+    for _ in range(3):
+        if stop is not None and stop.is_set(): raise WeatherError('Historisch weer ophalen gestopt')
+        try: return cached_json(url,data_dir)
+        except WeatherMinuteBudget as exc:
+            if stop is None: raise
+            if stop.wait(min(60,exc.seconds)): raise WeatherError('Historisch weer ophalen gestopt') from None
+    raise WeatherError('Weer-minuutbudget nog bezet; probeer de historische test later opnieuw')
+
+
+def fetch_weather_context(profile,latitude,longitude,start,end,now,data_dir,stop=None):
+    """Past-only stitched GFS archive for context, never future target weather."""
+    from .weather_regions import locations
+    points=locations(profile,latitude,longitude)
+    if not start<end<=now: raise WeatherError('Ongeldig historisch weerbereik')
+    query=urllib.parse.urlencode({'latitude':','.join(str(p[1]) for p in points),
+        'longitude':','.join(str(p[2]) for p in points),'hourly':'shortwave_radiation,wind_speed_10m,temperature_2m',
+        'start_date':start.date().isoformat(),'end_date':end.date().isoformat(),
+        'models':'gfs_global','timezone':'UTC','wind_speed_unit':'ms'})
+    data,fetched=_archive_json('https://historical-forecast-api.open-meteo.com/v1/forecast?'+query,data_dir,stop)
+    return _regional_snapshot(data,points,profile,datetime.fromtimestamp(fetched,UTC),now,coverage_end=end)
+
+
+def fetch_archived_weather(profile,latitude,longitude,issue,horizon_hours,now,data_dir,context=None,stop=None):
+    """A specific old GFS run, at least 12h before the simulated issue."""
+    from .weather_regions import locations
+    points=locations(profile,latitude,longitude)
+    run=issue.astimezone(UTC)-timedelta(hours=12)
+    run=run.replace(hour=run.hour//6*6,minute=0,second=0,microsecond=0)
+    if issue+timedelta(hours=horizon_hours)>now: raise WeatherError('Historische doelhorizon is nog niet verstreken')
+    query=urllib.parse.urlencode({'latitude':','.join(str(p[1]) for p in points),
+        'longitude':','.join(str(p[2]) for p in points),'hourly':'shortwave_radiation,wind_speed_10m,temperature_2m',
+        'run':run.strftime('%Y-%m-%dT%H:%M'),'forecast_days':10,
+        'models':'gfs_global','timezone':'UTC','wind_speed_unit':'ms'})
+    data,fetched=_archive_json('https://single-runs-api.open-meteo.com/v1/forecast?'+query,data_dir,stop)
+    snapshot=_regional_snapshot(data,points,profile,datetime.fromtimestamp(fetched,UTC),issue,coverage_end=issue+timedelta(hours=horizon_hours))
+    # Only times before the chosen forecast run may come from stitched history.
+    history={t:v for t,v in (context or {}).get('hourly',{}).items() if parse_dt(t)<run}
+    history.update({t:v for t,v in snapshot['hourly'].items() if parse_dt(t)>=run})
+    snapshot.update(hourly=history,reconstruction=True,archive_kind='single_run_gfs',
+        issued_for=issue.isoformat().replace('+00:00','Z'),weather_run=run.isoformat().replace('+00:00','Z'))
+    if profile=='local': snapshot['location']={'latitude':float(latitude),'longitude':float(longitude)}
+    return snapshot

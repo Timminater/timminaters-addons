@@ -122,19 +122,19 @@ def test_history_http_horizon_is_forwarded_and_invalid_choices_rejected(tmp_path
     from app.backend import make_handler
     from app.comparison import start_history_test
     app=AppService(store=Store(tmp_path));choices=[]
-    def start(service,horizon_hours):
-        if horizon_hours not in (48,168):return start_history_test(service,horizon_hours)
-        choices.append(horizon_hours);return {'state':'running','horizon_hours':horizon_hours}
+    def start(service,horizon_hours,weather_mode="stored"):
+        if horizon_hours not in (48,168) or weather_mode not in {"stored","archive"}:return start_history_test(service,horizon_hours,weather_mode)
+        choices.append((horizon_hours,weather_mode));return {'state':'running','horizon_hours':horizon_hours}
     monkeypatch.setattr('app.comparison.start_history_test',start)
     server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(app))
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     root=f'http://127.0.0.1:{server.server_port}/api/history-test'
     try:
-        for suffix,horizon in (('',48),('?horizon_hours=168',168)):
+        for suffix,horizon in (('',48),('?horizon_hours=168',168),('?horizon_hours=168&weather=archive',168)):
             with urlopen(Request(root+suffix,method='POST')) as response:
                 assert response.status==202 and json.load(response)['horizon_hours']==horizon
-        assert choices==[48,168]
-        for suffix in ('?horizon_hours=72','?horizon_hours=bad'):
+        assert choices==[(48,'stored'),(168,'stored'),(168,'archive')]
+        for suffix in ('?horizon_hours=72','?horizon_hours=bad','?weather=unknown'):
             with pytest.raises(HTTPError) as exc:urlopen(Request(root+suffix,method='POST'))
             assert exc.value.code==400
     finally:server.shutdown();server.server_close();thread.join(timeout=2)

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.12
+
+- Herstelt lege Timestral-weerdata bij het wisselen van weergebied: de regionale cache wordt direct geraadpleegd, zonder extra verouderde uurblokkering. De gedeelde drie-uurscache en aanvraagbudgetten blijven gelden.
+- Live Timestral toont de werkelijke weerbronfout of afkoelperiode, in plaats van ten onrechte te adviseren Open-Meteo te kiezen.
+- Historisch weer ophalen voor 1, 4 of 10 punten via oude GFS-modelruns (Single Runs API), met historische context voor Timestral. Een keuze bij de historische test bepaalt of ontbrekende snapshots uit het archief mogen worden aangevuld. Archiefscores krijgen een aparte versie en zichtbaar label; uitsluitend destijds opgeslagen verwachtingen blijft een optie.
+- Ontbrekende historische verwachtingen worden bij de optie alleen opgeslagen expliciet overgeslagen; dit wordt niet als verkeerde huidige broninstelling gemeld.
+
 ## 0.2.11
 
 - Weergebied instelbaar: één lokale locatie, vier Nederlandse punten (standaard) of tien punten inclusief buurlanden. Adaptief/v4 gebruiken een gebiedsgemiddelde; Epex gebruikt kenmerken per punt en een aparte featurecache.

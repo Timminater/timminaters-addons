@@ -113,7 +113,7 @@ def test_timestral_covariates_are_aligned_and_reject_missing_future_or_stale_vin
     s['hourly'].pop(utc_iso(NOW))
     with pytest.raises(ValueError,match='volledige'):weather_covariates(s,NOW-timedelta(days=3),288,8,NOW,{'weather_region':'nl'})
     with pytest.raises(ValueError,match='historische'):weather_covariates(snapshot(),NOW-timedelta(days=4),288,8,NOW-timedelta(days=1),{'weather_region':'nl'})
-    with pytest.raises(ValueError,match='passende'):weather_covariates(snapshot(),NOW-timedelta(days=3),288,8,NOW,{'weather_region':'europe'})
+    with pytest.raises(ValueError,match='weergebied'):weather_covariates(snapshot(),NOW-timedelta(days=3),288,8,NOW,{'weather_region':'europe'})
 
 
 def test_covariate_masks_preserve_missing_context_and_validate_worker_payload():
@@ -183,6 +183,43 @@ def test_historical_timestral_does_not_use_a_current_weather_snapshot(tmp_path,m
     def must_not_infer(*args,**kwargs):raise AssertionError('No Timestral process may start without its historical weather')
     monkeypatch.setattr('app.local_runtime.run_local',must_not_infer)
     start_history_test(app,168);app._history_thread.join(timeout=10)
-    assert app._history_job['state']=='completed_with_errors'
-    assert all('passende' in e['message'] for e in app._history_job['errors'])
+    assert app._history_job['state']=='completed_with_skips'
+    assert app._history_job['skipped'] and not app._history_job['errors']
+    assert all('historische uitgifte' in e['message'] for e in app._history_job['skipped'])
     assert app.store.latest_forecast(evaluation_mode='historical')[0] is None
+
+
+def test_production_profile_switch_uses_shared_cache_without_hour_long_empty_weather(tmp_path,monkeypatch):
+    from app.weather_cache import cached_json as request
+    at=[NOW];calls=[]
+    def opener(req,**kwargs):
+        query=parse_qs(urlsplit(req.full_url).query)
+        n=len(query['latitude'][0].split(','));calls.append(n)
+        return Response([payload(i+1) for i in range(n)])
+    monkeypatch.setattr('app.weather_cache.cached_json',lambda url,root:request(url,root,opener=opener,clock=lambda:at[0].timestamp()))
+    app=AppService(store=Store(tmp_path),clock=lambda:at[0])
+    app.put_settings({'timestral_weather':True,'forecast_methods':{'local':False,'v4':False,'epex':False,'timestral':True},'active_method':'timestral'})
+    for i,profile in enumerate(('nl','europe','local','nl','europe','local')):
+        at[0]=NOW+timedelta(minutes=5*i)
+        app.put_settings({'weather_region':profile,'latitude':52.,'longitude':5.})
+        settings=app.get_settings();s=app._weather_snapshot(settings,at[0],force=True)
+        assert s is not None and s['profile']==profile
+        weather_covariates(s,at[0].replace(minute=0)-timedelta(days=2),192,4,at[0],settings)
+        app.store.save_snapshot(at[0],'weather',s)
+    assert calls==[4,10,1]  # Returning to any profile reuses the 3-hour cache.
+    assert json.loads((tmp_path/'weather-cache/budget.json').read_text())['count']==3
+
+
+def test_live_timestral_reports_the_weather_failure_instead_of_wrong_source_advice(tmp_path,monkeypatch):
+    app=AppService(store=Store(tmp_path),clock=lambda:NOW)
+    app.put_settings({'tariff_entity':'sensor.prices','tariff_unit':'EUR/kWh','timestral_weather':True,
+        'forecast_methods':{'local':False,'v4':False,'epex':False,'timestral':True},'active_method':'timestral'})
+    rows=[{'start_utc':utc_iso(NOW-timedelta(minutes=15*i)),'end_utc':utc_iso(NOW-timedelta(minutes=15*(i-1))),
+           'price':.2,'published_at':utc_iso(NOW),'observed_at':utc_iso(NOW),'unit':'EUR/kWh','quality':'valid'} for i in reversed(range(1,289))]
+    monkeypatch.setattr('app.backend.collect_price_data',lambda *a,**kw:(rows,[],NOW))
+    def failure(*a,**kw):raise ValueError('Open-Meteo in afkoelperiode na HTTP 429')
+    monkeypatch.setattr(app,'_weather_snapshot',failure)
+    app.refresh(force_model=True)
+    error=app.store.source_statuses()['method:timestral']['error']
+    assert 'Geen actuele Open-Meteo-weerdata' in error and 'HTTP 429' in error
+    assert 'kies Open-Meteo' not in error
