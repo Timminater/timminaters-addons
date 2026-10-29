@@ -39,12 +39,47 @@ def utc_iso(value: datetime | str) -> str:
 class Store:
     """SQLite repository. Production callers pass ``/data`` via DATA_DIR."""
 
-    def __init__(self, data_dir: str | Path | None = None):
+    def __init__(self, data_dir: str | Path | None = None, *, database_dir: str | Path | None = None):
         self.data_dir = Path(data_dir or os.environ.get("DATA_DIR", "/data"))
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.path = self.data_dir / "stroomvoorspeller.sqlite3"
+        configured_db = database_dir or (os.environ.get("DATABASE_DIR") if data_dir is None else None)
+        if configured_db:
+            db_dir = Path(configured_db)
+            if data_dir is None and db_dir == Path("/media/stroomvoorspeller") and not Path("/media").is_mount():
+                raise RuntimeError("De Home Assistant-mediamap is niet gekoppeld; database wordt niet op een tijdelijke locatie aangemaakt")
+            db_dir.mkdir(parents=True, exist_ok=True)
+            self.path = db_dir / "stroomvoorspeller.sqlite3"
+            legacy = self.data_dir / "stroomvoorspeller.sqlite3"
+            if not self.path.exists() and legacy.exists():
+                self._migrate_database(legacy, self.path)
+        else:
+            self.path = self.data_dir / "stroomvoorspeller.sqlite3"
         self._lock = threading.RLock()
         self._init_db()
+
+    @staticmethod
+    def _migrate_database(source: Path, destination: Path) -> None:
+        # SQLite backup includes committed WAL pages. Publish only after verification.
+        temporary = destination.with_name(destination.name + ".migration")
+        try:
+            temporary.unlink(missing_ok=True)
+            with sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=20) as old:
+                with sqlite3.connect(temporary, timeout=20) as new:
+                    old.backup(new)
+                    if new.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                        raise RuntimeError("De gemigreerde database is niet intact")
+            with temporary.open("rb") as persisted:
+                os.fsync(persisted.fileno())
+            os.replace(temporary, destination)
+            directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try: os.fsync(directory_fd)
+            finally: os.close(directory_fd)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        # The destination is durable and verified; remove the old app copy and WAL.
+        for suffix in ("-wal", "-shm", "-journal", ""):
+            Path(str(source) + suffix).unlink(missing_ok=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=20)

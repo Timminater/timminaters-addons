@@ -182,3 +182,38 @@ def test_cleanup_rejects_starting_jobs_and_releases_all_guards(tmp_path):
     app._history_job_lock.release()
     assert not BUSY.locked()
     cleanup(app, {'action': 'history', 'days': 7, 'confirmed': True})
+
+
+def test_external_database_migration_preserves_settings_and_wal(tmp_path):
+    import sqlite3
+    from app.storage import Store
+    data=tmp_path/'app'; external=tmp_path/'media'/'stroomvoorspeller'
+    old=Store(data);old.set_settings({'active_method':'v4'})
+    conn=sqlite3.connect(old.path)
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute("INSERT INTO settings(key,value_json,updated_at) VALUES('migration_probe','42','2026-01-01T00:00:00Z')")
+    conn.commit()
+    migrated=Store(data,database_dir=external)
+    assert migrated.get_settings()['active_method']=='v4'
+    assert migrated.get_settings()['migration_probe']==42
+    assert migrated.path.parent==external and not old.path.exists()
+    conn.close()
+
+
+def test_existing_external_database_is_never_overwritten(tmp_path):
+    from app.storage import Store
+    old=Store(tmp_path/'app');old.set_settings({'probe':'old'})
+    external=Store(tmp_path/'media');external.set_settings({'probe':'current'})
+    result=Store(tmp_path/'app',database_dir=tmp_path/'media')
+    assert result.get_settings()['probe']=='current'
+    assert old.path.exists()
+
+
+def test_storage_indicator_includes_external_database(tmp_path):
+    from app.storage import Store
+    from app.backend import AppService
+    from app.data_management import storage_status
+    store=Store(tmp_path/'app',database_dir=tmp_path/'media')
+    status=storage_status(AppService(store=store),90)
+    assert status['database_bytes']>=store.path.stat().st_size
+    assert status['total_bytes']>=status['database_bytes']

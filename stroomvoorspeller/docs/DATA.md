@@ -42,3 +42,19 @@ Gebruik deze endpoints via de bestaande Home Assistant-ingress. Er is geen extra
 Vanaf 0.2.11 bevat een run ook het opgeslagen weergebied en de Timestral-weerkeuze waar beschikbaar. Regionale uurwaarden blijven bruikbaar voor analyse; exacte locatiecoördinaten blijven uitgesloten. De gedeelde Open-Meteo-payloadcache telt mee onder Overig, wordt automatisch begrensd en het blijvende aanvraagbudget wordt niet gewist door Epex-cache opruimen.
 
 Historische runs met opgehaald GFS-archiefweer bevatten vanaf 0.2.12 een reconstructievlag en een eigen modelversie. De export bewaart de initialisatietijd van de oude weersmodelrun en de gesimuleerde uitgifte, zonder locatiecoördinaten. De cache van historische context en Single Runs deelt de blijvende Open-Meteo-limieten met de overige weerbronnen.
+
+
+Vanaf 0.2.13 staat de SQLite-database met instellingen en prognosehistorie in
+`/media/stroomvoorspeller/stroomvoorspeller.sqlite3`, buiten de privé-appdata.
+De app maakt bij de eerste start een gecontroleerde SQLite-kopie inclusief WAL
+en verwijdert de oude kopie pas na een succesvolle migratie. Bestaat de externe
+database al, dan heeft deze voorrang en blijft een eventuele oude kopie staan.
+Als de mediamap niet gekoppeld is, stopt de app met een foutmelding.
+
+De oude database en bijbehorende bestanden zijn uitgesloten van appback-ups.
+Een Home Assistant-backup kan de mediamap apart meenemen als die in de
+back-upselectie staat; controleer je eigen back-upinstellingen. De externe
+database bevat ook de appinstellingen. Als de mediamap bij een herstel ontbreekt,
+zijn die instellingen en de historie niet vanuit alleen de appback-up te herstellen.
+Maak indien gewenst apart een consistente kopie van de database terwijl de app
+gestopt is. Een analyse-export is geen volledige herstelbackup.

@@ -51,6 +51,8 @@ def storage_status(service, days=90):
                        'epex_cache_bytes' if model.name == 'epex' else 'other_bytes')
                 groups[key] += file_bytes(model)
         else: groups['other_bytes'] += file_bytes(child)
+    if service.store.path.parent != root:
+        groups['database_bytes'] += sum(file_bytes(p) for p in service.store.path.parent.glob(service.store.path.name + '*'))
     cutoff = utc_iso(service.clock() - timedelta(days=days))
     with closing(service.store._connect()) as db:
         counts = {table: db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
@@ -60,7 +62,7 @@ def storage_status(service, days=90):
     return {**groups, 'total_bytes': sum(groups.values()), 'free_bytes': shutil.disk_usage(root).free,
             'counts': counts, 'removable': removable, 'days': days, 'cutoff_utc': cutoff,
             'measured_at': utc_iso(service.clock()),
-            'note': 'Bestandsgroottes in de datamap, inclusief database/WAL en modellen; exclusief add-on-image en backups buiten deze map.'}
+            'note': 'Bestandsgroottes van appdata en externe database/WAL; exclusief app-image en backups. Vrije ruimte geldt voor de appdatamap.'}
 
 
 def cleanup(service, body):

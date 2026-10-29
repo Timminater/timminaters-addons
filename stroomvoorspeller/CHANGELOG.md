@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13
+
+- SQLite-database naar `/media/stroomvoorspeller` verplaatst; bij de eerste start wordt een bestaande database inclusief WAL veilig overgezet.
+- De opslagindicator telt de externe database mee. De oude databasebestanden worden bovendien uitgesloten van appback-ups.
+
 ## 0.2.12
 
 - Herstelt lege Timestral-weerdata bij het wisselen van weergebied: de regionale cache wordt direct geraadpleegd, zonder extra verouderde uurblokkering. De gedeelde drie-uurscache en aanvraagbudgetten blijven gelden.
