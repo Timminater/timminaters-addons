@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM python:3.12-slim-bookworm
 
-LABEL io.hass.version="0.2.13" \
+LABEL io.hass.version="0.2.14" \
       io.hass.type="app" \
       io.hass.arch="aarch64|amd64"
 
@@ -17,7 +17,7 @@ COPY app ./app
 COPY icon.png ./app/static/icon.png
 COPY run.sh ./run.sh
 RUN chmod 0755 ./run.sh && mkdir -p /data
-ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DATA_DIR=/data DATABASE_DIR=/media/stroomvoorspeller \
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 DATA_DIR=/data DATABASE_DIR=/share/stroomvoorspeller \
     HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_DISABLE_XET=1
 EXPOSE 8099
 CMD ["./run.sh"]

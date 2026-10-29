@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
 RETENTION_DAYS = 180
+SHARE_DATABASE_DIR = Path('/share/stroomvoorspeller')
+MEDIA_DATABASE_DIR = Path('/media/stroomvoorspeller')
 
 
 def price_archive_key(entity_id: str, price_field: str = "tax_included",
@@ -45,13 +47,21 @@ class Store:
         configured_db = database_dir or (os.environ.get("DATABASE_DIR") if data_dir is None else None)
         if configured_db:
             db_dir = Path(configured_db)
-            if data_dir is None and db_dir == Path("/media/stroomvoorspeller") and not Path("/media").is_mount():
-                raise RuntimeError("De Home Assistant-mediamap is niet gekoppeld; database wordt niet op een tijdelijke locatie aangemaakt")
+            if data_dir is None and db_dir == SHARE_DATABASE_DIR:
+                if not SHARE_DATABASE_DIR.parent.is_mount():
+                    raise RuntimeError("De Home Assistant-sharemap is niet gekoppeld; database wordt niet op een tijdelijke locatie aangemaakt")
+                if not MEDIA_DATABASE_DIR.parent.is_mount() and not (db_dir / "stroomvoorspeller.sqlite3").exists():
+                    raise RuntimeError("De Home Assistant-mediamap is niet gekoppeld; een bestaande database kan niet worden gecontroleerd")
             db_dir.mkdir(parents=True, exist_ok=True)
             self.path = db_dir / "stroomvoorspeller.sqlite3"
-            legacy = self.data_dir / "stroomvoorspeller.sqlite3"
-            if not self.path.exists() and legacy.exists():
-                self._migrate_database(legacy, self.path)
+            legacy_paths = [self.data_dir / "stroomvoorspeller.sqlite3"]
+            if data_dir is None and db_dir == SHARE_DATABASE_DIR:
+                legacy_paths.insert(0, MEDIA_DATABASE_DIR / "stroomvoorspeller.sqlite3")
+            if not self.path.exists():
+                for legacy in legacy_paths:
+                    if legacy.exists():
+                        self._migrate_database(legacy, self.path)
+                        break
         else:
             self.path = self.data_dir / "stroomvoorspeller.sqlite3"
         self._lock = threading.RLock()

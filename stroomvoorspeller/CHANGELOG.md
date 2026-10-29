@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.14
+
+- Database verplaatst naar `/share/stroomvoorspeller`; een bestaande database uit `/media` of `/data` wordt automatisch veilig overgezet.
+
 ## 0.2.13
 
 - SQLite-database naar `/media/stroomvoorspeller` verplaatst; bij de eerste start wordt een bestaande database inclusief WAL veilig overgezet.

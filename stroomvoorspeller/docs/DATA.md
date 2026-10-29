@@ -44,17 +44,19 @@ Vanaf 0.2.11 bevat een run ook het opgeslagen weergebied en de Timestral-weerkeu
 Historische runs met opgehaald GFS-archiefweer bevatten vanaf 0.2.12 een reconstructievlag en een eigen modelversie. De export bewaart de initialisatietijd van de oude weersmodelrun en de gesimuleerde uitgifte, zonder locatiecoördinaten. De cache van historische context en Single Runs deelt de blijvende Open-Meteo-limieten met de overige weerbronnen.
 
 
-Vanaf 0.2.13 staat de SQLite-database met instellingen en prognosehistorie in
-`/media/stroomvoorspeller/stroomvoorspeller.sqlite3`, buiten de privé-appdata.
-De app maakt bij de eerste start een gecontroleerde SQLite-kopie inclusief WAL
+Vanaf 0.2.14 staat de SQLite-database met instellingen en prognosehistorie in
+`/share/stroomvoorspeller/stroomvoorspeller.sqlite3`, buiten de privé-appdata.
+De app verplaatst bij de eerste start de database uit `/media/stroomvoorspeller`
+(versie 0.2.13) of anders uit `/data`. De app maakt een gecontroleerde SQLite-kopie inclusief WAL
 en verwijdert de oude kopie pas na een succesvolle migratie. Bestaat de externe
 database al, dan heeft deze voorrang en blijft een eventuele oude kopie staan.
-Als de mediamap niet gekoppeld is, stopt de app met een foutmelding.
+Als de sharemap niet gekoppeld is, stopt de app met een foutmelding. De mediamap
+blijft gekoppeld om bestaande installaties veilig te kunnen migreren.
 
 De oude database en bijbehorende bestanden zijn uitgesloten van appback-ups.
-Een Home Assistant-backup kan de mediamap apart meenemen als die in de
+Een Home Assistant-backup kan de sharemap apart meenemen als die in de
 back-upselectie staat; controleer je eigen back-upinstellingen. De externe
-database bevat ook de appinstellingen. Als de mediamap bij een herstel ontbreekt,
+database bevat ook de appinstellingen. Als de sharemap bij een herstel ontbreekt,
 zijn die instellingen en de historie niet vanuit alleen de appback-up te herstellen.
 Maak indien gewenst apart een consistente kopie van de database terwijl de app
 gestopt is. Een analyse-export is geen volledige herstelbackup.

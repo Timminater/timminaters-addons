@@ -97,4 +97,4 @@ Vanaf 0.2.11 zijn meerdere weerpunten instelbaar onder **Weersverwachting → We
 
 Vanaf 0.2.12 kan **Test bestaande historie → Weer voor historische test** ontbrekend weer voor 1, 4 of 10 punten uit oude GFS-modelruns ophalen. Dat levert direct een herkenbare reconstructie met archiefweer op, zonder eerst zelf weken aan verwachtingen te verzamelen. Kies **Alleen destijds opgeslagen verwachtingen** voor de oorspronkelijke snapshotvariant. Archiefscores blijven gescheiden van live prestaties; het archiefmodel kan afwijken van de oorspronkelijke live bron. Ook de lege live weercache na wisselen van gebied is hersteld.
 
-De database staat vanaf 0.2.13 buiten de appdata in `/media/stroomvoorspeller`. Zie [opslag en back-ups](docs/DATA.md) voor migratie en herstel.
+De database staat vanaf 0.2.14 buiten de appdata in `/share/stroomvoorspeller`. Zie [opslag en back-ups](docs/DATA.md) voor migratie en herstel.

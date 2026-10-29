@@ -217,3 +217,40 @@ def test_storage_indicator_includes_external_database(tmp_path):
     status=storage_status(AppService(store=store),90)
     assert status['database_bytes']>=store.path.stat().st_size
     assert status['total_bytes']>=status['database_bytes']
+
+
+def test_migration_from_media_takes_precedence_over_old_app_data(tmp_path, monkeypatch):
+    from pathlib import Path
+    import app.storage as storage
+    data = tmp_path / 'data'
+    media = tmp_path / 'media' / 'stroomvoorspeller'
+    share = tmp_path / 'share' / 'stroomvoorspeller'
+    storage.Store(data).set_settings({'probe': 'older'})
+    storage.Store(media).set_settings({'probe': 'media'})
+    monkeypatch.setattr(storage, 'SHARE_DATABASE_DIR', share)
+    monkeypatch.setattr(storage, 'MEDIA_DATABASE_DIR', media)
+    monkeypatch.setattr(Path, 'is_mount', lambda self: True)
+    monkeypatch.setenv('DATA_DIR', str(data))
+    monkeypatch.setenv('DATABASE_DIR', str(share))
+    migrated = storage.Store()
+    assert migrated.get_settings()['probe'] == 'media'
+    assert not (media / 'stroomvoorspeller.sqlite3').exists()
+    assert (data / 'stroomvoorspeller.sqlite3').exists()
+    storage.Store(media).set_settings({'probe': 'do not overwrite'})
+    assert storage.Store().get_settings()['probe'] == 'media'
+    assert (media / 'stroomvoorspeller.sqlite3').exists()
+
+
+def test_missing_media_mount_does_not_create_empty_share_database(tmp_path, monkeypatch):
+    from pathlib import Path
+    import app.storage as storage
+    share = tmp_path / 'share' / 'stroomvoorspeller'
+    media = tmp_path / 'media' / 'stroomvoorspeller'
+    monkeypatch.setattr(storage, 'SHARE_DATABASE_DIR', share)
+    monkeypatch.setattr(storage, 'MEDIA_DATABASE_DIR', media)
+    monkeypatch.setattr(Path, 'is_mount', lambda self: self == share.parent)
+    monkeypatch.setenv('DATA_DIR', str(tmp_path / 'data'))
+    monkeypatch.setenv('DATABASE_DIR', str(share))
+    with pytest.raises(RuntimeError, match='mediamap'):
+        storage.Store()
+    assert not (share / 'stroomvoorspeller.sqlite3').exists()

@@ -1,5 +1,5 @@
 name: "Stroomvoorspeller"
-version: "0.2.13"
+version: "0.2.14"
 slug: "stroomvoorspeller"
 description: "Lokale kwartierprijsprognose met HA-tarieven of Nederlandse marktprijzen en instelbare all-in-kosten"
 url: "https://github.com/Timminater/timminaters-addons/tree/main/stroomvoorspeller"
@@ -13,6 +13,8 @@ backup: cold
 backup_exclude:
   - "stroomvoorspeller.sqlite3*"
 map:
+  - type: share
+    read_only: false
   - type: media
     read_only: false
 stage: experimental
