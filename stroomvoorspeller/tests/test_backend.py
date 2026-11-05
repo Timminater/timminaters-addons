@@ -232,6 +232,31 @@ def test_timeline_shows_all_days_and_interval_is_saved(tmp_path):
     assert (point["status"], point["lower"], point["upper"]) == ("predicted", .2, .4)
 
 
+def test_cheapest_windows_only_start_at_or_after_now(tmp_path):
+    now = dt("2026-01-01T12:07:00Z")
+    store = Store(tmp_path)
+    service = AppService(store=store, ha=HAClient("http://127.0.0.1", ""), clock=lambda: now)
+    service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh"})
+    entity = service._archive_entity("sensor.tariff", service.get_settings())
+    start = dt("2026-01-01T10:00:00Z")
+    store.upsert_quarters([{"entity_id": entity, "start_utc": start + timedelta(minutes=15 * i),
+        "end_utc": start + timedelta(minutes=15 * (i + 1)), "price": .01 if i < 9 else .5,
+        "unit": "EUR/kWh", "source": "ha_forecast", "observed_at": now, "published_at": now}
+        for i in range(16)])
+    for result in (service.dashboard(date(2026, 1, 1), 1), service.timeline(1)):
+        assert any(dt(s["start"]) < now for s in result["slots"])
+        assert result["windows"]["known"]
+        assert all(dt(w["start"]) >= now for group in result["windows"].values() for w in group)
+        assert result["windows"]["known"][0]["start"] == "2026-01-01T12:15:00Z"
+
+    slots = [{"start": utc_iso(start + timedelta(minutes=15 * i)),
+              "end": utc_iso(start + timedelta(minutes=15 * (i + 1))),
+              "price": .1, "status": "predicted"} for i in range(12)]
+    _, mixed = _window_candidates(slots, 1, not_before=dt("2026-01-01T11:00:00Z"))
+    assert mixed[0]["start"] == "2026-01-01T11:00:00Z"
+    assert not _window_candidates(slots, 1, not_before=dt("2026-01-01T13:00:00Z"))[1]
+
+
 def test_timeline_uses_empirical_band_only_after_calibration_gate(tmp_path, monkeypatch):
     issued = dt("2026-01-01T12:00:00Z")
     target = issued + timedelta(hours=3)

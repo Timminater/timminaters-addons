@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.15
+
+- Goedkoopste momenten beginnen niet meer in het verleden; de volledige gekozen duur blijft beschikbaar.
+
 ## 0.2.14
 
 - Database verplaatst naar `/share/stroomvoorspeller`; een bestaande database uit `/media` of `/data` wordt automatisch veilig overgezet.

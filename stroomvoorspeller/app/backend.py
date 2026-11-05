@@ -94,7 +94,7 @@ def _amsterdam_day_utc_bounds(day: date) -> tuple[datetime, datetime]:
     return start.astimezone(UTC), finish.astimezone(UTC)
 
 
-def _window_candidates(slots: list[dict[str, Any]], hours: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _window_candidates(slots: list[dict[str, Any]], hours: int, *, not_before: datetime | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     count = hours * 4
     candidates = {"known": [], "mixed": []}
     for i in range(max(0, len(slots) - count + 1)):
@@ -102,6 +102,8 @@ def _window_candidates(slots: list[dict[str, Any]], hours: int) -> tuple[list[di
         if len(subset) != count or any(s["price"] is None or s["status"] == "missing" for s in subset):
             continue
         starts = [parse_dt(s["start"]) for s in subset]
+        if not_before is not None and starts[0] < not_before:
+            continue
         if any(starts[j] - starts[j - 1] != timedelta(minutes=15) for j in range(1, len(starts))):
             continue
         end = parse_dt(subset[-1]["end"])
@@ -768,7 +770,7 @@ class AppService:
                         "unit": settings.get("tariff_unit") or None, "status": "missing", "source": None,
                         "lower": None, "upper": None, "reason": "Geen bekende prijs of voorspelling"}
             slots.append(slot); cursor = end_dt
-        known_windows, mixed_windows = _window_candidates(slots, window_hours)
+        known_windows, mixed_windows = _window_candidates(slots, window_hours, not_before=now)
         current_start = utc_iso(datetime.fromtimestamp((now.timestamp() // 900) * 900, UTC))
         current = next((s for s in slots if s["start"] == current_start), None)
         archive = self.store.archive_summary(archive_entity)
@@ -805,7 +807,7 @@ class AppService:
         slots = list(overview["slots"])
         for offset in range(1, 8):
             slots.extend(self.dashboard(today + timedelta(days=offset), 1)["slots"])
-        known, mixed = _window_candidates(slots, window_hours)
+        known, mixed = _window_candidates(slots, window_hours, not_before=self.clock().astimezone(UTC))
         calibration = self.analysis().get("calibration", {})
         if calibration.get("ready") and overview.get("updated_at"):
             band_widths = {row["horizon"]: row.get("half_width")
