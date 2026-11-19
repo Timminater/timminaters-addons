@@ -21,6 +21,7 @@ HOUR = timedelta(hours=1)
 QUARTER = timedelta(minutes=15)
 MAX_AGE = timedelta(hours=6)
 SERIES = ((59, 2), (2, 1), (1, 1), (51, 1))
+USER_AGENT = "Stroomvoorspeller (Home Assistant add-on; https://github.com/Timminater/timminaters-addons)"
 
 
 def api_key(data_dir: Path) -> str:
@@ -71,7 +72,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _request(params, key, timeout):
     request = Request("https://api.ned.nl/v1/utilizations?" + urlencode(params),
-                      headers={"Accept": "application/ld+json", "X-AUTH-TOKEN": key})
+                      headers={"Accept": "application/ld+json", "X-AUTH-TOKEN": key,
+                               "User-Agent": USER_AGENT})
     try:
         with build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
             body = response.read(2_000_001)
@@ -79,8 +81,17 @@ def _request(params, key, timeout):
             raise ValueError("NED-antwoord is te groot")
         return json.loads(body)
     except HTTPError as exc:
-        code = exc.code
-        exc.close()
+        with exc:
+            code = exc.code
+            if code in (401, 403):
+                try:
+                    body = exc.read(1024)
+                except OSError:
+                    body = b""
+                if body.strip() == b"error code: 1010":
+                    raise ValueError("De beveiliging van NED blokkeerde de verbinding vóór sleutelcontrole") from None
+                if code == 401 or b"Invalid or expired API key" in body:
+                    raise ValueError("NED meldt dat de API-sleutel ongeldig of verlopen is") from None
         raise ValueError(f"NED gaf HTTP {code}") from None
     except (URLError, OSError, UnicodeError, json.JSONDecodeError):
         raise ValueError("NED-aanvraag mislukt of gaf ongeldige JSON") from None

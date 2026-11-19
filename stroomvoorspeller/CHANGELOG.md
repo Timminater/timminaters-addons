@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.19
+
+- Stroomvoorspeller identificeert zich bij NED met een eigen clientnaam. De standaard Python-clientnaam werd geblokkeerd voordat NED de API-sleutel kon controleren.
+- Bij een mislukte aanvraag maakt de melding onderscheid tussen een blokkade van de verbinding en een ongeldige of verlopen API-sleutel.
+
 ## 0.2.18
 
 - Eenvoudigere uitleg op het overzicht, in Analyse en bij Data & opslag.

@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from urllib.error import HTTPError
 
 import pytest
 
@@ -11,6 +13,23 @@ from app.timestral_models import model_spec
 
 NOW = datetime(2026, 11, 19, 13, tzinfo=timezone.utc)
 STEP = timedelta(minutes=15)
+
+
+@pytest.mark.parametrize(("response", "message"), [
+    (b"error code: 1010", "blokkeerde de verbinding"),
+    (b'{"message":"Invalid or expired API key"}', "API-sleutel ongeldig"),
+    (b"Forbidden", "HTTP 403"),
+])
+def test_ned_identifies_client_and_explains_access_errors(monkeypatch, response, message):
+    class Opener:
+        def open(self, request, timeout):
+            assert request.get_header("User-agent") == ned.USER_AGENT
+            assert request.get_header("X-auth-token") == "placeholder"
+            raise HTTPError(request.full_url, 403, "Forbidden", {}, BytesIO(response))
+
+    monkeypatch.setattr(ned, "build_opener", lambda *_: Opener())
+    with pytest.raises(ValueError, match=message):
+        ned._request({"point": 0}, "placeholder", 5)
 
 
 def test_modal_key_replaces_existing_configuration(tmp_path, monkeypatch):
