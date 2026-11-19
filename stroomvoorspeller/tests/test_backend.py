@@ -10,6 +10,7 @@ import pytest
 
 from app.backend import AppService, _amsterdam_day_utc_bounds, _window_candidates, make_handler
 from app.ha_client import HAClient, HAError, parse_forecast, parse_history
+from app.methods import timestral_version
 from app.storage import Store, utc_iso
 from app.weather import WeatherError, _hours_from_arrays, fetch_ha_weather
 
@@ -188,14 +189,14 @@ def test_dashboard_separates_known_predicted_and_missing_at_first_forecast_bound
     store = Store(tmp_path)
     service = AppService(store=store, ha=HAClient("http://127.0.0.1", ""), clock=lambda: now)
     service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
-                          "price_field": "tax_included", "weather_source": "ha",
+                          "price_field": "tax_included", "weather_source": "open_meteo",
                           "weather_entities": {"solar": "sensor.solar", "wind": "sensor.wind", "temperature": "sensor.temp"},
                           "latitude": None, "longitude": None})
     day_start, _ = _amsterdam_day_utc_bounds(date(2026, 1, 1))
     archive_entity = service._archive_entity("sensor.tariff", service.get_settings())
     store.upsert_quarters([{"entity_id": archive_entity, "start_utc": day_start, "end_utc": day_start+timedelta(minutes=15),
         "price": .2, "unit": "EUR/kWh", "source": "ha_forecast", "observed_at": now, "published_at": now}])
-    store.save_forecast("r", now, "model", "voorlopig", [], {"tariff_entity": "sensor.tariff",
+    store.save_forecast("r", now, timestral_version(service.get_settings()), "voorlopig", [], {"method":"timestral", "tariff_entity": "sensor.tariff",
                         "price_field": "tax_included", "tariff_unit": "EUR/kWh"}, [
         {"start_utc": day_start+timedelta(minutes=15), "end_utc": day_start+timedelta(minutes=30), "price": .25, "lower": None, "upper": None, "source": "model", "quality": "voorlopig"}])
     board = service.dashboard(date(2026, 1, 1), 1)
@@ -220,8 +221,8 @@ def test_timeline_shows_all_days_and_interval_is_saved(tmp_path):
         "end_utc": day_start + timedelta(minutes=15), "price": .2,
         "unit": "EUR/kWh", "source": "ha_forecast", "observed_at": now, "published_at": now}])
     forecast_start, _ = _amsterdam_day_utc_bounds(date(2026, 1, 4))
-    store.save_forecast("timeline", now, "model", "voorlopig", [],
-                        {"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
+    store.save_forecast("timeline", now, timestral_version(service.get_settings()), "voorlopig", [],
+                        {"method":"timestral","tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
                          "price_field": "tax_included"}, [{"start_utc": forecast_start,
                          "end_utc": forecast_start + timedelta(minutes=15), "price": .3,
                          "lower": .2, "upper": .4, "source": "model", "quality": "voorlopig"}])
@@ -265,14 +266,13 @@ def test_timeline_uses_empirical_band_only_after_calibration_gate(tmp_path, monk
     slot = {"start": utc_iso(target), "end": utc_iso(target + timedelta(minutes=15)),
             "price": .30, "unit": "EUR/kWh", "status": "predicted",
             "source": "model", "lower": .10, "upper": .50}
-    monkeypatch.setattr(service, "dashboard", lambda *_args: {
-        "slots": [dict(slot)] if _args[0] == issued.astimezone(service.clock().tzinfo).date() else [],
+    monkeypatch.setattr(service, "dashboard", lambda *_args, **_kwargs: {
+        "slots": [dict(slot)], "updated_at": utc_iso(issued),
         "quality": {"reasons": ["Kwartieronzekerheidsband is niet gekalibreerd"],
-                    "uncertainty": "ongekalibreerd"},
-        "updated_at": utc_iso(issued)})
-    monkeypatch.setattr(service, "analysis", lambda: {"calibration": {
-        "ready": True, "nominal_coverage": .9, "observed_coverage": .87,
-        "bands": [{"horizon": "0-24h", "half_width": .04, "holdout_points": 110}]}})
+                    "uncertainty": "ongekalibreerd", "calibration": {
+                        "ready": True, "nominal_coverage": .9, "observed_coverage": .87,
+                        "bands": [{"horizon": "0-24h", "half_width": .04, "holdout_points": 110}]}}})
+    monkeypatch.setattr(service, "analysis", lambda: pytest.fail("Timeline must not run calibration"))
     result = service.timeline()
     predicted = next(row for row in result["slots"] if row["status"] == "predicted")
     assert predicted["lower"] == pytest.approx(.26)
@@ -438,38 +438,22 @@ def test_weather_fetch_is_capped_to_one_hour_even_after_location_or_source_chang
     service.put_settings({"latitude": 11, "longitude": 20})
     assert service._weather_snapshot(service.get_settings(), now[0], force=True) is None
     assert calls == [(10, 20)]
-    monkeypatch.setattr("app.backend.fetch_ha_weather", lambda *a, **k: {
-        "source": "ha", "observed_at": utc_iso(now[0]), "hourly": {}})
-    service.put_settings({"weather_source": "ha"})
-    assert service._weather_snapshot(service.get_settings(), now[0]) is not None
-    service.put_settings({"weather_source": "open_meteo"})
-    assert service._weather_snapshot(service.get_settings(), now[0]) is None
-    assert calls == [(10, 20)]
+    with pytest.raises(ValueError, match="Open-Meteo"):
+        service.put_settings({"weather_source": "ha"})
     now[0] += timedelta(hours=1)
     service._weather_snapshot(service.get_settings(), now[0])
     assert calls == [(10, 20), (11, 20)]
 
 
-def test_ha_weather_forecast_refreshes_each_poll_without_open_meteo_hour_cap(monkeypatch, tmp_path):
-    now = [dt("2026-01-01T00:00:00Z")]
-    calls = []
-    def fake_fetch(client, entities, at):
-        calls.append(at)
-        return {"source": "ha", "entities": dict(entities), "observed_at": utc_iso(at), "hourly": {}}
-    monkeypatch.setattr("app.backend.fetch_ha_weather", fake_fetch)
-    service = AppService(store=Store(tmp_path), ha=HAClient("http://127.0.0.1", ""), clock=lambda: now[0])
-    service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
-                          "price_field": "tax_included", "weather_source": "ha",
-                          "weather_entities": {"solar": "sensor.solar", "wind": "sensor.wind", "temperature": "sensor.temp"},
-                          "latitude": None, "longitude": None})
+def test_legacy_weather_and_methods_migrate_without_changing_tariff(tmp_path):
+    service = AppService(store=Store(tmp_path))
+    service.store.set_settings({"weather_source": "ha", "active_method": "local",
+        "tariff_entity": "sensor.old", "forecast_methods": {"local": True, "v4": False}})
     settings = service.get_settings()
-    first = service._weather_snapshot(settings, now[0])
-    service.store.save_snapshot(now[0], "weather", first)
-    service.store.set_source_status("weather", success=True, attempted_at=now[0])
-    now[0] += timedelta(minutes=5)
-    second = service._weather_snapshot(settings, now[0])
-    assert len(calls) == 2
-    assert first["observed_at"] != second["observed_at"]
+    assert settings["weather_source"] == "open_meteo"
+    assert settings["tariff_entity"] == "sensor.old"
+    assert settings["active_method"] == "timestral"
+    assert settings["forecast_methods"] == {"timestral": True, "epex": False}
 
 
 def test_entity_switch_clears_history_cursor_and_hides_old_price_success(tmp_path):
@@ -477,7 +461,7 @@ def test_entity_switch_clears_history_cursor_and_hides_old_price_success(tmp_pat
     store = Store(tmp_path)
     service = AppService(store=store, ha=HAClient("http://127.0.0.1", ""), clock=lambda: now)
     service.put_settings({"tariff_entity": "sensor.old", "tariff_unit": "EUR/kWh",
-                          "price_field": "tax_included", "weather_source": "ha",
+                          "price_field": "tax_included", "weather_source": "open_meteo",
                           "weather_entities": {"solar": "sensor.solar", "wind": "sensor.wind", "temperature": "sensor.temp"},
                           "latitude": None, "longitude": None})
     store.set_settings({"history_cursor_utc": "2025-12-31T23:55:00Z"})
@@ -495,7 +479,7 @@ def test_price_field_and_unit_switch_use_separate_archive_and_forecast_namespace
     store = Store(tmp_path)
     service = AppService(store=store, ha=HAClient("http://127.0.0.1", ""), clock=lambda: now)
     service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
-                          "price_field": "tax_excluded", "weather_source": "ha",
+                          "price_field": "tax_excluded", "weather_source": "open_meteo",
                           "weather_entities": {}, "latitude": None, "longitude": None})
     forecast = {"entity_id": "sensor.tariff", "start_utc": now+timedelta(minutes=15),
                 "end_utc": now+timedelta(minutes=30),
@@ -509,7 +493,7 @@ def test_price_field_and_unit_switch_use_separate_archive_and_forecast_namespace
         model_version = "test-model"
         quality = "voorlopig"
         reasons = ["synthetic test"]
-    monkeypatch.setattr("app.backend._load_forecaster", lambda: lambda *a, **k: Run())
+    monkeypatch.setattr("app.methods.timestral_forecast", lambda *a, **k: Run())
     monkeypatch.setattr("app.backend.fetch_ha_weather", lambda *a, **k: {
         "source": "ha", "observed_at": utc_iso(now), "hourly": {}})
 
@@ -538,7 +522,7 @@ def test_price_field_and_unit_switch_use_separate_archive_and_forecast_namespace
 def test_unit_change_uses_a_distinct_price_archive(tmp_path):
     service = AppService(store=Store(tmp_path), ha=HAClient("http://127.0.0.1", ""))
     service.put_settings({"tariff_entity": "sensor.tariff", "tariff_unit": "EUR/kWh",
-                          "price_field": "tax_included", "weather_source": "ha"})
+                          "price_field": "tax_included", "weather_source": "open_meteo"})
     first = service._archive_entity("sensor.tariff", service.get_settings())
     service.put_settings({"tariff_unit": "EUR/MWh"})
     second = service._archive_entity("sensor.tariff", service.get_settings())
@@ -571,8 +555,8 @@ def test_maturity_gate_can_pass_with_dense_archive_and_seven_daily_comparisons(t
             stamp = issued + timedelta(minutes=15*quarter)
             points.append({"start_utc": stamp, "end_utc": stamp+timedelta(minutes=15), "price": .25,
                            "lower": None, "upper": None, "source": "model", "quality": "voorlopig"})
-        store.save_forecast(f"run-{offset}", issued, "quarter-test", "voorlopig", [],
-                            {"tariff_entity": entity, "history": history,
+        store.save_forecast(f"run-{offset}", issued, timestral_version(service.get_settings()), "voorlopig", [],
+                            {"method":"timestral","tariff_entity": entity, "history": history,
                              "weather_snapshot": {"raw": True},
                              "weather_model": {"hourly": {"2026-03-01T00:00:00Z": {"shortwave_radiation": 10}}}}, points)
     result = service._maturity(entity, now, store.archive_summary(entity))

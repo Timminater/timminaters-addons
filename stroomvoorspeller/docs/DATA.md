@@ -14,6 +14,16 @@ Elke actie vraagt in de app om bevestiging. Maak eerst een export of Home Assist
 
 Tijdens een berekening, historische test of modeldownload wordt opruimen geweigerd. Databasewrites zijn vergrendeld tijdens verwijderen en verkleinen; nieuwe historische tests en downloads kunnen niet tegelijk starten. SQL-verwijderingen worden eerst gecommit; daarna proberen checkpoint en VACUUM de vrije databasepagina's terug te geven aan het bestandssysteem. Als verkleinen niet lukt, meldt de app expliciet dat de records wel verwijderd zijn maar de database nog niet verkleind is. Een bron kan recent verwijderde prijzen bij een volgende synchronisatie opnieuw ophalen; de knop verandert de broninstellingen niet.
 
+## Bestaande database compact kopiëren
+
+Voer vanuit de map `stroomvoorspeller` het volgende uit op een consistente databasekopie:
+
+```shell
+python -m app.compact_database /pad/naar/stroomvoorspeller.sqlite3 /pad/naar/nieuwe-map
+```
+
+SQLite neemt gecommitteerde WAL-wijzigingen mee als het bijbehorende WAL-bestand naast de bron staat. De opdracht zet bewaarde modelinvoer om naar gedeelde dagblokken, leest de historie van elke omgezette run ter controle terug en schrijft na de SQLite-integriteitscontrole een zelfstandig bestand in de nieuwe map. Reken voor de bewerking op ruimte voor een werkkopie én het compacte resultaat. Houd de oorspronkelijke database als herstelkopie. Gebruik het resultaat met een versie die de gedeelde dagblokken kan lezen.
+
 ## Analyse-export
 
 Kies een prognoseperiode van 1–3650 dagen (standaard 30) en klik **Download analyse-export (ZIP)**. De app bouwt een consistent SQLite-leessnapshot en schrijft de JSONL-bestanden regel voor regel naar een tijdelijke ZIP; de hele database wordt niet in RAM gekopieerd. De tijdelijke ZIP wordt na downloaden verwijderd. De gecomprimeerde export is begrensd op 32 MiB. Kies bij overschrijding een kortere periode.
@@ -60,3 +70,12 @@ database bevat ook de appinstellingen. Als de sharemap bij een herstel ontbreekt
 zijn die instellingen en de historie niet vanuit alleen de appback-up te herstellen.
 Maak indien gewenst apart een consistente kopie van de database terwijl de app
 gestopt is. Een analyse-export is geen volledige herstelbackup.
+
+
+## Onderzoeksgegevens van het Nederlandse elektriciteitsnet
+
+De lokale verzamelaar vraagt elke zes uur de Nederlandse day-aheadverwachtingen voor verbruik, zon, wind op land en wind op zee op bij Energy-Charts. Iedere reeks wordt afzonderlijk bewaard met de doelkwartieren, eenheid MW, bron, licentie en het tijdstip waarop het antwoord lokaal beschikbaar kwam. Een nieuwe versie overschrijft de vorige niet. Gebruik voor een reconstructie alleen antwoorden die uiterlijk bij de modeluitgifte ontvangen waren. De generatietijd van het API-antwoord bewijst op zichzelf geen eerdere publicatie. De standaardretentie van invoersnapshots is 180 dagen. De analyse-export bevat deze reeksen in `research_forecasts.jsonl`. Bron en naamsvermelding: Fraunhofer Energy-Charts, CC BY 4.0. [API](https://api.energy-charts.info/)
+
+Met een ingestelde NED-sleutel bewaart de verzamelaar ook de vier afzonderlijke NED-reeksen, inclusief revisietijd per uur en de scheiding tussen actuele waarden en verwachtingen. Verzamelen staat los van de optionele NED-proef. Deze gegevens worden niet aan de actieve modellen toegevoegd. De keuze volgt de Nederlandse vraag-, wind- en zonreeksen van [Day Ahead Predictor](https://github.com/corneel27/day-ahead-prediction) en de vastlegging per uitgiftetijd bij [Foretec EnergyBench](https://github.com/ujohn33/foretec-energy-bench).
+
+Nieuwe voorspellingen delen identieke weerblokken. De offline compacte kopie zet bestaande weerblokken om en herbouwt de tabel met voorspelpunten zonder dubbele primaire index. De conversie controleert elke veldwaarde van de punten en de teruggelezen weergegevens, gevolgd door SQLite-integriteits- en sleutelcontroles.

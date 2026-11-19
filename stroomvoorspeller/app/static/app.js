@@ -10,6 +10,8 @@
   const fmtDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const fmtWindowDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   const fmtNumber = new Intl.NumberFormat('nl-NL', { minimumFractionDigits: 3, maximumFractionDigits: 5 });
+  const fmtDateKey = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const fmtHour = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit' });
   const fmtFullDateTime = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   function setText(id, value, fallback = '—') { const e = $(id); if (e) e.textContent = value == null || value === '' ? fallback : String(value); }
   function show(id, visible) { const e = $(id); if (e) e.hidden = !visible; }
@@ -22,7 +24,7 @@
     return source.tariff_entity || state.settings?.tariff_entity || 'Niet ingesteld';
   }
   function safeDate(value) { const d = new Date(value); return Number.isNaN(d.getTime()) ? null : d; }
-  function dateKey(d) { return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d); }
+  function dateKey(d) { return fmtDateKey.format(d); }
   function fmtPrice(value, unit) { if (value == null || value === '') return '—'; const n = Number(value); return Number.isFinite(n) ? `${fmtNumber.format(n)} ${unit || ''}`.trim() : '—'; }
   function humanTime(value, withDate = false) { const d = safeDate(value); return d ? (withDate ? fmtDateTime : fmtTime).format(d) : '—'; }
   function windowTime(value) { const d = safeDate(value); if (!d) return '—'; const text = fmtWindowDateTime.format(d); return text.charAt(0).toUpperCase() + text.slice(1); }
@@ -95,7 +97,12 @@
     const svg = $('price-chart'), axis = $('chart-axis'), scroll = svg.parentElement, tooltip = $('chart-tooltip');
     const oldScroll = scroll.scrollLeft;
     svg.replaceChildren(); axis.replaceChildren(); show('chart-tooltip', false);
-    const data = fillGaps(slots);
+    let end = slots.length;
+    while (end && (slots[end - 1].status === 'missing' || !Number.isFinite(slots[end - 1].value))) end--;
+    const data = fillGaps(slots.slice(0, end));
+    const boundary = data.find(s => s.status === 'predicted' && Number.isFinite(s.value));
+    setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
+    setText('chart-unit', data.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
     show('chart-empty', !data.length); svg.hidden = !data.length;
     if (!data.length) return;
     const compact = window.matchMedia('(max-width: 620px)').matches;
@@ -134,7 +141,7 @@
       }
       if (Number.isFinite(s.value)) { const yy = y(s.value), zero = y(0); el('rect', { x, y: Math.min(yy, zero), width: barW, height: Math.max(2, Math.abs(zero - yy)), rx: Math.min(2, barW / 2), fill: c, opacity: s.status === 'predicted' ? .7 : .92 }); }
       else el('rect', { x, y: y(0) - 2, width: barW, height: 3, rx: 1, fill: c });
-      if (s.startDate.getMinutes() === 0 && s.startDate.getHours() % 3 === 0) { const tick = el('text', { x: center, y: height - 24, 'text-anchor': 'middle', fill: '#758689', 'font-size': 9 }); tick.textContent = new Intl.DateTimeFormat('nl-NL', { timeZone: TZ, hour: '2-digit' }).format(s.startDate); }
+      if (s.startDate.getMinutes() === 0 && s.startDate.getHours() % 3 === 0) { const tick = el('text', { x: center, y: height - 24, 'text-anchor': 'middle', fill: '#758689', 'font-size': 9 }); tick.textContent = fmtHour.format(s.startDate); }
       const hit = el('rect', { x: pad.l + i * step, y: pad.t, width: step, height: plotH, fill: 'transparent', tabindex: 0, role: 'button', 'aria-label': `${fmtFullDateTime.format(s.startDate)}, ${statusNames[s.status]}, ${fmtPrice(s.value, s.unit)}` });
       hit.addEventListener('pointerenter', () => showTooltip(s, center));
       hit.addEventListener('focus', () => showTooltip(s, center));
@@ -153,8 +160,6 @@
       const label = el('text', { x: nowX + 4, y: pad.t + 10, fill: '#a4402c', 'font-size': 10, 'font-weight': 800, 'pointer-events': 'none' });
       label.textContent = 'NU';
     }
-    const boundary = slots.find(s => s.status === 'predicted'); setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
-    setText('chart-unit', slots.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
     if (!state.chartScrollInitialized) { const next = data.findIndex(s => s.endDate > now), nextIndex = next < 0 ? 0 : next; scroll.scrollLeft = compact ? Math.max(0, pad.l + nextIndex * step - scroll.clientWidth / 2) : Math.max(0, nextIndex * step - 110); state.chartScrollInitialized = true; }
     else scroll.scrollLeft = oldScroll;
   }
@@ -186,8 +191,21 @@
     const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
   }
   async function loadDashboard() {
-    try { show('load-error', false); const hours = Number($('window-duration').value) || 1; const data = await api(`api/timeline?window_hours=${hours}`); renderDashboard(data); setConnection(true); }
-    catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); }
+    const request = Symbol();
+    state.dashboardRequest = request;
+    show('load-error', false);
+    try {
+      const hours = Number($('window-duration').value) || 1;
+      const data = await api(`api/timeline?window_hours=${hours}`);
+      if (state.dashboardRequest !== request) return;
+      renderDashboard(data);
+      setConnection(true);
+    } catch (error) {
+      if (state.dashboardRequest !== request) return;
+      setConnection(false, error.message);
+      setText('load-error-text', error.message);
+      show('load-error', true);
+    }
   }
   function appendCell(row, value) { const cell = document.createElement('td'); cell.textContent = value == null ? '—' : String(value); row.append(cell); }
   function renderAnalysis(data) {
@@ -219,25 +237,86 @@
     entries.slice(0, 40).forEach(item => { const row = document.createElement('tr'); appendCell(row, humanTime(item.start, true)); appendCell(row, humanTime(item.issued_at, true)); appendCell(row, fmtPrice(item.forecast, unit)); appendCell(row, fmtPrice(item.actual, unit)); appendCell(row, fmtPrice(item.error, unit)); if (calibrated) appendCell(row, item.lower == null || item.upper == null ? '—' : `${fmtPrice(item.lower, unit)} – ${fmtPrice(item.upper, unit)}`); comparisons.append(row); });
     show('comparison-empty', entries.length === 0);
     if (!entries.length) { const row = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = calibrated ? 6 : 5; cell.className = 'table-empty'; cell.textContent = 'Nog geen prognosekwartieren met later bekend tarief beschikbaar.'; row.append(cell); comparisons.append(row); }
-    show('analysis-error', false);
   }
   async function loadAnalysis() {
-    try { show('analysis-error', false); renderAnalysis(await api('api/analysis')); await loadMethods(); }
-    catch (error) { state.analysisLoaded = false; const box = $('analysis-error'); box.replaceChildren(); const text = document.createElement('span'); text.textContent = `Analyse kon niet worden geladen: ${error.message}`; box.append(text); show('analysis-error', true); }
+    if ($('analysis-summary').closest('details').open) void loadActiveAnalysis();
+    if ($('timestral-ab-details').open) void loadTimestralAB();
+    try { await loadMethods(); }
+    catch (error) {
+      setText('comparison-context', 'Vergelijking kon niet worden geladen.');
+      setText('analysis-error', error.message);
+      show('analysis-error', true);
+    }
+  }
+  async function loadTimestralAB() {
+    const button = $('timestral-ab-refresh');
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      const data = await api('api/timestral-ab');
+      let status = 'De A/B-test staat uit.';
+      if (data.configured && !data.enabled) status = 'Schakel Timestral met weer in om de A/B-test te laten draaien.';
+      if (data.enabled && !data.key_configured) status = 'Vul de NED API-sleutel in bij de Home Assistant-appconfiguratie.';
+      if (data.enabled && data.key_configured) {
+        status = data.last_issue
+          ? `Laatste proefrun ${humanTime(data.last_issue, true)}.`
+          : data.source.last_success
+            ? 'Wacht op een gezamenlijke uitgifte met voldoende NED-dekking.'
+            : 'Wacht op de eerste NED-verwachting.';
+        const error = data.source.error || data.experiment.error;
+        if (error) status += ' ' + error;
+      }
+      if (data.issues) status += ` Laatste 45 dagen: ${data.issues} uitgiftes · ${data.targets} unieke doelkwartieren.`;
+      else if (data.last_issue) status += ' De latere tarieven zijn nog niet beschikbaar voor de proefruns.';
+      setText('timestral-ab-status', status);
+      const body = $('timestral-ab-scores');
+      body.replaceChildren();
+      for (const score of data.scores) {
+        if (score.horizon === '48-168u') continue;
+        const row = document.createElement('tr');
+        appendCell(row, score.horizon === 'all' ? '0–168 uur' : score.horizon.replace('-', '–').replace('u', ' uur'));
+        appendCell(row, score.baseline.n);
+        appendCell(row, fmtPrice(score.baseline.mae, data.unit));
+        appendCell(row, fmtPrice(score.candidate.mae, data.unit));
+        body.append(row);
+      }
+    } catch (error) {
+      setText('timestral-ab-status', `A/B-resultaten konden niet worden geladen: ${error.message}`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+  async function loadActiveAnalysis() {
+    if (state.activeAnalysisLoading) return;
+    state.activeAnalysisLoading = true;
+    try { renderAnalysis(await api('api/analysis')); }
+    catch (error) { setText('analysis-state', `Details konden niet worden geladen: ${error.message}`); }
+    finally { state.activeAnalysisLoading = false; }
   }
   let historyTimer = null;
   async function loadMethods() {
     if (!state.compareInitialized) {
-      for (const id of ['local', 'v4', 'epex', 'timestral']) $(`compare-${id}`).checked = state.settings?.forecast_methods?.[id] ?? (id === 'local');
+      if (state.settings?.forecast_methods) {
+        for (const id of ['epex', 'timestral']) $(`compare-${id}`).checked = !!state.settings.forecast_methods[id];
+      }
       state.compareInitialized = true;
     }
+    const details = $('method-comparisons').closest('details').open;
+    const selected = ['epex', 'timestral'].filter(id => $(`compare-${id}`).checked);
+    const query = new URLSearchParams({mode: $('comparison-mode').value, horizon: $('comparison-horizon').value, days: $('comparison-days').value, methods: selected.join(',') || 'none', details: details ? '1' : '0'}).toString();
+    if (state.comparePending === query) return;
     const request = state.compareRequest = (state.compareRequest || 0) + 1;
-    const selected = ['local', 'v4', 'epex', 'timestral'].filter(id => $(`compare-${id}`).checked);
-    const query = new URLSearchParams({mode: $('comparison-mode').value, horizon: $('comparison-horizon').value, days: $('comparison-days').value, methods: selected.join(',') || 'none'});
+    state.comparePending = query;
+    show('analysis-error', false);
+    if (!state.comparison) setText('comparison-context', 'Vergelijking laden…');
     let data;
-    try { data = await api('api/methods?' + query); } catch (error) { if (request !== state.compareRequest) return; throw error; }
+    try { data = await api('api/methods?' + query); }
+    catch (error) { if (request !== state.compareRequest) return; throw error; }
+    finally { if (request === state.compareRequest) state.comparePending = null; }
     if (request !== state.compareRequest) return;
     renderPerformance(data);
+    updateHistoryJob(data.history_job || {});
+    if (!details) return;
     const body = $('method-comparisons'); body.replaceChildren();
     const score = value => `${fmtPrice(value?.mae, data.unit)} / ${value?.n ?? 0}`;
     for (const method of data.methods || []) {
@@ -245,28 +324,41 @@
       appendCell(row, `${method.label}${method.id === data.active_method && method.enabled ? ' (actief)' : ''}`);
       appendCell(row, !method.enabled ? 'Uit' : method.status?.error || (method.status?.last_success ? 'Gereed' : 'Wacht op berekening'));
       appendCell(row, score(method.live));
-      appendCell(row, method.historical_supported ? score(method.historical) : 'Niet beschikbaar');
+      const historical = method.historical;
+      const historicalLabel = historical?.version && historical.label !== method.label ? historical.label : '';
+      appendCell(row, method.historical_supported ? [score(historical), historicalLabel].filter(Boolean).join(' · ') : 'Niet beschikbaar');
       body.append(row);
     }
     const horizons = $('method-horizons'); horizons.replaceChildren();
     for (const method of data.methods || []) {
-      const row = document.createElement('tr'); appendCell(row, method.label + (method.historical?.weather_reconstruction ? ' · archiefweer' : ''));
+      const row = document.createElement('tr'); appendCell(row, method.historical?.label || method.label);
       for (const name of ['0-24u', '24-48u', '48-72u', '72-96u', '96-120u', '120-144u', '144-168u']) appendCell(row, score(method.historical?.horizons?.find(h => h.horizon === name)));
       horizons.append(row);
     }
     setText('method-pairing', data.pairing_notice);
     setText('history-notice', data.historical_notice);
-    const job = data.history_job || {};
+  }
+  function updateHistoryJob(job) {
     const running = job.state === 'running'; $('history-test').disabled = running; $('history-test-horizon').disabled = running; $('history-weather-mode').disabled = running;
     const labels = {idle: 'Nog geen historische test gestart.', running: 'Historische test bezig', completed: 'Historische test afgerond', completed_with_errors: 'Afgerond met fouten', completed_with_skips: 'Afgerond met overgeslagen historische uitgiftes', failed: 'Historische test mislukt', cancelled: 'Historische test gestopt'};
     setText('history-progress', state.historyError || `${labels[job.state] || job.state}${job.horizon_hours ? ` · ${job.horizon_hours} uur per uitgifte` : ''} ${job.total ? `${job.completed || 0}/${job.total}` : ''} ${(job.errors || []).map(e => `${e.method || ''}: ${e.message}`).join(' · ')}${job.skipped?.length ? ` · ${job.skipped.length} overgeslagen. ${[...new Set(job.skipped.map(e => `${e.method}: ${e.message}`))].join(' · ')}` : ''}`);
     if (historyTimer) clearTimeout(historyTimer);
-    if (running) historyTimer = setTimeout(() => loadMethods().catch(error => { setText('history-progress', error.message); $('history-test').disabled = false; }), 2500);
+    if (running) historyTimer = setTimeout(pollHistoryJob, 2500);
+  }
+  async function pollHistoryJob() {
+    try {
+      const job = await api('api/history-job');
+      updateHistoryJob(job);
+      if (job.state !== 'running' && state.activeView === 'analysis') await loadAnalysis();
+    } catch (error) {
+      setText('history-progress', error.message);
+      $('history-test').disabled = false;
+    }
   }
   async function testHistory() {
     state.historyError = null;
     $('history-test').disabled = true;
-    try { await api('api/history-test?horizon_hours=' + encodeURIComponent($('history-test-horizon').value) + '&weather=' + encodeURIComponent($('history-weather-mode').value), {method: 'POST'}); await loadMethods(); }
+    try { updateHistoryJob(await api('api/history-test?horizon_hours=' + encodeURIComponent($('history-test-horizon').value) + '&weather=' + encodeURIComponent($('history-weather-mode').value), {method: 'POST'})); }
     catch (error) { state.historyError = error.message; setText('history-progress', error.message); $('history-test').disabled = false; }
   }
   function updateTimestralModel() {
@@ -317,32 +409,38 @@
       show('settings-error', true);
       $('settings-error').textContent = `Home Assistant-entiteiten zijn nu niet beschikbaar: ${result.error}`;
     }
-    const targets = [['tariff-entity', e => e.domain === 'sensor'], ['solar-entity', e => e.domain === 'sensor'], ['wind-entity', e => e.domain === 'sensor'], ['temperature-entity', e => e.domain === 'sensor']];
+    const targets = [['tariff-entity', e => e.domain === 'sensor']];
     for (const [id, filter] of targets) { const select = $(id); const selected = select.value; select.replaceChildren(); const prompt = document.createElement('option'); prompt.value = ''; prompt.textContent = id === 'tariff-entity' ? 'Kies een kwartiertariefsensor' : 'Kies een entiteit'; select.append(prompt); for (const entity of state.entities.filter(filter)) select.append(optionFor(entity)); if (selected) select.value = selected; }
   }
-  function setWeatherFields() { const ha = document.querySelector('input[name="weather_mode"]:checked')?.value === 'ha'; show('ha-weather-fields', ha); show('open-meteo-fields', $('weather-region').value === 'local'); }
+  async function loadTariffs() {
+    try { await loadEntities(); }
+    catch (error) { setText('settings-error', error.message); show('settings-error', true); }
+    const select = $('tariff-entity');
+    if (!select.value && state.settings?.tariff_entity) {
+      if (![...select.options].some(o => o.value === state.settings.tariff_entity))
+        select.add(new Option(state.settings.tariff_entity, state.settings.tariff_entity));
+      select.value = state.settings.tariff_entity;
+    }
+  }
+  function setWeatherFields() { show('open-meteo-fields', $('weather-region').value === 'local'); if ($('location-source')) show('location-source', $('weather-region').value === 'local'); }
   async function openSettings() {
     if (state.settingsOpening) return;
     state.settingsOpening = true; state.promptedConfig = true;
     show('settings-error', false);
     try { state.settings = await api('api/settings'); }
     catch (error) { state.settings = {}; show('settings-error', true); $('settings-error').textContent = `Instellingen konden niet worden geladen: ${error.message}`; }
-    try { await loadEntities(); }
-    catch (error) {
-      state.entities = [];
-      show('settings-error', true);
-      $('settings-error').textContent = `Entiteiten konden niet worden geladen: ${error.message}`;
-    }
     fillSettings(state.settings || {});
+    $('price-config').open = !state.settings?.tariff_entity && state.settings?.price_source !== 'energy_charts_nl';
     $('settings-dialog').showModal();
     state.settingsOpening = false;
   }
   function fillSettings(s = {}) {
     $('price-source').value = s.price_source || 'home_assistant';
-    const tariff = $('tariff-entity'); tariff.value = s.tariff_entity || '';
+    const tariff = $('tariff-entity');
+    if (s.tariff_entity && ![...tariff.options].some(o => o.value === s.tariff_entity)) tariff.add(new Option(s.tariff_entity, s.tariff_entity));
+    tariff.value = s.tariff_entity || '';
     if (!tariff.value && state.entities.some(e => e.entity_id === DEFAULT_TARIFF)) tariff.value = DEFAULT_TARIFF;
-    const mode = s.weather_source === 'ha' || s.weather_source === 'home_assistant' ? 'ha' : 'open_meteo'; const radio = document.querySelector(`input[name="weather_mode"][value="${mode}"]`); if (radio) radio.checked = true;
-    $('solar-entity').value = s.weather_entities?.solar || ''; $('wind-entity').value = s.weather_entities?.wind || ''; $('temperature-entity').value = s.weather_entities?.temperature || ''; $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
+    $('tariff-unit').value = s.tariff_unit || 'EUR/kWh'; $('price-field').value = s.price_field || 'tax_included';
     $('supplier').replaceChildren(...Object.entries(s.supplier_presets || {custom: {label: 'Eigen tarief'}}).map(([key, preset]) => new Option(preset.label, key)));
     $('price-choice').value = s.price_choice || 'bare'; $('supplier').value = s.supplier || 'custom';
     $('energy-tax').value = s.energy_tax_eur_kwh ?? 0.09161; $('vat-percent').value = s.vat_percent ?? 21;
@@ -353,8 +451,8 @@
     updatePriceSourceFields();
     $('calculation-interval').value = String(s.calculation_interval_minutes || 5);
     $('mqtt-enabled').checked = s.mqtt_enabled === true;
-    for (const method of ['local', 'v4', 'epex', 'timestral']) $('method-' + method).checked = s.forecast_methods?.[method] ?? (method === 'local');
-    $('active-method').value = s.active_method || 'local';
+    for (const method of ['epex', 'timestral']) $('method-' + method).checked = s.forecast_methods?.[method] ?? (method === 'timestral');
+    $('active-method').value = s.active_method || 'timestral';
     $('ml-threads').value = s.ml_threads ?? 2;
     $('epex-training').value = s.epex_training_days ?? 180;
     const profiles = $('epex-profile');
@@ -367,6 +465,7 @@
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
     $('weather-region').value = s.weather_region || 'nl';
     $('timestral-weather').checked = s.timestral_weather === true;
+    $('timestral-ned-ab').checked = s.timestral_ned_ab === true;
     $('timestral-calendar').checked = s.timestral_calendar !== false;
     $('timestral-model').value = s.timestral_model || '28M';
     updateTimestralModel();
@@ -388,10 +487,10 @@
     setWeatherFields();
   }
   async function saveSettings(event) {
-    event.preventDefault(); const weatherSource = document.querySelector('input[name="weather_mode"]:checked')?.value || 'open_meteo'; const tariff = $('tariff-entity').value; const priceSource = $('price-source').value;
+    event.preventDefault(); const tariff = $('tariff-entity').value; const priceSource = $('price-source').value;
     if (priceSource === 'home_assistant' && !tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
-    const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: weatherSource, weather_entities: { solar: $('solar-entity').value || null, wind: $('wind-entity').value || null, temperature: $('temperature-entity').value || null }, latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
-    settings.forecast_methods = Object.fromEntries(['local', 'v4', 'epex', 'timestral'].map(m => [m, $('method-' + m).checked]));
+    const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: 'open_meteo', latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
+    settings.forecast_methods = Object.fromEntries(['epex', 'timestral'].map(m => [m, $('method-' + m).checked]));
     settings.active_method = $('active-method').value;
     settings.ml_threads = Number($('ml-threads').value);
     settings.epex_training_days = Number($('epex-training').value);
@@ -401,12 +500,12 @@
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
     settings.weather_region = $('weather-region').value;
     settings.timestral_weather = $('timestral-weather').checked;
+    settings.timestral_ned_ab = $('timestral-ned-ab').checked;
     settings.timestral_calendar = $('timestral-calendar').checked;
     settings.timestral_model = $('timestral-model').value;
     settings.timestral_context_days = Number($('timestral-context').value);
     settings.history_days = Number($('history-days').value);
     if (priceSource === 'energy_charts_nl' && settings.price_choice === 'all_in' && (!$('supplier-fee').value || (settings.supplier === 'tibber' && !settings.supplier_fee_confirmed))) { show('settings-error', true); $('settings-error').textContent = 'Vul de gecontroleerde inkoopvergoeding incl. btw in en bevestig de btw-basis.'; return; }
-    if (weatherSource === 'ha' && Object.values(settings.weather_entities).some(v => !v)) { show('settings-error', true); $('settings-error').textContent = 'Kies zon, wind en temperatuur om HA-weer te gebruiken.'; return; }
     const button = $('settings-save'); button.disabled = true; button.textContent = 'Opslaan…';
     try { state.settings = await api('api/settings', { method: 'PUT', body: JSON.stringify(settings) }); $('settings-dialog').close(); toast('Instellingen opgeslagen. De app haalt de bronnen opnieuw op.'); await loadAll(); }
     catch (error) { show('settings-error', true); $('settings-error').textContent = error.message; }
@@ -461,12 +560,25 @@
     setText('storage-open', `Opslag: ${storageBytes(data.total_bytes)}`);
     setText('storage-summary', `${storageBytes(data.total_bytes)} appdata · ${storageBytes(data.free_bytes)} vrij op het bestandssysteem`);
     setText('storage-breakdown', `Database: ${storageBytes(data.database_bytes)} · Timestral: ${storageBytes(data.timestral_bytes)} · Epex-cache: ${storageBytes(data.epex_cache_bytes)} · Overig: ${storageBytes(data.other_bytes)}`);
+    const labels = {load: 'Verbruik', solar: 'Zon', wind_onshore: 'Wind op land', wind_offshore: 'Wind op zee', ned_residual_load: 'NED-restvraag'};
+    const research = (data.research || []).map(r => {
+      const kind = r.source.split(':').pop();
+      return `${labels[kind] || kind} · ${r.snapshots} opname(s) · ${humanTime(r.last_seen, true)}`;
+    });
+    setText('research-summary', research.length ? 'Onderzoeksgegevens — ' + research.join(' / ') : 'Nog geen onderzoeksverwachtingen opgeslagen.');
     const count = data.removable;
     setText('storage-preview', `Ouder dan ${data.days} dagen: ${count.quarter_prices} kwartierprijzen, ${count.quarter_price_revisions} revisies, ${count.hourly_history} uurprijzen, ${count.forecast_runs} prognoseruns en ${count.input_snapshots} bronsnapshots. Punten van verwijderde runs verdwijnen ook.`);
   }
   async function loadStorage() {
-    try { renderStorage(await api('api/storage?days=' + encodeURIComponent($('storage-days').value))); }
-    catch (error) { setText('storage-message', error.message); }
+    const days = $('storage-days').value;
+    const request = Symbol();
+    state.storageRequest = request;
+    try {
+      const data = await api('api/storage?days=' + encodeURIComponent(days));
+      if (state.storageRequest === request) renderStorage(data);
+    } catch (error) {
+      if (state.storageRequest === request) setText('storage-message', error.message);
+    }
   }
   async function cleanStorage(action) {
     const days = Number($('storage-days').value);
@@ -508,10 +620,10 @@
     state.comparison = data;
     const view = data.view || {}, unit = data.unit || state.settings?.tariff_unit || '';
     const names = Object.fromEntries((data.methods || []).map(m => [m.id, m.label]));
-    setText('compare-timestral-label', names.timestral || 'Timestral');
-    for (const id of ['local', 'v4', 'epex', 'timestral']) $(`compare-${id}`).parentElement.style.setProperty('--method-color', modelColors[id]);
+    setText('compare-timestral-label', view.metrics?.find(m => m.id === 'timestral')?.label || names.timestral || 'Timestral');
+    for (const id of ['epex', 'timestral']) $(`compare-${id}`).parentElement.style.setProperty('--method-color', modelColors[id]);
     const mode = view.mode === 'historical' ? 'Historische reconstructie' : 'Live voorspellingen';
-    setText('comparison-context', view.selected?.length ? `${mode} · ${view.n || 0} vergelijkbare voorspellingen per methode · ${view.available?.length || 0} methode(n)` : 'Geen methoden geselecteerd.');
+    setText('comparison-context', view.selected?.length ? `${mode} · ${view.n || 0} paren per methode · ${view.issue_days || 0} uitgiftedagen · ${view.unique_targets || 0} unieke kwartieren · ${view.available?.length || 0} methode(n)` : 'Geen methoden geselecteerd.');
     const warnings = [];
     if (view.mode === 'historical') warnings.push('Reconstructie met huidige archiefdata; geen bewijs van live prestaties.');
     if (view.missing?.length) warnings.push(`Nog geen resultaten in dit venster: ${view.missing.map(m => names[m]).join(', ')}.`);
@@ -529,6 +641,8 @@
       fill.style.width = `${metric.n && maximum ? metric.mae / maximum * 100 : 0}%`; track.append(fill);
       const value = document.createElement('strong'); value.textContent = metric.n ? fmtPrice(metric.mae, unit) : 'Nog geen score';
       const detail = document.createElement('small'); detail.textContent = `${metric.n || 0} paren · bias ${metric.n ? fmtPrice(metric.bias, unit) : '—'}`;
+      if (metric.weekly_skill != null) detail.textContent += ` · winst t.o.v. vorige week ${(100 * metric.weekly_skill).toFixed(1)}% (${metric.weekly_pairs} paren)`;
+      if (metric.window_regret != null) detail.textContent += ` · meerprijs gekozen 3-uursvenster ${fmtPrice(metric.window_regret, unit)} (${metric.window_n} dagkeuzes)`;
       row.append(label, track, value, detail); bars.append(row);
     }
     if (!view.metrics?.length) { const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = 'Nog geen vergelijkbare resultaten voor deze selectie.'; bars.append(empty); }
@@ -547,7 +661,10 @@
     const rows = errors ? (view.daily || []).map(r => ({time: new Date(`${r.date}T12:00:00Z`), values: r.mae, n: r.n})) : (view.points || []).map(r => ({time: new Date(r.start), issued: r.issued_at, values: {...r.predictions, actual: r.actual}}));
     const populated = rows.length && view.n;
     show('comparison-empty-state', !populated); svg.hidden = !populated; svg.style.display = populated ? 'block' : 'none'; show('comparison-legend', !!populated); show('comparison-chart-note', !!populated);
-    setText('comparison-empty-state', view.selected?.length ? 'Nog geen gemeenschappelijke punten. Kies eventueel Historische reconstructie of een andere periode.' : 'Selecteer minimaal één methode.');
+    const emptyText = view.mode === 'historical'
+      ? 'Geen vergelijkbare historische resultaten in deze selectie. Kies een langere periode of toets welke methoden zijn aangevinkt.'
+      : 'Geen gemeenschappelijke live uitgiftes en kwartieren in deze selectie. Kies een langere periode of minder methoden.';
+    setText('comparison-empty-state', view.selected?.length ? emptyText : 'Selecteer minimaal één methode.');
     setText('comparison-chart-title', errors ? 'Voorspelfout per uitgiftedag' : 'Prognoses naast werkelijke tarieven');
     setText('comparison-chart-note', errors ? `Dagelijkse MAE in ${data.unit || ''}; lager is beter. ${view.notice || ''}` : `Maximaal 192 recente doelkwartieren in ${data.unit || ''}. Beweeg over een punt voor tijd, uitgifte en tarieven. Gaten blijven zichtbaar. ${view.notice || ''}`);
     if (!populated) return;
@@ -579,13 +696,15 @@
   }
 
   async function loadAll() {
-    try { state.settings = await api('api/settings'); } catch (_) { state.settings = null; }
-    try { updateStatus(await api('api/status')); } catch (error) { setConnection(false, error.message); $('load-error-text').textContent = error.message; show('load-error', true); return; }
-    await loadStorage();
-    await loadDashboard(); if (state.activeView === 'analysis') await loadAnalysis();
+    const dashboard = loadDashboard();
+    try { state.settings = await api('api/settings?location=0'); } catch (_) { state.settings = null; }
+    try { updateStatus(await api('api/status')); }
+    catch (error) { reportErrors([{message: error.message}]); }
+    await dashboard;
+    if (state.activeView === 'analysis') await loadAnalysis();
   }
   function init() {
-    $('storage-open').addEventListener('click', () => { activateView('data'); $('storage-card').scrollIntoView({behavior: 'smooth'}); void loadStorage(); });
+    $('storage-open').addEventListener('click', () => { activateView('data'); $('storage-card').scrollIntoView({behavior: 'smooth'}); });
     $('storage-refresh').addEventListener('click', loadStorage);
     $('storage-days').addEventListener('change', loadStorage);
     $('storage-clean-history').addEventListener('click', () => cleanStorage('history'));
@@ -593,23 +712,31 @@
     $('storage-clean-models').addEventListener('click', () => cleanStorage('unused_models'));
     $('data-export').addEventListener('click', exportData);
     $('history-test').addEventListener('click', testHistory);
-    for (const id of ['comparison-mode', 'comparison-horizon', 'comparison-days', 'compare-local', 'compare-v4', 'compare-epex', 'compare-timestral']) $(id).addEventListener('change', () => { state.comparison = null; $('comparison-chart').replaceChildren(); $('performance-bars').replaceChildren(); setText('comparison-context', 'Vergelijking laden…'); loadMethods().catch(error => { setText('comparison-warning', error.message); show('comparison-warning', true); }); });
+    $('timestral-ab-details').addEventListener('toggle', () => { if ($('timestral-ab-details').open) void loadTimestralAB(); });
+    $('timestral-ab-refresh').addEventListener('click', loadTimestralAB);
+    for (const id of ['comparison-mode', 'comparison-horizon', 'comparison-days', 'compare-epex', 'compare-timestral']) $(id).addEventListener('change', () => { state.comparison = null; $('comparison-chart').replaceChildren(); $('performance-bars').replaceChildren(); show('comparison-warning', false); void loadAnalysis(); });
+    const activeDetails = $('analysis-summary').closest('details');
+    activeDetails.addEventListener('toggle', () => { if (activeDetails.open) void loadActiveAnalysis(); });
+    const methodDetails = $('method-comparisons').closest('details');
+    methodDetails.addEventListener('toggle', () => { if (methodDetails.open) void loadAnalysis(); });
     $('comparison-chart-kind').addEventListener('change', renderPerformanceChart);
     $('weather-region').addEventListener('change', setWeatherFields);
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
-    $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard); document.querySelectorAll('input[name="weather_mode"]').forEach(r => r.addEventListener('change', setWeatherFields));
+    $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard);
     $('epex-profile').addEventListener('change', () => {
       if ($('epex-profile').value !== 'custom') $('price-field').value = 'tax_included';
       updateEpexProfile();
     });
-    $('price-source').addEventListener('change', updatePriceSourceFields); $('supplier').addEventListener('change', supplierDefaults);
+    $('price-config').addEventListener('toggle', () => { if ($('price-config').open && $('price-source').value === 'home_assistant') void loadTariffs(); });
+    $('price-source').addEventListener('change', () => { updatePriceSourceFields(); if ($('price-source').value === 'home_assistant') void loadTariffs(); }); $('supplier').addEventListener('change', supplierDefaults);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('data-tab').addEventListener('click', () => activateView('data')); $('analysis-refresh').addEventListener('click', loadAnalysis);
     for (const [index, view] of ['dashboard', 'analysis', 'data'].entries()) $(view + '-tab').addEventListener('keydown', event => {
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const views = ['dashboard', 'analysis', 'data']; activateView(views[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3], true); }
     });
     window.addEventListener('resize', () => { if (state.dashboard) renderChart(normalizeSlots(state.dashboard.slots)); if (state.comparison) renderPerformanceChart(); });
-    loadAll(); state.timer = setInterval(loadAll, 60000);
+    loadAll(); state.timer = setInterval(() => { if (!document.hidden) void loadAll(); }, 60000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) void loadAll(); });
   }
   document.addEventListener('DOMContentLoaded', init);
 })();

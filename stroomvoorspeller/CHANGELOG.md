@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.16
+
+- Met een eigen `ned_api_key` archiveert de app elke drie uur de beschikbare Nederlandse verbruiks-, zon- en windgegevens en de berekende restvraag. Vul de sleutel in bij de Home Assistant-appconfiguratie en herstart de app.
+- Zet voor gepaarde voorspellingen bij Instellingen de regionale weerinformatie voor Timestral en **A/B-test met Nederlandse restvraag** aan. Analyse toont hoe de extra invoer presteert zodra er werkelijke kwartiertarieven beschikbaar zijn.
+- Energy-Charts-verwachtingen worden apart verzameld voor latere analyses. Timestral en EpexPredictor blijven afzonderlijke methoden. De documentatie bevat lokale vergelijkingen van Timestral-modellen en weersignalen.
+- De grafiek laadt direct uit opgeslagen gegevens. De opslagcontrole start bij het openen van Data & opslag. Runhistorie kan compacter worden opgeslagen en automatische berekeningen houden rekening met gewijzigde invoer.
+
 ## 0.2.15
 
 - Goedkoopste momenten beginnen niet meer in het verleden; de volledige gekozen duur blijft beschikbaar.

@@ -1,4 +1,5 @@
 """Cross-process Open-Meteo cache and request budget, including failed calls."""
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import math
 from email.utils import parsedate_to_datetime
@@ -32,6 +33,13 @@ def _write(path, data):
     temporary.replace(path)
 
 
+@contextmanager
+def _locked(path):
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def cached_json(url, root, *, opener=urlopen, clock=time.time):
     """No force bypass. Historical ranges cache 30d; live location/variable sets 3h.
 
@@ -46,33 +54,36 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
     key=hashlib.sha256((parts.hostname+parts.path+'?'+urlencode(params)).encode()).hexdigest()
     root=Path(root)/'weather-cache';root.mkdir(parents=True,exist_ok=True)
     target=root/(key+'.json');statefile=root/'budget.json'
-    with (root/'budget.lock').open('a') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX)
-        now=clock();cached=_read(target);state=_read(statefile)
-        ttl=30*86400 if historical else LIVE_TTL
-        age=now-cached.get('fetched_at',0)
-        if cached.get('data') is not None and 0<=age<ttl:
-            return cached['data'],cached['fetched_at']
-        until=max(state.get('blocked_until',0),cached.get('retry_after',0))
-        if now<until:
-            reason=state.get('blocked_reason') if state.get('blocked_until',0)>=cached.get('retry_after',0) else cached.get('error_reason')
-            minutes=max(1,math.ceil((until-now)/60))
-            raise ValueError(f'Open-Meteo in afkoelperiode ({reason or "tijdelijke bronfout"}); volgende poging over {minutes} minuten. Bestaande cache wordt hergebruikt waar volledig')
-        day=datetime.fromtimestamp(now,timezone.utc).date().isoformat()
-        calls=[t for t in state.get('recent',[]) if now-60<t<=now]
-        count=state.get('count',0) if state.get('day')==day else 0
-        units=state.get('units',0) if state.get('day')==day else 0
-        query=dict(parse_qsl(parts.query))
-        points=len(query.get('latitude','').split(','))
-        span=int(query.get('past_days','0'))+int(query.get('forecast_days','8'))
-        if 'start_date' in query and 'end_date' in query:
-            span=(datetime.fromisoformat(query['end_date'])-datetime.fromisoformat(query['start_date'])).days+1
-        cost=points*max(1,math.ceil(span/14))
-        if count>=48 or units+cost>512:
-            raise ValueError('Gedeeld weer-API-dagbudget bereikt; probeer later opnieuw')
-        if len(calls)>=12: raise WeatherMinuteBudget(max(1,math.ceil(min(calls)+61-now)))
-        state.update(day=day,count=count+1,units=units+cost,recent=[*calls,now])
-        _write(statefile,state)  # reserve before I/O, including crashes and failures
+    # A bounded set of locks coalesces duplicate downloads without blocking unrelated cache hits.
+    budget_lock = root/'budget.lock'
+    with _locked(root/('request-'+key[:2]+'.lock')):
+        with _locked(budget_lock):
+            now=clock()
+            cached=_read(target);state=_read(statefile)
+            ttl=30*86400 if historical else LIVE_TTL
+            age=now-cached.get('fetched_at',0)
+            if cached.get('data') is not None and 0<=age<ttl:
+                return cached['data'],cached['fetched_at']
+            until=max(state.get('blocked_until',0),cached.get('retry_after',0))
+            if now<until:
+                reason=state.get('blocked_reason') if state.get('blocked_until',0)>=cached.get('retry_after',0) else cached.get('error_reason')
+                minutes=max(1,math.ceil((until-now)/60))
+                raise ValueError(f'Open-Meteo in afkoelperiode ({reason or "tijdelijke bronfout"}); volgende poging over {minutes} minuten. Bestaande cache wordt hergebruikt waar volledig')
+            day=datetime.fromtimestamp(now,timezone.utc).date().isoformat()
+            calls=[t for t in state.get('recent',[]) if now-60<t<=now]
+            count=state.get('count',0) if state.get('day')==day else 0
+            units=state.get('units',0) if state.get('day')==day else 0
+            query=dict(parse_qsl(parts.query))
+            points=len(query.get('latitude','').split(','))
+            span=int(query.get('past_days','0'))+int(query.get('forecast_days','8'))
+            if 'start_date' in query and 'end_date' in query:
+                span=(datetime.fromisoformat(query['end_date'])-datetime.fromisoformat(query['start_date'])).days+1
+            cost=points*max(1,math.ceil(span/14))
+            if count>=48 or units+cost>512:
+                raise ValueError('Gedeeld weer-API-dagbudget bereikt; probeer later opnieuw')
+            if len(calls)>=12: raise WeatherMinuteBudget(max(1,math.ceil(min(calls)+61-now)))
+            state.update(day=day,count=count+1,units=units+cost,recent=[*calls,now])
+            _write(statefile,state)  # reserve before I/O, including crashes and failures
         try:
             with opener(Request(url,headers={'Accept':'application/json','User-Agent':'Stroomvoorspeller/weer'}),timeout=45) as response:
                 raw=response.read(MAX_BYTES+1)
@@ -80,14 +91,15 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
             data=json.loads(raw)
             if not isinstance(data,(dict,list)) or isinstance(data,dict) and data.get('error'):
                 raise ValueError('Weerbron retourneerde geen geldige weerdata')
-            _write(target,{'fetched_at':now,'data':data})
-            # Bound the shared payload cache; never remove request-budget state.
-            entries=sorted(root.glob('[0-9a-f]'*64+'.json'),key=lambda p:p.stat().st_mtime)
-            total=sum(p.stat().st_size for p in entries)
-            for old in entries:
-                if total<=64*1024*1024: break
-                if old==target: continue
-                total-=old.stat().st_size;old.unlink(missing_ok=True)
+            with _locked(budget_lock):
+                _write(target,{'fetched_at':now,'data':data})
+                # Bound the shared payload cache; never remove request-budget state.
+                entries=sorted(root.glob('[0-9a-f]'*64+'.json'),key=lambda p:p.stat().st_mtime)
+                total=sum(p.stat().st_size for p in entries)
+                for old in entries:
+                    if total<=64*1024*1024: break
+                    if old==target: continue
+                    total-=old.stat().st_size;old.unlink(missing_ok=True)
             return data,now
         except Exception as exc:
             delay=3600
@@ -99,9 +111,12 @@ def cached_json(url, root, *, opener=urlopen, clock=time.time):
                 except ValueError:
                     try: delay=max(delay,parsedate_to_datetime(value).timestamp()-now)
                     except (TypeError,ValueError,OverflowError): pass
-                state['blocked_until']=now+delay
-                state['blocked_reason']=reason
-                _write(statefile,state)
+                with _locked(budget_lock):
+                    state = _read(statefile)
+                    if now+delay > state.get('blocked_until', 0):
+                        state['blocked_until']=now+delay
+                        state['blocked_reason']=reason
+                        _write(statefile,state)
             cached['retry_after']=now+delay
             cached['error_reason']=reason
             _write(target,cached)

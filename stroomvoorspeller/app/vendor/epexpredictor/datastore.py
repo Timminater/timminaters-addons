@@ -162,7 +162,10 @@ class DataStore:
         fn = self.get_storage_file()
         if fn is not None:
             log.info(f"{self.region.bidding_zone_entsoe}: storing new {self.storage_fn_prefix} data")
-            await asyncio.to_thread(self.data.to_json, fn, compression='gzip')
+            # A historical worker may yield to the live run during serialization.
+            temporary = fn + '.tmp'
+            await asyncio.to_thread(self.data.to_json, temporary, compression='gzip')
+            os.replace(temporary, fn)
 
     async def load(self) -> Self:
         fn = self.get_storage_file()

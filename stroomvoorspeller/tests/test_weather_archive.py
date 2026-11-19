@@ -84,8 +84,8 @@ def test_historical_test_uses_old_runs_and_keeps_archive_scores_out_of_live(tmp_
     assert app._history_job['state']=='completed',app._history_job
     assert not app._history_job['errors'] and not app._history_job['skipped']
     assert len(urls)==8  # One context dataset + seven distinct original runs.
-    result=comparison(app,mode='historical',horizon='144-168u',selected=['local','v4','timestral'])
-    assert result['view']['paired'] and result['view']['n']==7*96
+    result=comparison(app,mode='historical',horizon='144-168u',selected=['timestral'])
+    assert not result['view']['paired'] and result['view']['n']==7*96
     assert all(m['version'].endswith(WEATHER_ARCHIVE_VERSION) and 'archiefweer' in m['label'] for m in result['view']['metrics'])
     assert comparison(app,mode='live')['view']['n']==0
     assert app.store.latest_forecast()[0] is None

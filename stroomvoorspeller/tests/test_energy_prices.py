@@ -63,6 +63,10 @@ def test_market_source_refreshes_without_ha_and_scopes_components(monkeypatch, t
                           "supplier_fee_eur_kwh_incl_vat": .02, "tariff_valid_from": "2026-01-01",
                           "tariff_valid_to": "2026-12-31", "calculation_interval_minutes": 5})
     first_identity = service._price_identity(service.get_settings())
+    from app.model import ForecastRun
+    from app.methods import timestral_version
+    monkeypatch.setattr("app.methods.timestral_forecast", lambda rows, issue, settings:
+        ForecastRun(timestral_version(settings), issue, [], "voorlopig", []))
     result = service.refresh()
     assert result["ok"] is True
     archive = service._archive_entity(first_identity, service.get_settings())

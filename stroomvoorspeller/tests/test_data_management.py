@@ -1,16 +1,19 @@
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from http.server import ThreadingHTTPServer
+import base64
 import io
 import json
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 import zipfile
+import zlib
 
 import pytest
 
 from app.backend import AppService, make_handler
+from app.compact_database import compact_copy
 from app.data_management import cleanup, export_archive, storage_status
 from app.local_runtime import BUSY
 from app.storage import Store, price_archive_key, utc_iso
@@ -66,6 +69,61 @@ def test_cleanup_cascades_old_runs_preserves_recent_data_and_settings(tmp_path):
     assert status['counts']['quarter_prices'] == 1
     assert status['counts']['input_snapshots'] == 1
     assert status['removable']['forecast_runs'] == 0
+
+
+def test_forecast_history_shares_unchanged_days_and_reads_legacy_runs(tmp_path):
+    store = Store(tmp_path)
+    older = NOW - timedelta(days=181)
+    recent = NOW - timedelta(days=2)
+    scope = {'tariff_entity': 'sensor.tariff', 'tariff_unit': 'EUR/kWh'}
+    shared = {'start_utc': '2026-04-20T00:00:00Z', 'price': .22}
+    revised = {'start_utc': '2026-04-21T00:00:00Z', 'price': .31}
+    old_history = [shared, {**revised, 'price': .30}]
+    recent_history = [shared, revised]
+    store.save_forecast('old', older, 'v', 'voorlopig', [], {**scope, 'history': old_history}, [])
+    store.save_forecast('recent', recent, 'v', 'voorlopig', [], {**scope, 'history': recent_history}, [])
+    with closing(store._connect()) as db, db:
+        assert db.execute('SELECT COUNT(*) FROM forecast_history_refs').fetchone()[0] == 4
+        assert db.execute('SELECT COUNT(*) FROM forecast_history_chunks').fetchone()[0] == 3
+        legacy = base64.b64encode(zlib.compress(json.dumps(old_history).encode())).decode()
+        db.execute('INSERT INTO forecast_runs VALUES(?,?,?,?,?,?)',
+                   ('legacy', utc_iso(recent - timedelta(days=1)), 'v', 'voorlopig', '[]',
+                    json.dumps({**scope, 'history_zlib_b64': legacy})))
+
+    assert store.latest_forecast()[0]['inputs']['history'] == recent_history
+    assert store.latest_forecast(include_history=False)[0]['inputs'] == scope
+    assert [run['history'] for run in store.forecast_snapshots()] == [old_history, old_history, recent_history]
+    daily = store.daily_stored_forecasts('sensor.tariff', recent - timedelta(days=1), NOW,
+                                         'tax_included', 'EUR/kWh', include_history=True)
+    assert [run['history'] for run in daily] == [old_history, recent_history]
+
+    store.prune(NOW)
+    with closing(store._connect()) as db:
+        assert db.execute('SELECT COUNT(*) FROM forecast_history_chunks').fetchone()[0] == 2
+        assert not db.execute('PRAGMA foreign_key_check').fetchall()
+    assert store.latest_forecast()[0]['inputs']['history'] == recent_history
+
+
+def test_compact_copy_preserves_history_points_and_source_wal(tmp_path):
+    store = Store(tmp_path / 'original')
+    store.set_settings({'tariff_unit': 'EUR/kWh'})
+    history = [{'start_utc': utc_iso(NOW), 'price': .12}]
+    point = {'start_utc': NOW, 'end_utc': NOW + timedelta(minutes=15), 'price': .23}
+    packed = base64.b64encode(zlib.compress(json.dumps(history).encode())).decode()
+    with closing(store._connect()) as source:
+        source.execute('PRAGMA wal_autocheckpoint=0')
+        source.execute("UPDATE settings SET value_json=? WHERE key='tariff_unit'", (json.dumps('EUR/MWh'),))
+        source.commit()
+        store.save_forecast('raw', NOW, 'v', 'q', [], {'history_zlib_b64': packed, 'weather_region': 'nl'}, [point])
+        assert store.path.with_suffix('.sqlite3-wal').stat().st_size > 0
+        original_bytes = store.path.read_bytes()
+        target, count = compact_copy(store.path, tmp_path / 'compact')
+        assert count == 1 and store.path.read_bytes() == original_bytes
+        assert source.execute("SELECT json_extract(inputs_json,'$.history_zlib_b64') FROM forecast_runs").fetchone()[0] == packed
+        assert Store(target.parent).get_settings() == {'tariff_unit': 'EUR/MWh'}
+        assert Store(target.parent).latest_forecast() == store.latest_forecast()
+        with pytest.raises(FileExistsError):
+            compact_copy(store.path, target.parent)
 
 
 def test_cleanup_models_preserves_selected_model_and_does_not_follow_symlinks(tmp_path):
@@ -254,3 +312,17 @@ def test_missing_media_mount_does_not_create_empty_share_database(tmp_path, monk
     with pytest.raises(RuntimeError, match='mediamap'):
         storage.Store()
     assert not (share / 'stroomvoorspeller.sqlite3').exists()
+
+def test_export_temp_failure_releases_export_lock_and_can_retry(tmp_path, monkeypatch):
+    app = fixture_app(tmp_path)
+    def fail():
+        raise OSError("temporary directory full")
+    with monkeypatch.context() as m:
+        m.setattr("app.data_management.tempfile.TemporaryFile", fail)
+        with pytest.raises(OSError):
+            export_archive(app)
+    assert not app._export_lock.locked()
+    assert app._lock.acquire(blocking=False)
+    app._lock.release()
+    with export_archive(app, 7) as output:
+        assert zipfile.is_zipfile(output)

@@ -72,6 +72,11 @@ def validate_timestral(payload):
     if "weather" in payload:
         from .timestral_weather import validate_covariates
         validate_covariates(payload["weather"],len(context),horizon)
+    if "residual_load" in payload:
+        from .ned import validate_covariate
+        if "weather" not in payload:
+            raise ValueError("Restvraag vereist de bestaande weerinvoer")
+        validate_covariate(payload["residual_load"], len(context), horizon)
     return context, horizon
 
 
@@ -96,10 +101,14 @@ def infer_timestral(payload):
         codes = weekend_covariate(payload.get("context_start"), len(context)+horizon)
         kwargs["categorical_known_covariates"] = np.asarray(codes, dtype=np.float32)[None, :, :]
     if "weather" in payload:
-        kwargs["known_covariates"] = np.asarray(payload["weather"],dtype=np.float32)[None,:,:]
+        covariates = payload["weather"]
+        if "residual_load" in payload:
+            covariates = [*covariates, payload["residual_load"]]
+        kwargs["known_covariates"] = np.asarray(covariates, dtype=np.float32)[None, :, :]
     forecast = model.forecast(np.asarray([np.nan if v is None else v for v in context], dtype=np.float32),
                               prediction_length=horizon, clip_nonnegative=False, **kwargs)
     return {"model": spec["repo"], "revision": spec["revision"], "calendar": calendar, "weather": "weather" in payload,
+            "residual_load": "residual_load" in payload,
             "median": forecast.median.reshape(-1).tolist(),
             "lower": forecast.quantile(.1).reshape(-1).tolist(),
             "upper": forecast.quantile(.9).reshape(-1).tolist()}
@@ -140,13 +149,28 @@ async def infer_epex(payload):
     if len(training) < 14 * 96:
         raise ValueError("Epex heeft minstens 14 dagen complete markt-/weerkwartieren nodig")
     features = training.drop(columns=["price"])
-    predictor.predictor = lgb.train({"force_col_wise": True, "verbosity": -1,
-        "num_threads": payload["threads"], "seed": 0}, lgb.Dataset(features, label=training["price"]))
-    # Save only one current model; future calls still rebuild using bounded inputs.
-    predictor.predictor.save_model(str(folder / "NL-model.txt"))
-    # Reuse a complete recent forecast cache. New/missing target quarters or
-    # an expired cache trigger a source refresh, never an external model call.
     import pandas as pd
+    # Reuse only an exact training frame and training configuration. The cache
+    # contains one atomically replaced booster, including its identity in the filename.
+    params = {"force_col_wise": True, "verbosity": -1, "num_threads": payload["threads"], "seed": 0}
+    metadata = [str(train_start), str(train_end), list(training.columns), list(map(str, training.dtypes)),
+                lgb.__version__, params]
+    identity = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode())
+    identity.update(pd.util.hash_pandas_object(training, index=True).values.tobytes())
+    model_file = folder / ("trained-" + identity.hexdigest() + ".txt")
+    if model_file.is_file():
+        try:
+            predictor.predictor = lgb.Booster(model_file=str(model_file))
+        except lgb.basic.LightGBMError:
+            predictor.predictor = None
+    if predictor.predictor is None:
+        predictor.predictor = lgb.train(params, lgb.Dataset(features, label=training["price"]))
+        temporary = model_file.with_suffix(".tmp")
+        predictor.predictor.save_model(str(temporary))
+        temporary.replace(model_file)
+        for previous in folder.glob("trained-*.txt"):
+            if previous != model_file:
+                previous.unlink(missing_ok=True)
     expected = pd.date_range(start=start, end=end - timedelta(minutes=15), freq="15min")
     cached_weather = predictor.weatherstore.data.reindex(expected)
     complete = len(cached_weather.columns) > 0 and bool(cached_weather.notna().all(axis=1).all())
@@ -165,6 +189,20 @@ async def infer_epex(payload):
     predictor.weatherstore.known_source_horizon = None
     future = await predictor.prepare_dataframe(start, end)
     future_features = future.drop(columns=["price"]).dropna()
+    # A source check can return the exact same target grid and covariates.
+    # Both the training identity and the full target frame must match.
+    forecast_hash = identity.copy()
+    forecast_hash.update(json.dumps(list(future_features.columns)).encode())
+    forecast_hash.update(pd.util.hash_pandas_object(future_features, index=True).values.tobytes())
+    cache_key = forecast_hash.hexdigest()
+    price_cache = folder / "last-predictions.json"
+    try:
+        cached_prices = json.loads(price_cache.read_text())
+        if cached_prices.get("key") == cache_key and cached_prices.get("prices"):
+            return {"prices": cached_prices["prices"], "training_rows": len(training),
+                    "stage": "NL single-stage", "trained_at": issue.isoformat(), "weather_cached": weather_cached}
+    except (OSError, ValueError, AttributeError):
+        pass
     prediction = future_features.copy()
     prediction["price"] = predictor.predictor.predict(future_features)
     rows = []
@@ -176,6 +214,9 @@ async def infer_epex(payload):
             rows.append({"startsAt": stamp.isoformat(), "total": value * 10})
     if not rows:
         raise ValueError("Geen lokale Epex-prognose beschikbaar")
+    temp_cache = price_cache.with_suffix(".tmp")
+    temp_cache.write_text(json.dumps({"key":cache_key, "prices":rows}, separators=(",",":"), allow_nan=False))
+    temp_cache.replace(price_cache)
     return {"prices": rows, "training_rows": len(training), "stage": "NL single-stage",
             "trained_at": issue.isoformat(), "weather_cached": weather_cached}
 

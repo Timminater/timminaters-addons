@@ -1,5 +1,5 @@
 name: "Stroomvoorspeller"
-version: "0.2.15"
+version: "0.2.16"
 slug: "stroomvoorspeller"
 description: "Lokale kwartierprijsprognose met HA-tarieven of Nederlandse marktprijzen en instelbare all-in-kosten"
 url: "https://github.com/Timminater/timminaters-addons/tree/main/stroomvoorspeller"
@@ -28,4 +28,7 @@ panel_title: "Stroomvoorspeller"
 panel_icon: "mdi:chart-line"
 watchdog: "http://[HOST]:[PORT:8099]/api/health"
 ports: {}
-schema: false
+options:
+  ned_api_key: ""
+schema:
+  ned_api_key: password?

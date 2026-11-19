@@ -16,6 +16,11 @@ REVISION = model_spec("209M")["revision"]
 WEIGHTS_SHA256 = model_spec("209M")["sha256"]
 WEIGHTS_BYTES = model_spec("209M")["bytes"]
 BUSY = threading.Lock()
+LIVE_PENDING = threading.Event()
+
+
+class _YieldToLive(Exception):
+    pass
 
 
 def data_root(settings):
@@ -53,50 +58,79 @@ def run_local(method, payload, settings, *, timeout=300):
     """
     if method not in {"epex", "timestral", "timestral_download"}:
         raise ValueError("Onbekende lokale rekenopdracht")
-    if not BUSY.acquire(blocking=False):
-        raise ValueError("Een lokale ML-berekening of modeldownload is al bezig; probeer later opnieuw")
-    try:
-        root = data_root(settings)
-        root.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
-        env.update({"DATA_DIR": str(root), "HF_HOME": str(root / "models" / "hub"),
-                    "HF_HUB_OFFLINE": "1" if method == "timestral" else "0",
-                    "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_DISABLE_XET": "1",
-                    "OMP_NUM_THREADS": str(settings.get("ml_threads", 2)),
-                    "OPENBLAS_NUM_THREADS": str(settings.get("ml_threads", 2)),
-                    "MKL_NUM_THREADS": str(settings.get("ml_threads", 2))})
-        request = {**payload, "threads": settings.get("ml_threads", 2)}
-        if method.startswith("timestral"):
-            selected = settings.get("timestral_model", "209M")
-            model_spec(selected)
-            request["model_size"] = selected
-        with subprocess.Popen([sys.executable, "-m", "app.local_worker", method],
-                cwd=Path(__file__).resolve().parents[1], env=env,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
-            import time
-            deadline = time.monotonic() + timeout
-            raw = json.dumps(request, allow_nan=False, default=str)
-            while True:
-                try:
-                    output, _ = child.communicate(input=raw, timeout=1)
-                    break
-                except subprocess.TimeoutExpired:
-                    raw = None  # stdin has already been sent
-                    cancelled = settings.get("_cancel", lambda: False)()
-                    if cancelled or time.monotonic() >= deadline:
-                        child.kill()
-                        child.communicate()
-                        raise ValueError("Lokale berekening gestopt" if cancelled else
-                                         "Lokale berekening duurde te lang; verklein de historie of verhoog beschikbare resources")
+    priority = settings.get("_priority")
+    if priority == "history":
+        import time
+        while not settings.get("_cancel", lambda: False)():
+            if LIVE_PENDING.is_set() or not BUSY.acquire(timeout=.25):
+                time.sleep(.2)
+                continue
             try:
-                result = json.loads(output)
-            except (ValueError, TypeError):
-                raise ValueError("Lokale rekenmodule is gestopt; controleer beschikbare RAM en geïnstalleerde bibliotheken") from None
-            if child.returncode or result.get("error"):
-                raise ValueError(result.get("error", "Lokale rekenmodule is mislukt"))
-            return result
+                return _run_child(method, payload, settings, timeout)
+            except _YieldToLive:
+                pass
+            finally:
+                BUSY.release()
+        raise ValueError("Historische berekening gestopt")
+    if priority == "live":
+        LIVE_PENDING.set()
+    try:
+        if not BUSY.acquire(timeout=3 if priority == "live" else 0):
+            raise ValueError("Een lokale ML-berekening of modeldownload is al bezig; probeer later opnieuw")
+        try:
+            return _run_child(method, payload, settings, timeout)
+        finally:
+            BUSY.release()
     finally:
-        BUSY.release()
+        if priority == "live":
+            LIVE_PENDING.clear()
+
+
+def _run_child(method, payload, settings, timeout):
+    root = data_root(settings)
+    root.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    env.pop("NED_API_KEY", None)
+    env.update({"DATA_DIR": str(root), "HF_HOME": str(root / "models" / "hub"),
+                "HF_HUB_OFFLINE": "1" if method == "timestral" else "0",
+                "HF_HUB_DISABLE_TELEMETRY": "1", "HF_HUB_DISABLE_XET": "1",
+                "OMP_NUM_THREADS": str(settings.get("ml_threads", 2)),
+                "OPENBLAS_NUM_THREADS": str(settings.get("ml_threads", 2)),
+                "MKL_NUM_THREADS": str(settings.get("ml_threads", 2))})
+    request = {**payload, "threads": settings.get("ml_threads", 2)}
+    if method.startswith("timestral"):
+        selected = settings.get("timestral_model", "209M")
+        model_spec(selected)
+        request["model_size"] = selected
+    with subprocess.Popen([sys.executable, "-m", "app.local_worker", method],
+            cwd=Path(__file__).resolve().parents[1], env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as child:
+        import time
+        deadline = time.monotonic() + timeout
+        raw = json.dumps(request, allow_nan=False, default=str)
+        while True:
+            try:
+                output, _ = child.communicate(input=raw, timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                raw = None  # stdin has already been sent
+                cancelled = settings.get("_cancel", lambda: False)()
+                yield_slot = settings.get("_priority") == "history" and LIVE_PENDING.is_set()
+                if yield_slot or cancelled or time.monotonic() >= deadline:
+                    child.kill()
+                    child.communicate()
+                    if yield_slot and not cancelled:
+                        raise _YieldToLive
+                    raise ValueError("Lokale berekening gestopt" if cancelled else
+                                     "Lokale berekening duurde te lang; verklein de historie of verhoog beschikbare resources")
+        try:
+            result = json.loads(output)
+        except (ValueError, TypeError):
+            raise ValueError("Lokale rekenmodule is gestopt; controleer beschikbare RAM en geïnstalleerde bibliotheken") from None
+        if child.returncode or result.get("error"):
+            raise ValueError(result.get("error", "Lokale rekenmodule is mislukt"))
+        return result
+
 
 
 def start_download(service, confirmed, model=None):

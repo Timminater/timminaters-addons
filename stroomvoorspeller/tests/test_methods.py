@@ -146,24 +146,24 @@ def test_settings_require_enabled_active_method_allow_all_off(tmp_path):
 def test_disabled_methods_never_called_and_failure_isolated(tmp_path, monkeypatch):
     app = service(tmp_path)
     monkeypatch.setattr('app.methods.epex_forecast', lambda *a, **k: pytest.fail("disabled network"))
-    monkeypatch.setattr('app.methods.timestral_forecast', lambda *a, **k: pytest.fail("disabled inference"))
+    monkeypatch.setattr('app.methods.adaptive_forecast', lambda *a, **k: pytest.fail("retired method"))
     run = ForecastRun("stub", NOW, [], "voorlopig", [])
-    monkeypatch.setattr('app.methods.adaptive_forecast', lambda *a, **k: run)
+    monkeypatch.setattr('app.methods.timestral_forecast', lambda *a, **k: run)
     result = app._run_methods(history(2), NOW, None, None, app.get_settings(), "sensor.prices", False, [])
-    assert result["ok"] and set(result["methods"]) == {"local"}
-    app.put_settings({"forecast_methods": {"local": True, "v4": False, "epex": True, "timestral": False}})
+    assert result["ok"] and set(result["methods"]) == {"timestral"}
+    app.put_settings({"forecast_methods": {"epex": True, "timestral": True}})
     def fail(*a, **k): raise ValueError("offline")
     monkeypatch.setattr('app.methods.epex_forecast', fail)
     result = app._run_methods(history(2), NOW, None, None, app.get_settings(), "sensor.prices", True, [])
     assert result["ok"] and not result["methods"]["epex"]["ok"]
     assert result["methods"]["epex"]["message"] == "offline"
-    assert app.store.latest_forecast(method="local")[0]
+    assert app.store.latest_forecast(method="timestral")[0]
 
 
 def test_historical_job_runs_existing_data_without_polluting_live(tmp_path, monkeypatch):
     app = service(tmp_path)
     app.put_settings({"forecast_methods": {"local": False, "v4": True, "epex": True, "timestral": False},
-                      "active_method": "v4"})
+                      "active_method": "epex"})
     archive = app._archive_entity("sensor.prices", app.get_settings())
     app.store.upsert_quarters([{**r, "entity_id": archive} for r in history(18)])
     calls = []
@@ -182,7 +182,7 @@ def test_historical_job_runs_existing_data_without_polluting_live(tmp_path, monk
     assert calls
     assert app.store.latest_forecast()[0] is None
     report = comparison(app)
-    v4 = next(m for m in report["methods"] if m["id"] == "v4")
+    v4 = next(m for m in report["methods"] if m["id"] == "epex")
     assert v4["historical"]["n"] > 0 and v4["live"]["n"] == 0
     assert next(h for h in v4["historical"]["horizons"] if h["horizon"] == "24-48u")["n"] > 0
     assert not any(k.startswith("method:epex") for k in app.store.source_statuses())
@@ -194,10 +194,11 @@ def test_historical_job_runs_existing_data_without_polluting_live(tmp_path, monk
 
 def test_paired_scores_only_match_same_issue_and_target(tmp_path):
     app = service(tmp_path)
-    app.put_settings({"forecast_methods": {"local": True, "v4": True, "epex": False, "timestral": False}})
+    app.put_settings({"forecast_methods": {"epex": True, "timestral": True}})
     issue = NOW - timedelta(days=1)
-    for method in ("local", "v4"):
-        save(app.store, method, method, issue=issue)
+    from app.methods import configured_version
+    for method in ("timestral", "epex"):
+        save(app.store, method, method, issue=issue, version=configured_version(method, app.get_settings()))
     archive = app._archive_entity("sensor.prices", app.get_settings())
     app.store.upsert_quarters([{"entity_id": archive, "start_utc": issue + STEP,
         "end_utc": issue + 2 * STEP, "price": .25, "unit": "EUR/kWh", "source": "market",
@@ -206,7 +207,7 @@ def test_paired_scores_only_match_same_issue_and_target(tmp_path):
     for method in report["methods"][:2]:
         assert method["live"]["paired"]["n"] == 1
         assert method["live"]["paired"]["mae"] == pytest.approx(.05)
-    save(app.store, "v4later", "v4", issue=issue + STEP)
+    save(app.store, "later", "epex", issue=issue + STEP, version=configured_version("epex",app.get_settings()))
     report = comparison(app)
     # Nearest-noon representative changes; different issue must not pair.
     assert report["methods"][0]["live"]["paired"]["n"] == 0
@@ -220,8 +221,8 @@ def test_method_http_endpoints(tmp_path):
     try:
         with urlopen(f"http://127.0.0.1:{server.server_port}/api/methods") as response:
             report = json.load(response)
-        assert len(report["methods"]) == 4
-        assert report["active_method"] == "local"
+        assert len(report["methods"]) == 2
+        assert report["active_method"] == "timestral"
     finally:
         server.shutdown(); server.server_close(); thread.join()
 
@@ -234,9 +235,9 @@ def test_already_published_market_targets_are_not_stored_as_predictions(tmp_path
         "observed_at": NOW, "published_at": NOW, "quality": "published"}])
     run = ForecastRun("synthetic", NOW, [ForecastPoint(NOW + STEP, NOW + 2 * STEP, .1),
                       ForecastPoint(NOW + 2 * STEP, NOW + 3 * STEP, .2)], "voorlopig", [])
-    monkeypatch.setattr('app.methods.adaptive_forecast', lambda *a, **k: run)
+    monkeypatch.setattr('app.methods.timestral_forecast', lambda *a, **k: run)
     app._run_methods(history(2), NOW, None, None, app.get_settings(), "sensor.prices", True, [])
-    _, points = app.store.latest_forecast(method="local")
+    _, points = app.store.latest_forecast(method="timestral")
     assert [p['start_utc'] for p in points] == [utc_iso(NOW + 2 * STEP)]
 
 
@@ -312,7 +313,7 @@ def test_week_history_covers_all_days_with_past_only_inputs(tmp_path, monkeypatc
         monkeypatch.setattr('app.comparison.'+fn,replay(method))
     start_history_test(app,168);app._history_thread.join(timeout=30)
     assert app._history_job['state']=='completed'
-    assert app._history_job['horizon_hours']==168 and len(calls)==28
+    assert app._history_job['horizon_hours']==168 and len(calls)==14
     report=comparison(app,mode='historical',horizon='144-168u')
     assert report['view']['n']==7*96 and report['view']['paired']
     for method in report['methods']:
@@ -331,3 +332,20 @@ def test_history_horizon_validation_and_short_archive(tmp_path):
     for choice in (0,24,169,True,'168'):
         with pytest.raises(ValueError,match='48 of 168'):start_history_test(app,choice)
     assert app._history_thread is None
+
+def test_unchanged_timestral_inputs_skip_even_after_timer_expires(tmp_path, monkeypatch):
+    from app.methods import timestral_version
+    app = service(tmp_path)
+    settings = app.get_settings()
+    calls = []
+    def run(rows, issue, config):
+        calls.append(issue)
+        return ForecastRun(timestral_version(config), issue, [], "voorlopig", [])
+    monkeypatch.setattr("app.methods.timestral_forecast", run)
+    rows = history(2)
+    for offset in (0, 2):
+        app._run_methods(rows, NOW + timedelta(hours=offset), None, None, settings, "sensor.prices", False, [])
+    assert calls == [NOW]
+    changed = [*rows[:-1], {**rows[-1], "price": .99}]
+    app._run_methods(changed, NOW+timedelta(hours=3), None, None, settings, "sensor.prices", False, [])
+    assert len(calls) == 2

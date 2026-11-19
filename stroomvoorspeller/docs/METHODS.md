@@ -6,7 +6,7 @@ rekenservice verstuurd. Oude service-URL's uit 0.2.0 worden genegeerd en niet me
 via instellingen aangeboden.
 
 Onder Instellingen kan elke methode afzonderlijk aan of uit. Standaard is alleen
-**Lokaal adaptief** aan. De actieve methode bepaalt grafiek en MQTT; andere
+**Timestral** aan. Lokaal adaptief en oorspronkelijke v4 zijn uitgefaseerd. Hun bestaande runs blijven in het archief. De actieve methode bepaalt grafiek en MQTT; andere
 ingeschakelde methoden bewaren hun eigen resultaten voor Analyse. Alle methoden
 mogen uit: bekende prijzen blijven zichtbaar, prognoses verdwijnen.
 
@@ -29,7 +29,7 @@ vijftien minuten. Een langer algemeen berekeninterval blijft van kracht.
 **Bereken nu** kan bewust een nieuwe run starten. Bij uitval wordt niet heimelijk
 van methode gewisseld; de foutstatus en uitgiftetijd blijven zichtbaar.
 
-## Lokaal adaptief en oorspronkelijke v4
+## Historisch model: Lokaal adaptief en oorspronkelijke v4
 
 De oorspronkelijke adaptieve berekening combineert v4 (25%) met een historisch kwartierpatroon (75%). V2 behoudt dit voor 0–24 uur en vanaf 48 uur; voor 24–48 uur geldt de hieronder beschreven gevalideerde mix. Een
 validatievenster van zeven dagen kiest uit 7-, 14- en 28-daagse patronen, met of
@@ -165,7 +165,7 @@ uitgiftetijden en doelkwartieren van ingeschakelde methoden met resultaten.
 Ontbrekende paren blijven ontbreken en worden niet als nul fout meegeteld.
 
 
-## Lokaal adaptief v2: gevalideerde mix voor 24–48 uur
+## Historisch model: Lokaal adaptief v2: gevalideerde mix voor 24–48 uur
 
 De oude lokale methode koos een historische analogie op basis van diens validatiefout, maar mengde de uitkomst altijd met 25% v4 en 75% analogie. V2 beoordeelt voor doelen die 24 tot minder dan 48 uur na de werkelijke uitgiftetijd liggen de uiteindelijke mix. Kandidaten zijn v4 alleen en analogieën van 7, 14 of 28 dagen (14/28 ook met niveaucorrectie), met 25%, 50%, 75% of 100% analogiegewicht. De historische dagtypen en kwartierposities blijven behouden.
 
@@ -294,6 +294,17 @@ opgelegde afkoelperiode of daglimiet wordt niet omzeild.
 Epex houdt zijn al bestaande gereconstrueerde historische weerbron; die scores
 zijn geen bewijs met oorspronkelijke datavintages.
 
+### Nederlandse restvraag in de Timestral A/B-test
+
+De test staat standaard uit. Vul `ned_api_key` in bij de Home Assistant-appconfiguratie, of gebruik `NED_API_KEY` als omgevingsvariabele voor lokaal testen. Zet daarna **A/B-test met Nederlandse restvraag** aan in Stroomvoorspeller terwijl Timestral met Open-Meteo-weer ingeschakeld is. De sleutel gaat uitsluitend naar de [NED API](https://ned.nl/nl/handleiding-api).
+
+De app berekent per UTC-uur het Nederlandse elektriciteitsverbruik minus zon, wind op land en wind op zee. De gemiddelde capaciteit in kW wordt naar MW omgerekend. Elke uurwaarde geldt voor de vier kwartieren van dat uur. De context gebruikt maximaal veertien dagen NED-historie. De toekomst gebruikt alleen verwachtingen waarvan de snapshot vóór de uitgifte is opgeslagen. Binnen de prognose moeten de verwachte waarden aaneengesloten beschikbaar zijn. Ten hoogste de laatste 24 uur mogen ontbreken en tellen dan buiten de vergelijking.
+
+- **A** is de opgeslagen live Timestral-run met de gekozen gewichten, prijscontext, kalender en weer.
+- **B** gebruikt exact die uitgifte en invoer plus de restvraagreeks. De extra prognose wordt apart opgeslagen. Grafiek en MQTT gebruiken hun bestaande live methode.
+
+Na een normale update probeert de app maximaal eens per zes uur een proefrun. NED wordt maximaal eens per drie uur succesvol ververst en een mislukte aanvraag krijgt minimaal dertig minuten rust. **Analyse → Timestral A/B-test met NED-restvraag** toont gepaarde MAE per horizon over de laatste 45 dagen, het aantal uitgiftes en het aantal unieke doelkwartieren. Alleen tarieven die later bekend zijn geworden, tellen mee. Bewaarde oude prijzen en weer uit een databasekopie zijn op zichzelf onvoldoende voor een historische restvraagtest. Daarvoor zijn ook de destijds uitgegeven NED-verwachtingen nodig.
+
 ### Aanvraaglimieten en cache
 
 Locaties worden gebundeld. Alle Open-Meteo-aanvragen vanuit de hoofdapp en
@@ -331,3 +342,23 @@ test nodig. De methodecijfers blijven eigen doelsets gebruiken; voor een
 onderlinge rangorde gebruikt de grafiek exact gedeelde uitgiftes en doelen.
 
 Vanaf 0.2.12 wordt de productiecache voor een nieuw gekozen gebied direct geraadpleegd. De oude extra uurblokkering kan daarvoor geen lege snapshot meer teruggeven. De gedeelde cache beslist zelf of een netwerkverzoek nodig en toegestaan is; terugschakelen naar een eerder gebied hergebruikt de bestaande dataset. Bronfouten worden aan de live Timestral-status doorgegeven en afkoeling vermeldt de reden en resterende minuten.
+
+
+## Lokale vergelijking van de vier Timestral-modellen
+
+Op 19 november 2026 zijn zeven opgeslagen uitgiftes tussen 22 oktober en 12 november opnieuw berekend met hun oorspronkelijke prijshistorie, kalender en Nederlandse weerverwachting. Alle modellen kregen dezelfde invoer en maximaal zeven dagen horizon. De score gebruikt 4.316 gemeenschappelijke uitgifte-kwartierparen met een later bekend tarief. Doelen kunnen tussen uitgiftes overlappen.
+
+| Model | MAE in ct/kWh | Seconden per run | CPU-seconden per run | Piekgeheugen in MiB |
+|---|---:|---:|---:|---:|
+| 5M | 6,83 | 4,51 | 4,08 | 265 |
+| 28M | 5,76 | 5,47 | 6,34 | 406 |
+| 123M | 4,68 | 11,04 | 16,75 | 1.130 |
+| 209M | 5,06 | 16,05 | 26,04 | 1.792 |
+
+Gemeten op Windows met een Ryzen 7 7735HS, PyTorch 2.6.0 CPU en twee rekenthreads. Elke run startte een nieuw proces en verifieerde en laadde de modelgewichten opnieuw. De tijd is het gemiddelde inclusief processtart. CPU-tijd telt alle threads op. Het geheugen is de hoogste Windows-working-setpiek van het modelproces over zeven runs. De metingen vonden plaats op een gedeelde ontwikkelmachine.
+
+Het script `tools/benchmark_timestral.py` gebruikt een afgesloten SQLite-kopie en de map met vier gedownloade modellen. Het schrijft uitsluitend resultaten naar de terminal. Voor meten op Windows zijn naast de modelbibliotheken ook psutil en tzdata nodig.
+
+![Vier Timestral-voorspellingen naast de werkelijke kwartiertarieven voor dezelfde uitgifte](timestral-vergelijking.png)
+
+De [brondatatest voor Timestral 123M](TIMESTRAL-BRONDATATEST.md) vergelijkt weerlocaties, afzonderlijke weersignalen en kalenderinformatie op historische uitgiftes.

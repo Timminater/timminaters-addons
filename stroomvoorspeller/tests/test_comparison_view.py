@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pytest
 from app.comparison import comparison_view, comparison
 from app.backend import AppService
@@ -45,6 +45,29 @@ def test_mode_horizon_period_are_preserved_and_invalid_filters_rejected(tmp_path
         assert view['mode']==mode and view['days']==14 and view['horizon']=='24-48u'
     for kwargs in ({'mode':'both'},{'horizon':'wrong'},{'selected':['unknown']},{'days':0},{'days':46}):
         with pytest.raises(ValueError):comparison(app,**kwargs)
+
+
+def test_chart_only_comparison_uses_saved_historical_variant(tmp_path):
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    start = now - timedelta(days=1)
+    app = AppService(store=Store(tmp_path), clock=lambda: now)
+    app.put_settings({'tariff_entity': 'sensor.prices', 'tariff_unit': 'EUR/kWh',
+                      'timestral_model': '123M'})
+    app.store.upsert_quarters([{
+        'entity_id': app._archive_entity('sensor.prices', app.get_settings()),
+        'start_utc': start, 'end_utc': start + timedelta(minutes=15),
+        'price': .3, 'observed_at': now,
+    }])
+    version = 'timestral-local-28m-calendar-1:revision:context'
+    app.store.save_forecast('archived', start - timedelta(hours=4), version, 'voorlopig', [], {
+        'method': 'timestral', 'evaluation_mode': 'historical',
+        'tariff_entity': 'sensor.prices', 'tariff_unit': 'EUR/kWh',
+    }, [{'start_utc': start, 'end_utc': start + timedelta(minutes=15), 'price': .2}])
+    result = comparison(app, mode='historical', selected=['timestral'], include_details=False)
+    assert result['view']['n'] == 1
+    assert result['view']['metrics'][0]['label'] == 'Timestral-28M · weekendinfo · zonder weer'
+    assert result['view']['metrics'][0]['version'] == version
+    assert all('live' not in method for method in result['methods'])
 
 
 def test_horizon_boundaries_and_single_method_are_explicit():
@@ -97,7 +120,7 @@ def test_http_filters_and_timeline_model_identity(tmp_path):
         with pytest.raises(HTTPError) as exc:urlopen(root+'/api/methods?methods=unknown')
         assert exc.value.code==400
         with urlopen(root+'/api/timeline') as response:timeline=json.load(response)
-        assert timeline['method']['id']=='local' and timeline['method']['enabled'] is True
+        assert timeline['method']['id']=='timestral' and timeline['method']['enabled'] is True
         assert timeline['model_version'] is None  # selected, not falsely labelled as computed
     finally:
         server.shutdown();server.server_close();thread.join(timeout=3)

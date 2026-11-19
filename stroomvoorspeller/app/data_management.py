@@ -59,8 +59,13 @@ def storage_status(service, days=90):
                   for table in [*TABLE_DATES, 'forecast_points']}
         removable = {table: db.execute(f'SELECT COUNT(*) FROM {table} WHERE {column}<?', (cutoff,)).fetchone()[0]
                      for table, column in TABLE_DATES.items()}
+        research = [dict(row) for row in db.execute("""
+            SELECT source, count(*) AS snapshots, max(issued_at) AS last_seen FROM input_snapshots
+            WHERE (source GLOB 'energy_charts_nl_forecast:*' OR source='ned_residual_load') AND error IS NULL
+            GROUP BY source ORDER BY source
+        """)]
     return {**groups, 'total_bytes': sum(groups.values()), 'free_bytes': shutil.disk_usage(root).free,
-            'counts': counts, 'removable': removable, 'days': days, 'cutoff_utc': cutoff,
+            'counts': counts, 'research': research, 'removable': removable, 'days': days, 'cutoff_utc': cutoff,
             'measured_at': utc_iso(service.clock()),
             'note': 'Bestandsgroottes van appdata en externe database/WAL; exclusief app-image en backups. Vrije ruimte geldt voor de appdatamap.'}
 
@@ -75,8 +80,11 @@ def cleanup(service, body):
     if not service._lock.acquire(blocking=False):
         raise ValueError('Een berekening is bezig; probeer opruimen later opnieuw')
     acquired = False
-    history_locked = download_locked = False
+    history_locked = download_locked = export_locked = False
     try:
+        export_locked = service._export_lock.acquire(blocking=False)
+        if not export_locked:
+            raise ValueError('Een export is bezig; probeer opruimen later opnieuw')
         history_locked = service._history_job_lock.acquire(blocking=False)
         download_locked = service._download_lock.acquire(blocking=False)
         if not history_locked or not download_locked:
@@ -90,6 +98,7 @@ def cleanup(service, body):
             cutoff = utc_iso(service.clock() - timedelta(days=days))
             with service.store._lock, closing(service.store._connect()) as db:
                 with db:
+                    db.execute("DELETE FROM forecast_quality")
                     for table, column in TABLE_DATES.items():
                         removed[table] = db.execute(f'DELETE FROM {table} WHERE {column}<?', (cutoff,)).rowcount
                 # SQLite DELETE frees pages internally; VACUUM also returns them to disk.
@@ -118,6 +127,7 @@ def cleanup(service, body):
                 'message': 'Opruimen voltooid.' if compacted else 'Gegevens verwijderd; database kon nog niet worden verkleind. Probeer later opnieuw.',
                 'storage': storage_status(service, days)}
     finally:
+        if export_locked: service._export_lock.release()
         if acquired: BUSY.release()
         if download_locked: service._download_lock.release()
         if history_locked: service._history_job_lock.release()
@@ -131,10 +141,11 @@ def export_archive(service, days=30):
     coordinates, HA responses or compressed raw input histories are copied.
     """
     days_value(days)
-    if not service._lock.acquire(blocking=False):
-        raise ValueError('Een berekening is bezig; probeer exporteren later opnieuw')
-    output = tempfile.TemporaryFile()
+    if not service._export_lock.acquire(blocking=False):
+        raise ValueError('Er loopt al een export of onderhoudstaak')
+    output = None
     try:
+        output = tempfile.TemporaryFile()
         now = service.clock()
         cutoff, until = utc_iso(now - timedelta(days=days)), utc_iso(now)
         price_cutoff = utc_iso(now - timedelta(days=days + 90))
@@ -188,9 +199,11 @@ def export_archive(service, days=30):
             def runs():
                 for row in db.execute('SELECT * FROM forecast_runs WHERE issued_at>=? AND issued_at<=? ORDER BY issued_at,id', (cutoff, until)):
                     inputs = json.loads(row['inputs_json'])
+                    service.store._read_weather(db, row['id'], inputs)
                     yield {'id': row['id'], 'issued_at': row['issued_at'], 'model_version': row['model_version'],
                            'quality': row['quality'], 'method': inputs.get('method', 'local'),
                            'evaluation_mode': inputs.get('evaluation_mode', 'live'),
+                           **({'baseline_run_id': inputs['baseline_run_id']} if 'baseline_run_id' in inputs else {}),
                            'test_horizon_hours': inputs.get('test_horizon_hours'),
                            'weather_reconstruction': inputs.get('weather_reconstruction',False), 'weather_region': inputs.get('weather_region'), 'timestral_weather': inputs.get('timestral_weather', False),
                            'unit': inputs.get('tariff_unit'), 'price_field': inputs.get('price_field', 'tax_included'),
@@ -199,6 +212,21 @@ def export_archive(service, days=30):
             write_rows('forecast_runs', runs())
             write_rows('forecast_points', (dict(row) for row in db.execute('''SELECT p.run_id,p.start_utc,p.end_utc,p.price,p.lower_price,p.upper_price,p.quality
                 FROM forecast_points p JOIN forecast_runs r ON r.id=p.run_id WHERE r.issued_at>=? AND r.issued_at<=? ORDER BY r.issued_at,p.run_id,p.start_utc''', (cutoff, until))))
+            def research():
+                for row in db.execute("""SELECT issued_at,source,payload_json FROM input_snapshots
+                        WHERE issued_at BETWEEN ? AND ? AND error IS NULL AND
+                        (source LIKE 'energy_charts_nl_forecast:%' OR source='ned_residual_load')
+                        ORDER BY issued_at,id""", (cutoff, until)):
+                    payload = json.loads(row['payload_json'])
+                    if row['source'] == 'ned_residual_load':
+                        yield {'source':row['source'], 'observed_at':row['issued_at'], 'unit':'MW',
+                               'forecast_from':payload['forecast_from'], 'components':payload.get('components_mw', {}),
+                               'residual_load':payload['hourly']}
+                    else:
+                        yield {'source':row['source'], 'observed_at':row['issued_at'],
+                               **{k:payload.get(k) for k in ('kind','unit','interval_minutes','values',
+                                  'forecast_type','provider_generated_at','license')}}
+            write_rows('research_forecasts', research())
             # Read settings from the same DB snapshot, strictly allowlisted.
             settings = {row['key']: json.loads(row['value_json']) for row in db.execute('SELECT key,value_json FROM settings')}
             allowed = ('price_source', 'price_choice', 'supplier', 'tariff_unit', 'price_field', 'energy_tax_eur_kwh', 'vat_percent',
@@ -214,7 +242,8 @@ def export_archive(service, days=30):
         output.seek(0)
         return output
     except Exception:
-        output.close()
+        if output is not None:
+            output.close()
         raise
     finally:
-        service._lock.release()
+        service._export_lock.release()

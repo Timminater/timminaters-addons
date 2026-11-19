@@ -227,7 +227,16 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
     if settings.get("timestral_weather",False):
         from .timestral_weather import weather_covariates
         request["weather"] = weather_covariates(settings.get("_weather"),begin,len(context),horizon,issued_at,settings)
-    payload = (runner or run_local)("timestral", request, settings, timeout=180)
+    residual_load = None
+    version = timestral_version(settings)
+    if settings.get("_ned_snapshot") is not None:
+        from .ned import VERSION_SUFFIX, covariate
+        if "weather" not in request:
+            raise ValueError("De Timestral-restvraagtest vereist de bestaande weerinvoer")
+        residual_load = covariate(settings["_ned_snapshot"], begin, len(context), horizon, issued_at)
+        request["residual_load"] = residual_load
+        version += VERSION_SUFFIX
+    payload = (runner or run_local)("timestral", request, settings, timeout=90 if residual_load else 180)
     from .timestral_models import model_spec
     spec = model_spec(settings.get("timestral_model", "209M"))
     if payload.get("model") != spec["repo"] or payload.get("revision") != spec["revision"]:
@@ -236,6 +245,8 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
         raise ValueError("Lokale Timestral-module mist de gekozen weekendinformatie")
     if settings.get("timestral_weather",False) and payload.get("weather") is not True:
         raise ValueError("Lokale Timestral-module mist de gekozen weerinvoer")
+    if residual_load is not None and payload.get("residual_load") is not True:
+        raise ValueError("Lokale Timestral-module mist NED-restvraag")
     arrays = [payload.get(key) for key in ("median", "lower", "upper")]
     if any(not isinstance(a, list) or len(a) != horizon for a in arrays):
         raise ValueError("Lokale Timestral-module levert onjuiste voorspellinglengte")
@@ -245,12 +256,13 @@ def timestral_forecast(history, issued_at, settings, max_points=672, *, runner=N
         if not all(math.isfinite(v) for v in (value, lower, upper)) or not lower <= value <= upper:
             raise ValueError("Ongeldige Timestral-kwantielen")
         start = end + i * STEP
-        if start not in known:
+        if start not in known and (residual_load is None or residual_load[len(context) + i] is not None):
             points.append(ForecastPoint(start, start + STEP, value, lower, upper, source="timestral",
                                        reason="Timestral q10–q90; dekking voor dit tarief nog niet gekalibreerd"))
-    return ForecastRun(timestral_version(settings), issued_at, points, "voorlopig",
+    return ForecastRun(version, issued_at, points, "voorlopig",
                        [spec["repo"].split("/")[-1] + (" op prijshistorie en regionale weerreeksen" if settings.get("timestral_weather",False) else " op prijshistorie; zonder historische weerscovariaten"),
                         "Regionale weerkenmerken gebruikt" if settings.get("timestral_weather",False) else "Zonder weerkenmerken",
+                        *(["Nederlandse restvraag uit tijdig opgeslagen NED-data"] if residual_load is not None else []),
                         "Expliciete weekendinformatie in Nederlandse tijd" if settings.get("timestral_calendar", False) else "Zonder expliciete kalenderinformatie; weekpatronen uitsluitend uit prijzen",
                         "Minder dan 14 dagen context: beperkte weekendhistorie" if len(context) < 14*96 else "Meerdere weken context beschikbaar",
                         "q10–q90 is modelonzekerheid, geen lokaal bewezen 80%-dekking"])

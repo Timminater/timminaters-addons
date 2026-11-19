@@ -30,7 +30,7 @@ def _scores(rows):
             "bias": mean(errors) if errors else None}
 
 
-def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
+def comparison(service, *, mode="live", horizon="all", selected=None, days=45, include_details=True):
     if mode not in {"live", "historical"} or horizon not in {"all", *HORIZONS}:
         raise ValueError("Kies live/historisch en een bekende voorspelhorizon")
     if type(days) is not int or not 1 <= days <= 45: raise ValueError("Kies 1 t/m 45 dagen")
@@ -40,38 +40,52 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
     settings = service.get_settings()
     entity = service._price_identity(settings)
     now = service.clock().astimezone(UTC)
-    truth = service.store.published_quarters(service._archive_entity(entity, settings), now) if entity else {}
+    since = now - timedelta(days=lookback_days)
+    selected = [m for m in METHODS if settings["forecast_methods"].get(m, False)] if selected is None else selected
+    truth = (service.store.published_quarters(service._archive_entity(entity, settings), now, since=since)
+             if entity and (include_details or selected) else {})
     statuses = service.store.source_statuses()
     result = {"active_method": settings["active_method"], "unit": settings["tariff_unit"],
               "methods": [], "history_job": dict(service._history_job),
-              "historical_notice": "Historische reconstructie met het huidige prijsarchief, zonder de oorspronkelijke bronversies. Epex gebruikt gereconstrueerde historische weerdata. Geen live prestatiebewijs.",
+              "historical_notice": "Historische reconstructies tonen per methode de laatst opgeslagen modelvariant in deze periode. Die kan afwijken van de actieve instellingen. Epex gebruikt gereconstrueerde historische weerdata.",
               "pairing_notice": "Gepaarde MAE gebruikt dezelfde uitgiftetijd en doelkwartieren van ingeschakelde methoden met resultaten."}
-    maps = {"live": {}, "historical": {}}
+    maps = {name: {} for name in (("live", "historical") if include_details else (view_mode,))}
+    versions = {}
+    if not include_details and truth:
+        for method in selected:
+            latest, _ = service.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"],
+                method=method, evaluation_mode=view_mode, since=since, include_history=False, include_points=False,
+                model_version=configured_version(method, settings) if view_mode == "live" else None)
+            if latest:
+                versions[method] = latest["model_version"]
+    common = service.store.common_daily_forecasts(entity, since, now, settings["price_field"], settings["tariff_unit"],
+                                                   versions, view_mode) if versions else {}
+    # If no common issue exists, read separate runs to distinguish unavailable methods from non-overlap.
+    use_common = bool(common and all(common.values()))
     for method, label in METHODS.items():
+        if method not in settings["forecast_methods"] and method not in selected:
+            continue
         if method == "timestral": label = f"Timestral-{settings['timestral_model']}" + (" · weekendinfo" if settings["timestral_calendar"] else " · zonder kalender") + (" · met weer" if settings["timestral_weather"] else " · zonder weer")
-        item = {"id": method, "label": label, "enabled": settings["forecast_methods"][method],
+        item = {"id": method, "label": label, "enabled": settings["forecast_methods"].get(method, False),
                 "status": statuses.get("method:" + method, {}), "historical_supported": True}
         for mode in maps:
-            latest, _ = service.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"],
-                                                      method=method, evaluation_mode=mode,
-                model_version=configured_version(method, settings)) if entity else (None, [])
-            if entity and mode=="historical" and method=="timestral" and settings["timestral_weather"]:
-                archived,_=service.store.latest_forecast(entity,settings["price_field"],settings["tariff_unit"],
-                    method=method,evaluation_mode=mode,model_version=configured_version(method,settings)+WEATHER_ARCHIVE_VERSION)
-                if archived and (not latest or archived["issued_at"]>latest["issued_at"]): latest=archived
-            version = latest["model_version"] if latest else None
-            runs = service.store.daily_stored_forecasts(entity, now - timedelta(days=lookback_days), now,
-                settings["price_field"], settings["tariff_unit"], method=method,
-                model_version=version, evaluation_mode=mode) if latest else []
-            days, zone = {}, ZoneInfo("Europe/Amsterdam")
-            for run in runs:
-                day = _dt(run["issued_at"]).astimezone(zone).date()
-                noon = datetime.combine(day, datetime.min.time(), zone) + timedelta(hours=12)
-                key = (abs((_dt(run["issued_at"]) - noon).total_seconds()), run["issued_at"])
-                if day not in days or key < days[day][0]:
-                    days[day] = key, run
+            if not include_details and method not in selected:
+                continue
+            if use_common:
+                version = versions.get(method)
+                runs = common.get(method, [])
+            else:
+                latest, _ = service.store.latest_forecast(entity, settings["price_field"], settings["tariff_unit"],
+                                                          method=method, evaluation_mode=mode,
+                    model_version=configured_version(method, settings) if mode == "live" else None,
+                    since=since, include_history=False,
+                    include_points=False) if truth else (None, [])
+                version = latest["model_version"] if latest else None
+                runs = service.store.daily_stored_forecasts(entity, since, now,
+                    settings["price_field"], settings["tariff_unit"], method=method,
+                    model_version=version, evaluation_mode=mode) if latest else []
             scored, buckets = {}, {key: [] for key in HORIZONS}
-            for _, run in days.values():
+            for run in runs:
                 issue = _dt(run["issued_at"])
                 for point in run["points"]:
                     start = point["start_utc"]
@@ -87,21 +101,24 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
                     for name, (low, high) in HORIZONS.items():
                         if low <= hours < high: buckets[name].append(pair)
             maps[mode][method] = scored
-            item[mode] = {**_scores(scored.values()), "version": version, "days": len(days),
+            item[mode] = {**_scores(scored.values()), "version": version, "days": len(runs),
                           "horizons": [{"horizon": k, **_scores(v)} for k, v in buckets.items()],
                           "weather_reconstruction": bool(version and version.endswith(WEATHER_ARCHIVE_VERSION))}
+            item[mode]["label"] = _comparison_label(item, mode)
         result["methods"].append(item)
     for mode, methods in maps.items():
-        available = [key for key, values in methods.items() if values and settings["forecast_methods"][key]]
+        available = [key for key, values in methods.items() if values and settings["forecast_methods"].get(key, False)]
         shared = set.intersection(*(set(methods[key]) for key in available)) if len(available) >= 2 else set()
         for item in result["methods"]:
+            if mode not in item:
+                continue
             item[mode]["paired"] = (_scores(methods[item["id"]][key] for key in shared)
                                      if item["id"] in available else _scores([]))
     view = comparison_view(result, maps, view_mode, horizon, selected, lookback_days)
     participants = view["available"]
-    if entity and len(participants) >= 2:
+    if entity and len(participants) >= 2 and not use_common:
         versions = {m["id"]: m[view_mode]["version"] for m in result["methods"] if m["id"] in participants}
-        cohorts = service.store.common_daily_forecasts(entity, now-timedelta(days=lookback_days), now,
+        cohorts = service.store.common_daily_forecasts(entity, since, now,
             settings["price_field"],settings["tariff_unit"],versions,view_mode)
         chart_maps = {view_mode: {m: {} for m in METHODS}}
         for method, runs in cohorts.items():
@@ -113,11 +130,94 @@ def comparison(service, *, mode="live", horizon="all", selected=None, days=45):
         aligned = comparison_view(result,chart_maps,view_mode,horizon,view["selected"],lookback_days)
         if aligned["n"]:
             view = aligned
+            maps = chart_maps
         else:
             view.update(n=0,paired=False,points=[],daily=[])
             view["metrics"] = [{**m,**_scores([])} for m in view["metrics"]]
+    if view["n"]:
+        _decision_metrics(service.store, service._archive_entity(entity, settings), view, maps[view_mode])
     result["view"] = view
     return result
+
+
+def _decision_metrics(store, archive_entity, view, maps):
+    """Compare three-hour choices on identical issue/day grids and the previous local week as known at issue."""
+    from collections import defaultdict
+    from .backtest import QUARTER
+    methods = view["available"]
+    low, high = (0, 168) if view["horizon"] == "all" else HORIZONS[view["horizon"]]
+    zone = ZoneInfo("Europe/Amsterdam")
+    shared = set.intersection(*(set(maps[m]) for m in methods))
+    groups = defaultdict(list)
+    stamps = set()
+    for issue, target in shared:
+        stamp = _dt(target)
+        if low <= (stamp - _dt(issue)).total_seconds() / 3600 < high:
+            groups[issue].append((target, stamp))
+            stamps.add(target)
+    view.update(issue_days=len(view["daily"]), unique_targets=len(stamps))
+    regrets = {m: [] for m in methods}
+    weekly_errors = []
+    paired_errors = {m: [] for m in methods}
+    for issue, targets in groups.items():
+        targets.sort()
+        week = timedelta(days=7)
+        # DST may shift the corresponding UTC quarter by one hour.
+        history = store.quarters(archive_entity, targets[0][1]-week-timedelta(hours=2),
+                                 targets[-1][1]-week+timedelta(hours=2), as_of=_dt(issue))
+        known = {r["start_utc"]: r["price"] for r in history if r["quality"] in {"published", "valid"}}
+        days = defaultdict(list)
+        for target, stamp in targets:
+            local = stamp.astimezone(zone)
+            earlier = local - week
+            actual = maps[methods[0]][issue, target][1]
+            ref = known.get(utc_iso(earlier))
+            if ref is not None and earlier.astimezone(UTC).astimezone(zone).hour == local.hour:
+                weekly_errors.append(abs(actual-ref))
+                for m in methods:
+                    paired_errors[m].append(abs(maps[m][issue, target][0]-actual))
+            days[local.date()].append((stamp, [actual, *(maps[m][issue,target][0] for m in methods)]))
+        for rows in days.values():
+            # Rolling totals reset at gaps. Earlier windows win ties.
+            windows = []
+            totals = [0.0] * (1+len(methods))
+            begin = 0
+            for i, (stamp, values) in enumerate(rows):
+                if i and stamp - rows[i-1][0] != QUARTER:
+                    begin = i
+                    totals = [0.0] * len(values)
+                for j, value in enumerate(values):
+                    totals[j] += value
+                    if i-begin >= 12:
+                        totals[j] -= rows[i-12][1][j]
+                if i-begin >= 11:
+                    windows.append(tuple(totals))
+            if len(windows) >= 2:
+                optimum = min(w[0] for w in windows)
+                for j, m in enumerate(methods, 1):
+                    chosen = min(windows, key=lambda w: round(w[j], 12))
+                    regrets[m].append((chosen[0]-optimum)/12)
+    reference = sum(weekly_errors)
+    for metric in view["metrics"]:
+        m = metric["id"]
+        metric.update(weekly_pairs=len(weekly_errors),
+                      weekly_skill=1-sum(paired_errors[m])/reference if reference else None,
+                      window_n=len(regrets[m]), window_regret=mean(regrets[m]) if regrets[m] else None)
+
+
+def _comparison_label(method, mode):
+    score = method[mode]
+    version = score["version"] or ""
+    label = method["label"]
+    if mode == "historical":
+        if method["id"] == "timestral" and version.startswith("timestral-local-"):
+            size = version.removeprefix("timestral-local-").split("-", 1)[0].upper()
+            calendar = " · weekendinfo" if "-calendar-1:" in version else " · zonder kalender"
+            weather = " · met weer" if ":weather-1-" in version else " · zonder weer"
+            label = f"Timestral-{size}{calendar}{weather}"
+        if score.get("weather_reconstruction"):
+            label += " · archiefweer"
+    return label
 
 
 def comparison_view(result, maps, mode, horizon, selected, days):
@@ -130,7 +230,7 @@ def comparison_view(result, maps, mode, horizon, selected, days):
                 if low <= (_dt(key[1])-_dt(key[0])).total_seconds()/3600 < high} for m in selected}
     available = [m for m in selected if rows[m]]
     shared = set.intersection(*(set(rows[m]) for m in available)) if available else set()
-    metrics = [{"id": m, "label": methods[m]["label"]+(" · archiefweer" if mode=="historical" and methods[m][mode].get("weather_reconstruction") else ""), "version": methods[m][mode]["version"],
+    metrics = [{"id": m, "label": _comparison_label(methods[m], mode), "version": methods[m][mode]["version"],
                 **_scores(rows[m][key] for key in shared)} for m in available]
     daily = {}
     latest = {}
@@ -189,7 +289,7 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
         job["total"] = len(issues) * len(methods)
         scale = 1000 if settings["tariff_unit"] == "EUR/kWh" else 1
         needs_archive=weather_mode=="archive" and settings["weather_source"]=="open_meteo" and (
-            any(m in methods for m in ("local","v4")) or ("timestral" in methods and settings["timestral_weather"]))
+            "timestral" in methods and settings["timestral_weather"])
         weather_context=None
         if needs_archive and issues and "timestral" in methods and settings["timestral_weather"]:
             from .weather import fetch_weather_context
@@ -244,18 +344,11 @@ def _history_worker(service, settings, entity, rows, now, methods, horizon_hours
                     job["completed"]+=1
                     continue
                 try:
-                    if method == "local":
-                        run = adaptive_forecast(history, issue, weather=historical_weather, max_points=horizon_hours*4, price_scale=scale, base=forecast_quarters)
-                    elif method == "v4":
-                        run = forecast_quarters(history, issue, weather=historical_weather, max_points=horizon_hours*4, price_scale=scale)
-                    elif method == "epex":
-                        run = epex_forecast(history, issue, service._runtime_settings(settings, method), max_points=horizon_hours*4)
+                    if method == "epex":
+                        run = epex_forecast(history, issue, {**service._runtime_settings(settings, method), "_priority": "history"}, max_points=horizon_hours*4)
                     else:
-                        run = timestral_forecast(history, issue, {**service._runtime_settings(settings, method), "_weather":archived_weather, "_historical_weather_reconstruction":reconstructed}, max_points=horizon_hours*4)
-                    if method in {"local","v4"} and archived_weather and archived_weather.get("profile") in {"nl","europe"}:
-                        from .weather_regions import signature
-                        run=replace(run,model_version=run.model_version+":regional-1-"+signature(settings))
-                    uses_reconstruction=reconstructed and (method in {"local","v4"} or method=="timestral" and settings["timestral_weather"])
+                        run = timestral_forecast(history, issue, {**service._runtime_settings(settings, method), "_priority": "history", "_weather":archived_weather, "_historical_weather_reconstruction":reconstructed}, max_points=horizon_hours*4)
+                    uses_reconstruction = reconstructed and method == "timestral" and settings["timestral_weather"]
                     if uses_reconstruction: run=replace(run,model_version=run.model_version+WEATHER_ARCHIVE_VERSION,
                         reasons=[*run.reasons,"Gereconstrueerd GFS-archiefweer; geselecteerde run minstens 12 uur vóór deze uitgifte. Kan afwijken van oorspronkelijke live bron/modelbeschikbaarheid."])
                     inputs = {"method": method, "evaluation_mode": "historical", "tariff_entity": entity,

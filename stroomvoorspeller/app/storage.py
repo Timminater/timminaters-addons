@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import base64
+import hashlib
 import os
 import sqlite3
 import threading
 import zlib
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -99,9 +102,10 @@ class Store:
         return conn
 
     def _init_db(self) -> None:
-        with self._lock, self._connect() as db:
+        with self._lock, closing(self._connect()) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
+            CREATE TABLE IF NOT EXISTS forecast_quality (scope TEXT PRIMARY KEY, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settings (
               key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL
             );
@@ -129,23 +133,62 @@ class Store:
               source TEXT NOT NULL, payload_json TEXT NOT NULL, error TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_snapshots_issued ON input_snapshots(issued_at);
+            CREATE INDEX IF NOT EXISTS idx_snapshots_source_issued ON input_snapshots(source,issued_at,id);
             CREATE TABLE IF NOT EXISTS forecast_runs (
               id TEXT PRIMARY KEY, issued_at TEXT NOT NULL, model_version TEXT NOT NULL,
               quality TEXT NOT NULL, reasons_json TEXT NOT NULL, inputs_json TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_runs_issued ON forecast_runs(issued_at);
+            CREATE INDEX IF NOT EXISTS idx_runs_version_issued ON forecast_runs(model_version,issued_at);
+            CREATE TABLE IF NOT EXISTS forecast_history_chunks (
+              id INTEGER PRIMARY KEY, digest BLOB NOT NULL UNIQUE, payload BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS forecast_history_refs (
+              run_id TEXT NOT NULL REFERENCES forecast_runs(id) ON DELETE CASCADE,
+              position INTEGER NOT NULL,
+              chunk_id INTEGER NOT NULL REFERENCES forecast_history_chunks(id),
+              PRIMARY KEY(run_id, position)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS idx_history_refs_chunk ON forecast_history_refs(chunk_id);
+            CREATE TRIGGER IF NOT EXISTS delete_unreferenced_forecast_history
+            AFTER DELETE ON forecast_history_refs BEGIN
+              DELETE FROM forecast_history_chunks WHERE id=OLD.chunk_id
+                AND NOT EXISTS (SELECT 1 FROM forecast_history_refs WHERE chunk_id=OLD.chunk_id);
+            END;
+            CREATE TABLE IF NOT EXISTS weather_blobs (
+              id INTEGER PRIMARY KEY, digest BLOB UNIQUE NOT NULL, payload BLOB NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS forecast_weather_refs (
+              run_id TEXT PRIMARY KEY REFERENCES forecast_runs(id) ON DELETE CASCADE,
+              blob_id INTEGER NOT NULL REFERENCES weather_blobs(id)
+            ) WITHOUT ROWID;
+            CREATE INDEX IF NOT EXISTS idx_weather_refs_blob ON forecast_weather_refs(blob_id);
+            CREATE TRIGGER IF NOT EXISTS delete_unused_weather AFTER DELETE ON forecast_weather_refs BEGIN
+              DELETE FROM weather_blobs WHERE id=OLD.blob_id
+                AND NOT EXISTS (SELECT 1 FROM forecast_weather_refs WHERE blob_id=OLD.blob_id);
+            END;
             CREATE TABLE IF NOT EXISTS forecast_points (
               run_id TEXT NOT NULL REFERENCES forecast_runs(id) ON DELETE CASCADE,
               start_utc TEXT NOT NULL, end_utc TEXT NOT NULL, price REAL,
               lower_price REAL, upper_price REAL, source TEXT NOT NULL,
               quality TEXT NOT NULL, reason TEXT, PRIMARY KEY(run_id, start_utc)
-            );
+            ) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS source_status (
               source TEXT PRIMARY KEY, last_success TEXT, last_attempt TEXT,
               error TEXT, detail_json TEXT NOT NULL DEFAULT '{}'
             );
             PRAGMA user_version=1;
             """)
+
+    def read_quality(self, scope):
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT payload FROM forecast_quality WHERE scope=?", (scope,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def write_quality(self, scope, quality):
+        with self._lock, closing(self._connect()) as db, db:
+            db.execute("INSERT OR REPLACE INTO forecast_quality VALUES(?,?)",
+                       (scope, json.dumps(quality, allow_nan=False)))
 
     def get_settings(self) -> dict[str, Any]:
         with self._connect() as db:
@@ -260,40 +303,98 @@ class Store:
     def save_forecast(self, run_id: str, issued_at: datetime, model_version: str, quality: str,
                       reasons: list[str], inputs: Mapping[str, Any], points: Iterable[Mapping[str, Any]]) -> None:
         compact_inputs = dict(inputs)
+        weather = compact_inputs.get("weather_snapshot")
+        if isinstance(weather, dict):
+            del compact_inputs["weather_snapshot"]
+            compact_inputs["weather_shared"] = True
         history = compact_inputs.pop("history", None)
         if history is not None:
-            packed = json.dumps(history, separators=(",", ":"), allow_nan=False, default=str).encode("utf-8")
-            compact_inputs["history_zlib_b64"] = base64.b64encode(zlib.compress(packed, level=6)).decode("ascii")
-        with self._lock, self._connect() as db:
+            compact_inputs["history_chunked"] = True
+        with self._lock, closing(self._connect()) as db, db:
             db.execute("INSERT OR REPLACE INTO forecast_runs VALUES(?,?,?,?,?,?)",
                        (run_id, utc_iso(issued_at), model_version, quality,
                         json.dumps(reasons, separators=(",", ":")),
                         json.dumps(compact_inputs, separators=(",", ":"), allow_nan=False, default=str)))
+            if isinstance(weather, dict):
+                self._save_weather(db, run_id, weather)
+            if history is not None:
+                self._save_forecast_history(db, run_id, history)
             db.execute("DELETE FROM forecast_points WHERE run_id=?", (run_id,))
             db.executemany("INSERT INTO forecast_points VALUES(?,?,?,?,?,?,?,?,?)",
                 [(run_id, utc_iso(p["start_utc"]), utc_iso(p["end_utc"]), p.get("price"), p.get("lower"), p.get("upper"),
                   str(p.get("source", "model")), str(p.get("quality", quality)), p.get("reason")) for p in points])
 
+    @staticmethod
+    def _save_weather(db, run_id, weather):
+        raw = json.dumps(weather, separators=(",", ":"), sort_keys=True, allow_nan=False, default=str).encode()
+        digest = hashlib.sha256(raw).digest()
+        row = db.execute("SELECT id FROM weather_blobs WHERE digest=?", (digest,)).fetchone()
+        blob_id = row[0] if row else db.execute("INSERT INTO weather_blobs(digest,payload) VALUES(?,?)",
+                                               (digest, zlib.compress(raw))).lastrowid
+        db.execute("INSERT INTO forecast_weather_refs VALUES(?,?)", (run_id, blob_id))
+
+    @staticmethod
+    def _read_weather(db, run_id, inputs):
+        if inputs.pop("weather_shared", False):
+            row = db.execute("SELECT b.payload FROM forecast_weather_refs r JOIN weather_blobs b ON b.id=r.blob_id "
+                             "WHERE r.run_id=?", (run_id,)).fetchone()
+            if row is None:
+                raise ValueError("Gedeeld weerblok ontbreekt")
+            inputs["weather_snapshot"] = json.loads(zlib.decompress(row[0]))
+
+    @staticmethod
+    def _save_forecast_history(db: sqlite3.Connection, run_id: str, history: Iterable[Mapping[str, Any]]) -> None:
+        # Align on calendar days so rolling windows reuse all unchanged days.
+        for position, (_, rows) in enumerate(groupby(history, key=lambda row: str(row.get("start_utc", ""))[:10])):
+            packed = json.dumps(list(rows), separators=(",", ":"), sort_keys=True,
+                                allow_nan=False, default=str).encode("utf-8")
+            digest = hashlib.sha256(packed).digest()
+            existing = db.execute("SELECT id FROM forecast_history_chunks WHERE digest=?", (digest,)).fetchone()
+            chunk_id = existing["id"] if existing else db.execute(
+                "INSERT INTO forecast_history_chunks(digest,payload) VALUES(?,?)",
+                (digest, zlib.compress(packed)),
+            ).lastrowid
+            db.execute("INSERT INTO forecast_history_refs VALUES(?,?,?)", (run_id, position, chunk_id))
+
+    @staticmethod
+    def _decode_forecast_history(db: sqlite3.Connection, run_id: str, inputs: dict, *, include_history: bool = True) -> None:
+        Store._read_weather(db, run_id, inputs)
+        chunked = inputs.pop("history_chunked", False)
+        compressed = inputs.pop("history_zlib_b64", None)
+        if not include_history:
+            inputs.pop("history", None)
+        elif chunked:
+            chunks = db.execute("""SELECT c.payload FROM forecast_history_refs r
+                JOIN forecast_history_chunks c ON c.id=r.chunk_id
+                WHERE r.run_id=? ORDER BY r.position""", (run_id,))
+            inputs["history"] = [row for chunk in chunks for row in json.loads(zlib.decompress(chunk["payload"]))]
+        elif compressed:
+            inputs["history"] = json.loads(zlib.decompress(base64.b64decode(compressed)))
+
     def latest_forecast(self, entity_id: str | None = None, price_field: str | None = None,
                         tariff_unit: str | None = None, *, method: str | None = None,
-                        evaluation_mode: str = "live", model_version: str | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-        with self._connect() as db:
+                        evaluation_mode: str = "live", model_version: str | None = None,
+                        include_history: bool = True, include_points: bool = True,
+                        since: datetime | None = None) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        version_clause = " AND model_version=?" if model_version is not None else ""
+        since_clause = " AND issued_at>=?" if since is not None else ""
+        scope = ([model_version] if model_version is not None else []) + ([utc_iso(since)] if since is not None else [])
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN")
             run = db.execute("""SELECT * FROM forecast_runs WHERE
                 COALESCE(json_extract(inputs_json,'$.evaluation_mode'),'live')=?
                 AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.method'),'local')=?)
-                AND (? IS NULL OR model_version=?)
                 AND (? IS NULL OR json_extract(inputs_json,'$.tariff_entity')=?)
                 AND (? IS NULL OR COALESCE(json_extract(inputs_json,'$.price_field'),'tax_included')=?)
                 AND (? IS NULL OR json_extract(inputs_json,'$.tariff_unit')=?)
-                ORDER BY issued_at DESC,rowid DESC LIMIT 1""",
-                (evaluation_mode, method, method, model_version, model_version,
-                 entity_id, entity_id, price_field, price_field, tariff_unit, tariff_unit)).fetchone()
+                """ + version_clause + since_clause + " ORDER BY issued_at DESC,rowid DESC LIMIT 1",
+                (evaluation_mode, method, method, entity_id, entity_id, price_field, price_field,
+                 tariff_unit, tariff_unit, *scope)).fetchone()
             if not run: return None, []
-            points = db.execute("SELECT * FROM forecast_points WHERE run_id=? ORDER BY start_utc", (run["id"],)).fetchall()
-        d = dict(run); d["reasons"] = json.loads(d.pop("reasons_json")); d["inputs"] = json.loads(d.pop("inputs_json"))
-        compressed = d["inputs"].pop("history_zlib_b64", None)
-        if compressed:
-            d["inputs"]["history"] = json.loads(zlib.decompress(base64.b64decode(compressed)))
+            points = db.execute("SELECT * FROM forecast_points WHERE run_id=? ORDER BY start_utc",
+                                (run["id"],)).fetchall() if include_points else []
+            d = dict(run); d["reasons"] = json.loads(d.pop("reasons_json")); d["inputs"] = json.loads(d.pop("inputs_json"))
+            self._decode_forecast_history(db, run["id"], d["inputs"], include_history=include_history)
         return d, [dict(p) for p in points]
 
     def forecast_snapshots(self, entity_id: str | None = None,
@@ -302,34 +403,33 @@ class Store:
                            tariff_unit: str | None = None, *, method: str | None = None,
                            evaluation_mode: str = "live", model_version: str | None = None) -> list[dict[str, Any]]:
         """Return retained point-in-time input snapshots for walk-forward evaluation."""
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN")
             if since_issued:
                 runs = db.execute("SELECT * FROM forecast_runs WHERE issued_at>=? ORDER BY issued_at",
-                                  (utc_iso(since_issued),)).fetchall()
+                                  (utc_iso(since_issued),))
             else:
-                runs = db.execute("SELECT * FROM forecast_runs ORDER BY issued_at").fetchall()
-        result = []
-        for row in runs:
-            try:
-                inputs = json.loads(row["inputs_json"])
-                if inputs.get("evaluation_mode", "live") != evaluation_mode: continue
-                if method is not None and inputs.get("method", "local") != method: continue
-                if model_version is not None and row["model_version"] != model_version: continue
-                if entity_id is not None and inputs.get("tariff_entity") != entity_id: continue
-                if price_field is not None and inputs.get("price_field", "tax_included") != price_field: continue
-                if tariff_unit is not None and inputs.get("tariff_unit") != tariff_unit: continue
-                compressed = inputs.pop("history_zlib_b64", None)
-                if compressed: inputs["history"] = json.loads(zlib.decompress(base64.b64decode(compressed)))
-                # Backtests must replay exactly the normalized weather values
-                # passed to the model, not the raw provider snapshot.
-                if "weather_model" in inputs:
-                    inputs["weather"] = inputs.get("weather_model")
-                elif "weather_snapshot" in inputs:
-                    inputs["weather"] = inputs.get("weather_snapshot")
-                result.append({"id": row["id"], "issued_at": row["issued_at"], "quality": row["quality"],
-                               "model_version": row["model_version"], "inputs": inputs, **inputs})
-            except (ValueError, zlib.error):
-                continue
+                runs = db.execute("SELECT * FROM forecast_runs ORDER BY issued_at")
+            result = []
+            for row in runs:
+                try:
+                    inputs = json.loads(row["inputs_json"])
+                    if inputs.get("evaluation_mode", "live") != evaluation_mode: continue
+                    if method is not None and inputs.get("method", "local") != method: continue
+                    if model_version is not None and row["model_version"] != model_version: continue
+                    if entity_id is not None and inputs.get("tariff_entity") != entity_id: continue
+                    if price_field is not None and inputs.get("price_field", "tax_included") != price_field: continue
+                    if tariff_unit is not None and inputs.get("tariff_unit") != tariff_unit: continue
+                    self._decode_forecast_history(db, row["id"], inputs)
+                    # Backtests replay the normalized values passed to the model.
+                    if "weather_model" in inputs:
+                        inputs["weather"] = inputs.get("weather_model")
+                    elif "weather_snapshot" in inputs:
+                        inputs["weather"] = inputs.get("weather_snapshot")
+                    result.append({"id": row["id"], "issued_at": row["issued_at"], "quality": row["quality"],
+                                   "model_version": row["model_version"], "inputs": inputs, **inputs})
+                except (ValueError, zlib.error):
+                    continue
         return result
 
     def stored_forecasts(self, entity_id: str, since_issued: datetime,
@@ -361,7 +461,8 @@ class Store:
         Selected runs' points are then fetched in one bounded query.
         """
         zone = ZoneInfo(timezone_name)
-        with self._connect() as db:
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN")
             version_clause = " AND model_version=?" if model_version is not None else ""
             candidates = db.execute("""SELECT id,issued_at FROM forecast_runs
                 WHERE issued_at>=? AND issued_at<=?
@@ -389,6 +490,12 @@ class Store:
             placeholders = ",".join("?" for _ in ids)
             point_rows = db.execute(f"""SELECT run_id,start_utc,end_utc,price,lower_price,upper_price
                 FROM forecast_points WHERE run_id IN ({placeholders}) ORDER BY start_utc""", ids).fetchall()
+            histories = {}
+            if include_history:
+                for row in db.execute(f"SELECT id,inputs_json FROM forecast_runs WHERE id IN ({placeholders})", ids):
+                    inputs = json.loads(row["inputs_json"])
+                    self._decode_forecast_history(db, row["id"], inputs)
+                    histories[row["id"]] = inputs.get("history", [])
         points_by_run: dict[str, list[dict[str, Any]]] = {}
         for row in point_rows:
             point = dict(row)
@@ -398,14 +505,8 @@ class Store:
         result = [{"id": row["id"], "issued_at": row["issued_at"],
                    "points": points_by_run.get(row["id"], [])} for row in selected]
         if include_history:
-            with self._connect() as db:
-                metadata = {r["id"]: r["inputs_json"] for r in db.execute(
-                    f"SELECT id,inputs_json FROM forecast_runs WHERE id IN ({placeholders})", ids)}
             for run in result:
-                inputs = json.loads(metadata[run["id"]])
-                packed = inputs.get("history_zlib_b64")
-                run["history"] = (json.loads(zlib.decompress(base64.b64decode(packed)))
-                                  if packed else inputs.get("history", []))
+                run["history"] = histories[run["id"]]
         return result
 
     def common_daily_forecasts(self, entity_id, since, until, price_field, tariff_unit, versions, mode):
@@ -457,18 +558,19 @@ class Store:
                               "WHERE entity_id=? AND end_utc<=? AND quality IN ('valid','published') ORDER BY start_utc", (entity_id,end)).fetchall()
         return {row["start_utc"]: float(row["price"]) for row in rows}
 
-    def published_quarters(self, entity_id: str, known_by: datetime) -> dict[str, float]:
+    def published_quarters(self, entity_id: str, known_by: datetime, *, since: datetime | None = None) -> dict[str, float]:
         """Published tariffs known by this time, including future price intervals.
 
         Day-ahead tariffs can be compared with an earlier forecast as soon as
         Home Assistant publishes them; consumption of the quarter is irrelevant.
         """
         cutoff = utc_iso(known_by)
+        lower = utc_iso(since) if since is not None else ""
         with self._connect() as db:
             rows = db.execute("SELECT start_utc,price FROM quarter_prices "
                               "WHERE entity_id=? AND quality IN ('valid','published') AND observed_at<=? "
-                              "AND (published_at IS NULL OR published_at<=?) ORDER BY start_utc",
-                              (entity_id, cutoff, cutoff)).fetchall()
+                              "AND (published_at IS NULL OR published_at<=?) AND start_utc>=? ORDER BY start_utc",
+                              (entity_id, cutoff, cutoff, lower)).fetchall()
         return {row["start_utc"]: float(row["price"]) for row in rows}
 
     def set_source_status(self, source: str, *, success: bool, attempted_at: datetime,
