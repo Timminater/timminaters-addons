@@ -200,6 +200,15 @@ class AppService:
             active = "epex" if methods["epex"] and not methods["timestral"] else "timestral"
             if any(previous.values()):
                 methods[active] = True
+        if "weather_enabled" in value:
+            value["timestral_weather"] = value["weather_enabled"]
+        else:
+            value["weather_enabled"] = value["timestral_weather"] or methods["epex"]
+        value.setdefault("energy_research_enabled", True)
+        if not value["weather_enabled"]:
+            methods["epex"] = False
+            if active == "epex" and methods["timestral"]:
+                active = "timestral"
         value.update(forecast_methods=methods, active_method=active)
         value.pop("epex_url", None)
         value.setdefault("epex_training_days", 180)
@@ -230,11 +239,19 @@ class AppService:
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
                    "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
                    "timestral_model", "timestral_calendar", "timestral_context_days", "history_days", "weather_region",
-                   "timestral_weather", "timestral_ned_ab", "ned_data_enabled"}
+                   "timestral_weather", "timestral_ned_ab", "ned_data_enabled", "weather_enabled",
+                   "energy_research_enabled"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        if "weather_enabled" in body:
+            merged["timestral_weather"] = merged["weather_enabled"]
+        elif "timestral_weather" in body and "weather_enabled" not in self.store.get_settings():
+            merged["weather_enabled"] = merged["timestral_weather"] or current["forecast_methods"]["epex"]
+        for key in ("weather_enabled", "energy_research_enabled"):
+            if type(merged[key]) is not bool:
+                raise ValueError("Zet de databron aan of uit")
         if type(merged["ned_data_enabled"]) is not bool:
             raise ValueError("NED-dataverzameling moet aan of uit staan")
         if merged["ned_data_enabled"] and not (ned_key or ned.api_key(self.store.data_dir)):
@@ -255,6 +272,8 @@ class AppService:
                 or any(type(v) is not bool for v in methods.values())):
             raise ValueError("Geef voor elke rekenmethode aan of deze ingeschakeld is")
         merged["forecast_methods"] = methods = {m: methods[m] for m in ("epex", "timestral")}
+        if methods["epex"] and not merged["weather_enabled"]:
+            raise ValueError("Zet Weersverwachting aan om EpexPredictor te gebruiken.")
         if not isinstance(merged["active_method"], str) or merged["active_method"] not in methods:
             raise ValueError("Onbekende actieve methode")
         if any(methods.values()) and not methods[merged["active_method"]]:
@@ -325,7 +344,7 @@ class AppService:
                 raise ValueError("Vul een geldige periode voor de tariefcomponenten in") from exc
             if supplier == "tibber" and not fee_confirmed:
                 raise ValueError("Controleer en bevestig of Tibbers tariefvoorstel bij jouw contract past")
-        if merged["weather_region"] == "local":
+        if merged["weather_enabled"] and merged["weather_region"] == "local":
             from .weather_regions import locations
             locations("local", merged.get("latitude"), merged.get("longitude"))
         if merged["timestral_weather"] and merged["forecast_methods"]["timestral"] and merged.get("weather_source") != "open_meteo":
@@ -361,6 +380,9 @@ class AppService:
                     "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_calendar", "timestral_context_days",
                     "history_days", "weather_region", "timestral_weather", "timestral_ned_ab", "ned_data_enabled"):
             new[key] = merged[key]
+        if "weather_enabled" in body:
+            new["weather_enabled"] = merged["weather_enabled"]
+        new["energy_research_enabled"] = merged["energy_research_enabled"]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
         if any(new[key] != current.get(key) for key in scope_keys):
@@ -1030,7 +1052,8 @@ class AppService:
         from .timestral_ab import collect as collect_ned
         while not self._stop.is_set():
             try:
-                collect(self.store, self.clock, self._stop.is_set)
+                if self.get_settings()["energy_research_enabled"]:
+                    collect(self.store, self.clock, self._stop.is_set)
                 collect_ned(self, archive_only=True)
             except Exception:
                 LOG.exception("Onderzoeksgegevens ophalen mislukt")
@@ -1154,7 +1177,8 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if path == "/api/export":
                     from .data_management import export_archive
                     import shutil
-                    with export_archive(service, int(query.get("days", ["30"])[0])) as archive:
+                    period = query.get("days", ["30"])[0]
+                    with export_archive(service, None if period == "all" else int(period)) as archive:
                         archive.seek(0, 2); size = archive.tell(); archive.seek(0)
                         self.send_response(200)
                         self.send_header("Content-Type", "application/zip")

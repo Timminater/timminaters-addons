@@ -26,7 +26,7 @@ SQLite neemt gecommitteerde WAL-wijzigingen mee als het bijbehorende WAL-bestand
 
 ## Analyse-export
 
-Kies een prognoseperiode van 1–3650 dagen (standaard 30) en klik **Download analyse-export (ZIP)**. De app bouwt een consistent SQLite-leessnapshot en schrijft de JSONL-bestanden regel voor regel naar een tijdelijke ZIP; de hele database wordt niet in RAM gekopieerd. De tijdelijke ZIP wordt na downloaden verwijderd. De gecomprimeerde export is begrensd op 32 MiB. Kies bij overschrijding een kortere periode.
+Kies een periode van 1–3650 dagen of **Alle bewaarde gegevens**. Klik daarna op **Download gegevens (ZIP)**. De app schrijft de bestanden regel voor regel naar een tijdelijke ZIP op schijf. Je browser downloadt het bestand rechtstreeks. Grote exports kosten extra tijd en tijdelijk schijfruimte.
 
 De ZIP bevat:
 

@@ -18,7 +18,6 @@ from .timestral_models import MODELS
 
 TABLE_DATES = {'quarter_prices': 'end_utc', 'quarter_price_revisions': 'end_utc',
                'hourly_history': 'end_utc', 'forecast_runs': 'issued_at', 'input_snapshots': 'issued_at'}
-MAX_EXPORT_BYTES = 32 * 1024 * 1024
 
 
 def days_value(value, minimum=1):
@@ -135,20 +134,22 @@ def cleanup(service, body):
 
 
 def export_archive(service, days=30):
-    """Consistent SQLite read snapshot, streamed JSONL into a bounded ZIP file.
+    """Consistent SQLite read snapshot, streamed JSONL into a temporary ZIP file.
 
     Returns an open temporary file. No raw DB, settings dump, errors, paths,
     coordinates, HA responses or compressed raw input histories are copied.
     """
-    days_value(days)
+    if days is not None:
+        days_value(days)
     if not service._export_lock.acquire(blocking=False):
         raise ValueError('Er loopt al een export of onderhoudstaak')
     output = None
     try:
         output = tempfile.TemporaryFile()
         now = service.clock()
-        cutoff, until = utc_iso(now - timedelta(days=days)), utc_iso(now)
-        price_cutoff = utc_iso(now - timedelta(days=days + 90))
+        until = utc_iso(now)
+        cutoff = utc_iso(now - timedelta(days=days)) if days is not None else ''
+        price_cutoff = utc_iso(now - timedelta(days=days + 90)) if days is not None else ''
         salt = uuid.uuid4().hex
         def alias(value):
             return 'series-' + hashlib.sha256((salt + str(value)).encode()).hexdigest()[:16]
@@ -180,12 +181,10 @@ def export_archive(service, days=30):
             db.execute('BEGIN')
             def write_rows(name, rows):
                 count = 0
-                with archive.open(name + '.jsonl', 'w') as stream:
+                with archive.open(name + '.jsonl', 'w', force_zip64=True) as stream:
                     for row in rows:
                         stream.write((json.dumps(row, separators=(',', ':'), allow_nan=False) + '\n').encode())
                         count += 1
-                        if output.tell() > MAX_EXPORT_BYTES:
-                            raise ValueError('Export groter dan 32 MiB; kies een kortere periode')
                 counts[name] = count
             for table in ('quarter_prices', 'quarter_price_revisions', 'hourly_history'):
                 def prices(table=table):
@@ -236,9 +235,8 @@ def export_archive(service, days=30):
             archive.writestr('settings.json', json.dumps({key: settings[key] for key in allowed if key in settings}))
             archive.writestr('README.txt', 'Stroomvoorspeller analyse-export\n\nJSONL: een JSON-record per regel; timestamps zijn UTC.\nKoppel forecast_points.run_id aan forecast_runs.id. Koppel werkelijke prijzen aan forecast_runs.series_id en forecast_points.start_utc. Gebruik quarter_price_revisions met observed_at/published_at voor een as-of reconstructie. Prijswaarden en banden gebruiken de unit van de run/reeks (EUR/kWh of EUR/MWh). Live en historical niet mengen.\nModelinvoerhistorie is niet per run gedupliceerd: prijsdata bevat 90 extra dagen lookback. Volledige reproduceerbaarheid is niet gegarandeerd als brondata eerder is verwijderd. Instellingen zijn de huidige instellingen, geen configuratiehistorie. Geen ruwe database, snapshots, tokens, locatiecoordinaten, modelgewichten of originele entiteitsnamen. De export kan nog persoonlijke patronen bevatten.\nDeze ZIP is tijdelijk lokaal gemaakt en wordt niet automatisch verstuurd.\n')
             archive.writestr('manifest.json', json.dumps({'schema': 'stroomvoorspeller-research-v1', 'created_at': until,
-                'forecast_from': cutoff, 'prices_from': price_cutoff, 'counts': counts,
+                'forecast_from': cutoff or None, 'prices_from': price_cutoff or None, 'counts': counts,
                 'notice': 'Prijsdata bevat 90 extra dagen invoerhistorie. Live en historisch blijven onderscheiden. Reeks-ID’s zijn alleen binnen deze export vergelijkbaar. Geen tokens, locatie, entiteitsnamen, ruwe snapshots of modelgewichten. Prijs- en weerpatronen kunnen nog persoonlijke informatie bevatten. Geen automatische upload.'}))
-        if output.tell() > MAX_EXPORT_BYTES: raise ValueError('Export groter dan 32 MiB; kies een kortere periode')
         output.seek(0)
         return output
     except Exception:

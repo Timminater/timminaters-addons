@@ -44,7 +44,7 @@
   function metricText(metrics) {
     if (!metrics || !metrics.n) return '';
     const unit = state.settings?.tariff_unit || '';
-    return `Gemeten op ${metrics.n} kwartieren: MAE ${fmtPrice(metrics.mae, unit)}, bias ${fmtPrice(metrics.bias, unit)}, kwartierbasislijn MAE ${fmtPrice(metrics.baseline_mae, unit)}.`;
+    return `Gemiddelde prijsafwijking: ${fmtPrice(metrics.mae, unit)} over ${metrics.n} kwartieren.`;
   }
   function updateStatus(data) {
     const configured = !!data.configured;
@@ -101,7 +101,7 @@
     while (end && (slots[end - 1].status === 'missing' || !Number.isFinite(slots[end - 1].value))) end--;
     const data = fillGaps(slots.slice(0, end));
     const boundary = data.find(s => s.status === 'predicted' && Number.isFinite(s.value));
-    setText('forecast-boundary', boundary ? `Prognose begint ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen prognosepunt.');
+    setText('forecast-boundary', boundary ? `Voorspelling vanaf ${humanTime(boundary.startDate, true)}.` : 'Er is nog geen voorspelling.');
     setText('chart-unit', data.find(s => s.unit)?.unit || state.settings?.tariff_unit || '');
     show('chart-empty', !data.length); svg.hidden = !data.length;
     if (!data.length) return;
@@ -180,12 +180,12 @@
     const enabled = data.method?.enabled ?? state.settings?.forecast_methods?.[method];
     setText('shown-model', shown);
     setText('shown-quality', data.quality?.label || 'Voorlopig');
-    setText('shown-model-state', enabled === false ? 'Uitgeschakeld · alleen bekende tarieven' : data.updated_at ? `Dit model levert de prognose in de grafiek en voor MQTT.${method === 'timestral' ? data.model_version?.includes('-calendar-1:') ? ' Weekendinformatie: aan.' : ' Zonder expliciete weekendinformatie.' : ''}${method === 'timestral' ? data.model_version?.includes(':weather-1-') ? ' Regionale weerinvoer: aan.' : ' Zonder weerinvoer.' : ''}` : 'Geselecteerd · nog geen prognose beschikbaar');
+    setText('shown-model-state', enabled === false ? 'Je ziet alleen bekende prijzen.' : data.updated_at ? '' : 'Wacht op de eerste voorspelling.');
     setText('shown-model-issued', data.updated_at ? `Uitgegeven ${humanTime(data.updated_at, true)}${data.method?.weather_region ? ' · Weergebied: ' + ({local:'lokaal',nl:'Nederland (4 punten)',europe:'Nederland en buurlanden (10 punten)'}[data.method.weather_region] || data.method.weather_region) : ''}` : 'Bekende tarieven blijven zichtbaar zonder modelberekening.');
     setText('chart-model', data.updated_at ? `Prognose: ${shown}` : enabled === false ? 'Alleen bekende tarieven' : `Geselecteerd: ${shown} · wacht op prognose`);
     state.dashboard = data; const slots = normalizeSlots(data.slots); const current = data.current || {};
     setText('current-price', current.price == null ? '—' : fmtNumber.format(Number(current.price))); setText('current-unit', current.unit || ''); setText('current-entity', current.entity || describePriceSource(data.source || {})); setText('current-time', current.start ? `Start ${humanTime(current.start, true)}` : 'Geen huidig kwartier'); setText('current-origin', data.source?.price_source === 'energy_charts_nl' && current.status === 'known' ? 'Bekende marktprijs' : current.status === 'known' ? 'Bekend tarief' : current.status === 'predicted' ? 'Modelprognose' : 'Geen actuele waarde'); setText('current-state', statusNames[current.status] || 'Onbekend');
-    const q = data.quality || {}; setText('uncertainty', q.uncertainty || 'Niet gekalibreerd voor kwartieren'); setText('band-note', q.uncertainty || 'De getoonde marge is een ongekalibreerde modelindicatie, geen betrouwbaarheidsinterval of vaste prijs.'); $('forecast-legend').lastChild.textContent = q.band_calibrated ? ' Voorspeld met empirische band' : ' Voorspeld met indicatieve marge'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
+    const q = data.quality || {}; setText('uncertainty', q.band_calibrated ? 'Marge gebaseerd op eerdere voorspellingen' : 'Marge geschat door het model'); setText('band-note', 'De gekleurde band geeft aan hoeveel de verwachte prijs kan schommelen. De werkelijke prijs kan ook buiten die band vallen.'); $('forecast-legend').lastChild.textContent = ' Voorspeld'; setText('missing-inputs', (q.missing_inputs || []).join(', ') || 'Geen gemeld'); setText('provisional-detail', [(q.reasons || []).join(' · ') || 'Deze kwartierprognose is indicatief; bandbreedte is niet gekalibreerd.', metricText(q.maturity?.metrics)].filter(Boolean).join(' '));
     const noteTitle = document.querySelector('.provisional-note strong');
     if (noteTitle) noteTitle.textContent = q.maturity?.ready ? 'Lokaal geëvalueerde prognose' : 'Voorlopige prognose';
     const unit = current.unit || slots.find(s => s.unit)?.unit || ''; renderChart(slots); renderWindows(data.windows, unit); setText('last-refresh', `Laatst bijgewerkt: ${data.updated_at ? humanTime(data.updated_at, true) : '—'}`);
@@ -421,8 +421,34 @@
         select.add(new Option(state.settings.tariff_entity, state.settings.tariff_entity));
       select.value = state.settings.tariff_entity;
     }
+    updateSourceSettings();
   }
-  function setWeatherFields() { show('open-meteo-fields', $('weather-region').value === 'local'); if ($('location-source')) show('location-source', $('weather-region').value === 'local'); }
+  function updateSourceSettings() {
+    const weather = $('weather-enabled').checked;
+    const ready = $('price-source').value === 'energy_charts_nl' || Boolean($('tariff-entity').value);
+    show('weather-options', weather);
+    show('open-meteo-fields', weather && $('weather-region').value === 'local');
+    show('ned-data-settings', $('ned-data-enabled').checked);
+    $('timestral-ned-ab').disabled = !weather || !$('method-timestral').checked || !ready;
+    for (const method of ['timestral', 'epex']) {
+      const checkbox = $('method-' + method);
+      const reason = !ready ? 'Kies eerst een prijsbron met een stroomtarief.' :
+        method === 'epex' && !weather ? 'Zet Weersverwachting aan om dit model te gebruiken.' : '';
+      checkbox.disabled = Boolean(reason);
+      setText(method + '-requirement', reason || (method === 'epex'
+        ? 'Gebruikt weer en Nederlandse beursprijzen.'
+        : weather ? 'Gebruikt je prijsgeschiedenis en de weersverwachting.' : 'Gebruikt je prijsgeschiedenis.'));
+      $('active-method').querySelector(`option[value="${method}"]`).disabled = checkbox.disabled || !checkbox.checked;
+    }
+    const active = $('active-method');
+    if (active.selectedOptions[0]?.disabled) {
+      const eligible = [...active.options].find(option => !option.disabled);
+      if (eligible) active.value = eligible.value;
+    }
+    active.disabled = [...active.options].every(option => option.disabled);
+    show('epex-options', weather && $('method-epex').checked && ready);
+    show('timestral-options', $('method-timestral').checked && ready);
+  }
   async function openSettings() {
     if (state.settingsOpening) return;
     state.settingsOpening = true; state.promptedConfig = true;
@@ -464,7 +490,8 @@
     $('epex-offset').value = s.epex_offset_eur_kwh ?? 0;
     $('epex-confirmed').checked = s.epex_tariff_confirmed === true;
     $('weather-region').value = s.weather_region || 'nl';
-    $('timestral-weather').checked = s.timestral_weather === true;
+    $('weather-enabled').checked = s.weather_enabled === true;
+    $('energy-research-enabled').checked = s.energy_research_enabled !== false;
     $('timestral-ned-ab').checked = s.timestral_ned_ab === true;
     $('ned-data-enabled').checked = s.ned_data_enabled === true;
     show('ned-data-settings', $('ned-data-enabled').checked);
@@ -488,13 +515,13 @@
       $('open-meteo-fields').after(locationHelp);
     }
     locationHelp.textContent = s.latitude != null && s.longitude != null ? 'Lokaal opgeslagen locatie.' : suggested.latitude != null && suggested.longitude != null ? 'Voorstel uit de Home-locatie van Home Assistant. Wordt pas voor Open-Meteo gebruikt nadat je Instellingen opslaat.' : 'Geen Home-locatie gevonden; vul de coördinaten zelf in.';
-    setWeatherFields();
+    updateSourceSettings();
   }
   async function saveSettings(event) {
     event.preventDefault(); const tariff = $('tariff-entity').value; const priceSource = $('price-source').value;
     if (priceSource === 'home_assistant' && !tariff) { show('settings-error', true); $('settings-error').textContent = 'Selecteer een bestaande tariefentiteit.'; return; }
     const settings = { tariff_entity: tariff, price_source: priceSource, price_choice: $('price-choice').value, supplier: $('supplier').value, energy_tax_eur_kwh: Number($('energy-tax').value), vat_percent: Number($('vat-percent').value), supplier_fee_eur_kwh_incl_vat: Number($('supplier-fee').value), tariff_valid_from: $('tariff-valid-from').value, tariff_valid_to: $('tariff-valid-to').value, supplier_fee_confirmed: $('supplier-fee-confirmed').checked, tariff_unit: $('tariff-unit').value, price_field: $('price-field').value, weather_source: 'open_meteo', latitude: $('latitude').value === '' ? null : Number($('latitude').value), longitude: $('longitude').value === '' ? null : Number($('longitude').value), calculation_interval_minutes: Number($('calculation-interval').value), mqtt_enabled: $('mqtt-enabled').checked };
-    settings.forecast_methods = Object.fromEntries(['epex', 'timestral'].map(m => [m, $('method-' + m).checked]));
+    settings.forecast_methods = Object.fromEntries(['epex', 'timestral'].map(m => [m, $('method-' + m).checked && !$('method-' + m).disabled]));
     settings.active_method = $('active-method').value;
     settings.ml_threads = Number($('ml-threads').value);
     settings.epex_training_days = Number($('epex-training').value);
@@ -503,9 +530,10 @@
     settings.epex_offset_eur_kwh = Number($('epex-offset').value);
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
     settings.weather_region = $('weather-region').value;
-    settings.timestral_weather = $('timestral-weather').checked;
+    settings.weather_enabled = $('weather-enabled').checked;
+    settings.energy_research_enabled = $('energy-research-enabled').checked;
     settings.ned_data_enabled = $('ned-data-enabled').checked;
-    settings.timestral_ned_ab = settings.ned_data_enabled && $('timestral-ned-ab').checked;
+    settings.timestral_ned_ab = settings.ned_data_enabled && !$('timestral-ned-ab').disabled && $('timestral-ned-ab').checked;
     const nedKey = $('ned-api-key').value.trim();
     if (settings.ned_data_enabled && nedKey) settings.ned_api_key = nedKey;
     settings.timestral_calendar = $('timestral-calendar').checked;
@@ -528,6 +556,7 @@
     show('ha-tariff-fields', !market);
     show('epex-ha-tariff', !market);
     show('market-tariff-fields', market);
+    show('all-in-fields', market && $('price-choice').value === 'all_in');
     $('tariff-entity').required = !market;
     $('tariff-entity').disabled = market;
     $('tariff-unit').disabled = market;
@@ -603,19 +632,6 @@
     } catch (error) { setText('storage-message', error.message); }
     finally { buttons.forEach(id => $(id).disabled = false); }
   }
-  async function exportData() {
-    const button = $('data-export'); button.disabled = true;
-    setText('storage-message', 'Analyse-export voorbereiden…');
-    try {
-      const response = await fetch(new URL('api/export?days=' + encodeURIComponent($('export-days').value), document.baseURI), {credentials: 'same-origin', cache: 'no-store'});
-      if (!response.ok) { const error = await response.json(); throw new Error(error.error || 'Export mislukt'); }
-      const blob = await response.blob(); const url = URL.createObjectURL(blob);
-      const link = document.createElement('a'); link.href = url; link.download = 'stroomvoorspeller-analyse.zip';
-      document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
-      setText('storage-message', 'Export gedownload. Je kunt het ZIP-bestand zelf delen in de chat; er is niets automatisch verstuurd.');
-    } catch (error) { setText('storage-message', error.message); }
-    finally { button.disabled = false; }
-  }
   const modelColors = {local: '#087e69', v4: '#466ac6', epex: '#bf6b20', timestral: '#9a52b3'};
   function methodName(method, version, size) {
     if (method === 'timestral') return `Timestral ${size || state.settings?.timestral_model || ''}`.trim();
@@ -629,13 +645,13 @@
     const names = Object.fromEntries((data.methods || []).map(m => [m.id, m.label]));
     setText('compare-timestral-label', view.metrics?.find(m => m.id === 'timestral')?.label || names.timestral || 'Timestral');
     for (const id of ['epex', 'timestral']) $(`compare-${id}`).parentElement.style.setProperty('--method-color', modelColors[id]);
-    const mode = view.mode === 'historical' ? 'Historische reconstructie' : 'Live voorspellingen';
-    setText('comparison-context', view.selected?.length ? `${mode} · ${view.n || 0} paren per methode · ${view.issue_days || 0} uitgiftedagen · ${view.unique_targets || 0} unieke kwartieren · ${view.available?.length || 0} methode(n)` : 'Geen methoden geselecteerd.');
+    const mode = view.mode === 'historical' ? 'Test met oude gegevens' : 'Eerder gemaakte voorspellingen';
+    setText('comparison-context', view.selected?.length ? `${mode} · ${view.unique_targets || 0} vergeleken kwartieren` : 'Kies een model om te vergelijken.');
     const warnings = [];
     if (view.mode === 'historical') warnings.push('Reconstructie met huidige archiefdata; geen bewijs van live prestaties.');
     if (view.missing?.length) warnings.push(`Nog geen resultaten in dit venster: ${view.missing.map(m => names[m]).join(', ')}.`);
     if (view.available?.length === 1) warnings.push('Eén methode heeft resultaten; er is nog geen onderlinge vergelijking.');
-    if (view.available?.length > 1 && !view.n) warnings.push('Er zijn resultaten, maar nog geen gemeenschappelijke uitgiftes en doelkwartieren. Er wordt geen rangorde berekend.');
+    if (view.available?.length > 1 && !view.n) warnings.push('De modellen hebben nog geen voorspellingen voor dezelfde momenten. Kies een langere periode of bekijk één model.');
     $('comparison-warning').textContent = warnings.join(' '); show('comparison-warning', warnings.length > 0);
     const bars = $('performance-bars'); bars.replaceChildren();
     const finite = (view.metrics || []).filter(m => m.n && m.mae != null && Number.isFinite(Number(m.mae)));
@@ -672,8 +688,8 @@
       ? 'Geen vergelijkbare historische resultaten in deze selectie. Kies een langere periode of toets welke methoden zijn aangevinkt.'
       : 'Geen gemeenschappelijke live uitgiftes en kwartieren in deze selectie. Kies een langere periode of minder methoden.';
     setText('comparison-empty-state', view.selected?.length ? emptyText : 'Selecteer minimaal één methode.');
-    setText('comparison-chart-title', errors ? 'Voorspelfout per uitgiftedag' : 'Prognoses naast werkelijke tarieven');
-    setText('comparison-chart-note', errors ? `Dagelijkse MAE in ${data.unit || ''}; lager is beter. ${view.notice || ''}` : `Maximaal 192 recente doelkwartieren in ${data.unit || ''}. Beweeg over een punt voor tijd, uitgifte en tarieven. Gaten blijven zichtbaar. ${view.notice || ''}`);
+    setText('comparison-chart-title', errors ? 'Voorspelfout per dag' : 'Voorspelde en werkelijke prijzen');
+    setText('comparison-chart-note', errors ? `Gemiddelde afwijking per dag in ${data.unit || ''}; lager is beter. ${view.notice || ''}` : `Maximaal 192 recente doelkwartieren in ${data.unit || ''}. Beweeg over een punt voor tijd, uitgifte en tarieven. Gaten blijven zichtbaar. ${view.notice || ''}`);
     if (!populated) return;
     const width = 960, height = 310, pad = {l: 68, r: 24, t: 20, b: 44};
     svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -717,7 +733,13 @@
     $('storage-clean-history').addEventListener('click', () => cleanStorage('history'));
     $('storage-clean-cache').addEventListener('click', () => cleanStorage('epex_cache'));
     $('storage-clean-models').addEventListener('click', () => cleanStorage('unused_models'));
-    $('data-export').addEventListener('click', exportData);
+    $('export-all').addEventListener('change', () => {
+      $('export-days').disabled = $('export-all').checked;
+      $('export-all-value').disabled = !$('export-all').checked;
+    });
+    $('export-form').addEventListener('submit', () => {
+      setText('storage-message', 'De app maakt het bestand klaar. Bij veel gegevens kan dit even duren.');
+    });
     $('history-test').addEventListener('click', testHistory);
     $('timestral-ab-details').addEventListener('toggle', () => { if ($('timestral-ab-details').open) void loadTimestralAB(); });
     $('timestral-ab-refresh').addEventListener('click', loadTimestralAB);
@@ -727,18 +749,24 @@
     const methodDetails = $('method-comparisons').closest('details');
     methodDetails.addEventListener('toggle', () => { if (methodDetails.open) void loadAnalysis(); });
     $('comparison-chart-kind').addEventListener('change', renderPerformanceChart);
-    $('weather-region').addEventListener('change', setWeatherFields);
+    $('weather-enabled').addEventListener('change', () => {
+      if (!$('weather-enabled').checked) $('method-epex').checked = false;
+      updateSourceSettings();
+    });
+    for (const id of ['weather-region', 'tariff-entity', 'method-timestral', 'method-epex', 'ned-data-enabled']) {
+      $(id).addEventListener('change', updateSourceSettings);
+    }
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
     $('settings-dialog').addEventListener('close', () => { $('ned-api-key').value = ''; });
-    $('ned-data-enabled').addEventListener('change', event => show('ned-data-settings', event.target.checked));
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard);
     $('epex-profile').addEventListener('change', () => {
       if ($('epex-profile').value !== 'custom') $('price-field').value = 'tax_included';
       updateEpexProfile();
     });
     $('price-config').addEventListener('toggle', () => { if ($('price-config').open && $('price-source').value === 'home_assistant') void loadTariffs(); });
-    $('price-source').addEventListener('change', () => { updatePriceSourceFields(); if ($('price-source').value === 'home_assistant') void loadTariffs(); }); $('supplier').addEventListener('change', supplierDefaults);
+    $('price-source').addEventListener('change', () => { updatePriceSourceFields(); updateSourceSettings(); if ($('price-source').value === 'home_assistant') void loadTariffs(); }); $('supplier').addEventListener('change', supplierDefaults);
+    $('price-choice').addEventListener('change', updatePriceSourceFields);
     $('dashboard-tab').addEventListener('click', () => activateView('dashboard')); $('analysis-tab').addEventListener('click', () => activateView('analysis')); $('data-tab').addEventListener('click', () => activateView('data')); $('analysis-refresh').addEventListener('click', loadAnalysis);
     for (const [index, view] of ['dashboard', 'analysis', 'data'].entries()) $(view + '-tab').addEventListener('keydown', event => {
       if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); const views = ['dashboard', 'analysis', 'data']; activateView(views[(index + (event.key === 'ArrowRight' ? 1 : 2)) % 3], true); }

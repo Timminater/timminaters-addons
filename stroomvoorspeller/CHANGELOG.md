@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.18
+
+- Eenvoudigere uitleg op het overzicht, in Analyse en bij Data & opslag.
+- Kies in Instellingen eerst de databronnen en daarna de voorspelling. EpexPredictor vereist weer. Timestral gebruikt de weersverwachting als je deze inschakelt.
+- Download alle bewaarde analysegegevens of kies een periode. De ZIP-download heeft geen limiet van 32 MiB meer.
+
 ## 0.2.17
 
 - Beheer NED-dataverzameling in **Instellingen → NED-gegevens verzamelen**. Na inschakelen verschijnen het sleutelveld, de aanvraaglink en de optionele A/B-test. Het sleutelveld is verhuisd uit de Home Assistant-add-onconfiguratie.

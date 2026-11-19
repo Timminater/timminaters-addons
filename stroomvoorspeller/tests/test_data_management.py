@@ -182,10 +182,12 @@ def test_export_filters_private_fields_and_links_truth_to_predictions(tmp_path):
         assert {r['evaluation_mode'] for r in runs} == {'live', 'historical'}
 
 
-def test_export_size_limit_removes_temporary_file_and_releases_lock(tmp_path, monkeypatch):
+def test_export_all_has_no_date_cutoff_and_releases_lock(tmp_path):
     app = fixture_app(tmp_path)
-    monkeypatch.setattr('app.data_management.MAX_EXPORT_BYTES', 1)
-    with pytest.raises(ValueError, match='32 MiB'): export_archive(app)
+    with export_archive(app, None) as output, zipfile.ZipFile(output) as archive:
+        assert archive.testzip() is None
+        manifest = json.loads(archive.read('manifest.json'))
+        assert manifest['forecast_from'] is None and manifest['prices_from'] is None
     acquired = []
     def check_lock():
         free = app._lock.acquire(blocking=False); acquired.append(free)

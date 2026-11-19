@@ -17,6 +17,19 @@ from app.weather import WeatherError, _hours_from_arrays, fetch_ha_weather
 UTC = timezone.utc
 
 
+def test_weather_source_controls_model_availability(tmp_path):
+    app = AppService(store=Store(tmp_path))
+    settings = {"price_source": "energy_charts_nl",
+                "forecast_methods": {"epex": True, "timestral": True}}
+    with pytest.raises(ValueError, match="Zet Weersverwachting aan"):
+        app.put_settings({**settings, "weather_enabled": False})
+    app.put_settings({**settings, "weather_enabled": True})
+    assert app.get_settings()["timestral_weather"] is True
+    app.put_settings({"weather_enabled": False, "forecast_methods": {"epex": False, "timestral": True}})
+    assert app.get_settings()["timestral_weather"] is False
+    assert app.get_settings()["forecast_methods"] == {"epex": False, "timestral": True}
+
+
 def dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
