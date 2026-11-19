@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import tempfile
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -23,7 +24,10 @@ SERIES = ((59, 2), (2, 1), (1, 1), (51, 1))
 
 
 def api_key(data_dir: Path) -> str:
-    key = os.environ.get("NED_API_KEY")
+    try:
+        key = (data_dir / "ned-api-key").read_text(encoding="ascii")
+    except FileNotFoundError:
+        key = os.environ.get("NED_API_KEY")
     if key is None:
         try:
             options = json.loads((data_dir / "options.json").read_text(encoding="utf-8"))
@@ -32,6 +36,32 @@ def api_key(data_dir: Path) -> str:
             return ""
     key = key.strip() if isinstance(key, str) else ""
     return key if key.isascii() and key.isprintable() else ""
+
+
+def validate_key(value):
+    key = value.strip() if isinstance(value, str) else ""
+    if not (0 < len(key) <= 1024 and key.isascii() and key.isprintable() and " " not in key):
+        raise ValueError("Vul een geldige NED API-sleutel in.")
+    return key
+
+
+def save_key(data_dir: Path, key: str):
+    key = validate_key(key)
+    with tempfile.NamedTemporaryFile(dir=data_dir, mode="w", encoding="ascii", delete=False) as out:
+        temp = Path(out.name)
+        try:
+            out.write(key)
+            out.close()
+            temp.replace(data_dir / "ned-api-key")
+        finally:
+            temp.unlink(missing_ok=True)
+
+
+def migrate_key(data_dir: Path):
+    if not (data_dir / "ned-api-key").exists():
+        key = api_key(data_dir)
+        if key:
+            save_key(data_dir, key)
 
 
 class _NoRedirect(HTTPRedirectHandler):

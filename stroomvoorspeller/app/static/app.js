@@ -256,7 +256,7 @@
       const data = await api('api/timestral-ab');
       let status = 'De A/B-test staat uit.';
       if (data.configured && !data.enabled) status = 'Schakel Timestral met weer in om de A/B-test te laten draaien.';
-      if (data.enabled && !data.key_configured) status = 'Vul de NED API-sleutel in bij de Home Assistant-appconfiguratie.';
+      if (data.enabled && !data.key_configured) status = 'Vul de NED API-sleutel in bij Instellingen.';
       if (data.enabled && data.key_configured) {
         status = data.last_issue
           ? `Laatste proefrun ${humanTime(data.last_issue, true)}.`
@@ -466,6 +466,10 @@
     $('weather-region').value = s.weather_region || 'nl';
     $('timestral-weather').checked = s.timestral_weather === true;
     $('timestral-ned-ab').checked = s.timestral_ned_ab === true;
+    $('ned-data-enabled').checked = s.ned_data_enabled === true;
+    show('ned-data-settings', $('ned-data-enabled').checked);
+    $('ned-api-key').value = '';
+    $('ned-api-key').placeholder = s.ned_key_configured ? 'Sleutel ingesteld · leeg laten om te behouden' : 'Plak je NED API-sleutel';
     $('timestral-calendar').checked = s.timestral_calendar !== false;
     $('timestral-model').value = s.timestral_model || '28M';
     updateTimestralModel();
@@ -500,7 +504,10 @@
     settings.epex_tariff_confirmed = $('epex-confirmed').checked;
     settings.weather_region = $('weather-region').value;
     settings.timestral_weather = $('timestral-weather').checked;
-    settings.timestral_ned_ab = $('timestral-ned-ab').checked;
+    settings.ned_data_enabled = $('ned-data-enabled').checked;
+    settings.timestral_ned_ab = settings.ned_data_enabled && $('timestral-ned-ab').checked;
+    const nedKey = $('ned-api-key').value.trim();
+    if (settings.ned_data_enabled && nedKey) settings.ned_api_key = nedKey;
     settings.timestral_calendar = $('timestral-calendar').checked;
     settings.timestral_model = $('timestral-model').value;
     settings.timestral_context_days = Number($('timestral-context').value);
@@ -723,6 +730,8 @@
     $('weather-region').addEventListener('change', setWeatherFields);
     $('timestral-model').addEventListener('change', () => { updateTimestralModel(); void loadTimestralStatus(); });
     $('timestral-download').addEventListener('click', downloadTimestral);
+    $('settings-dialog').addEventListener('close', () => { $('ned-api-key').value = ''; });
+    $('ned-data-enabled').addEventListener('change', event => show('ned-data-settings', event.target.checked));
     $('calculate-now').addEventListener('click', calculateNow); $('settings-open').addEventListener('click', openSettings); $('settings-close').addEventListener('click', () => $('settings-dialog').close()); $('settings-cancel').addEventListener('click', () => $('settings-dialog').close()); $('settings-form').addEventListener('submit', saveSettings); $('retry').addEventListener('click', loadAll); $('window-duration').addEventListener('change', loadDashboard);
     $('epex-profile').addEventListener('change', () => {
       if ($('epex-profile').value !== 'custom') $('price-field').value = 'tax_included';

@@ -186,6 +186,9 @@ class AppService:
         value.setdefault("weather_region", "nl")
         value.setdefault("timestral_weather", False)
         value.setdefault("timestral_ned_ab", False)
+        if "ned_data_enabled" not in value:
+            from . import ned
+            value["ned_data_enabled"] = bool(ned.api_key(self.store.data_dir))
         value.setdefault("weather_entities", {"solar": "", "wind": "", "temperature": ""})
         value.setdefault("latitude", None); value.setdefault("longitude", None)
         value.setdefault("calculation_interval_minutes", DEFAULT_INTERVAL_MINUTES)
@@ -218,17 +221,26 @@ class AppService:
         return value
 
     def put_settings(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        from . import ned
+        body = dict(body)
+        ned_key = ned.validate_key(body.pop("ned_api_key")) if "ned_api_key" in body else None
         allowed = {"tariff_entity", "price_source", "tariff_unit", "price_field", "price_choice", "supplier",
                    "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from",
                    "tariff_valid_to", "supplier_fee_confirmed", "weather_source", "weather_entities", "latitude", "longitude",
                    "calculation_interval_minutes", "mqtt_enabled", "forecast_methods", "active_method", "epex_training_days", "ml_threads",
                    "epex_tariff_profile", "epex_tariff_confirmed", "epex_multiplier", "epex_offset_eur_kwh",
                    "timestral_model", "timestral_calendar", "timestral_context_days", "history_days", "weather_region",
-                   "timestral_weather", "timestral_ned_ab"}
+                   "timestral_weather", "timestral_ned_ab", "ned_data_enabled"}
         if set(body) - allowed:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        if type(merged["ned_data_enabled"]) is not bool:
+            raise ValueError("NED-dataverzameling moet aan of uit staan")
+        if merged["ned_data_enabled"] and not (ned_key or ned.api_key(self.store.data_dir)):
+            raise ValueError("Vul een NED API-sleutel in om gegevens te verzamelen")
+        if not merged["ned_data_enabled"]:
+            merged["timestral_ned_ab"] = False
         from .timestral_models import model_spec
         model_spec(merged["timestral_model"])
         if type(merged["timestral_weather"]) is not bool: raise ValueError("Timestral-weer moet aan of uit staan")
@@ -347,12 +359,14 @@ class AppService:
                "calculation_interval_minutes": interval, "mqtt_enabled": merged["mqtt_enabled"]}
         for key in ("forecast_methods", "active_method", "epex_training_days", "ml_threads", "epex_tariff_profile", "epex_tariff_confirmed",
                     "epex_multiplier", "epex_offset_eur_kwh", "timestral_model", "timestral_calendar", "timestral_context_days",
-                    "history_days", "weather_region", "timestral_weather", "timestral_ned_ab"):
+                    "history_days", "weather_region", "timestral_weather", "timestral_ned_ab", "ned_data_enabled"):
             new[key] = merged[key]
         scope_keys = ("history_days", "tariff_entity", "price_source", "price_field", "tariff_unit", "price_choice", "supplier",
                       "energy_tax_eur_kwh", "vat_percent", "supplier_fee_eur_kwh_incl_vat", "tariff_valid_from", "tariff_valid_to")
         if any(new[key] != current.get(key) for key in scope_keys):
             new["history_cursor_utc"] = None
+        if ned_key and merged["ned_data_enabled"]:
+            ned.save_key(self.store.data_dir, ned_key)
         saved = self.store.set_settings(new)
         self._analysis_cache = None
         if current.get("mqtt_enabled") and not saved.get("mqtt_enabled"):
@@ -1002,6 +1016,8 @@ class AppService:
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive(): return
+        from . import ned
+        ned.migrate_key(self.store.data_dir)
         self._stop.clear()
         self._wake.clear()
         self._thread = threading.Thread(target=self._poll_loop, name="price-poller", daemon=True)
@@ -1165,7 +1181,9 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if path == "/api/status": return self._send(200, service.status())
                 if path == "/api/entities": return self._send(200, service.entity_list())
                 if path == "/api/settings":
+                    from . import ned
                     result = service.get_settings()
+                    result["ned_key_configured"] = bool(ned.api_key(service.store.data_dir))
                     if query.get("location", ["1"])[0] != "0":
                         result["location_suggestion"] = service._suggested_coordinates()
                     return self._send(200, result)
@@ -1206,7 +1224,9 @@ def make_handler(service: AppService, static_dir: str | None = None):
                 if size <= 0 or size > 64 * 1024: return self._send(413, {"error": "request body te groot of leeg"})
                 body = json.loads(self.rfile.read(size))
                 if not isinstance(body, dict): return self._send(400, {"error": "JSON-object verwacht"})
-                return self._send(200, service.put_settings(body))
+                from . import ned
+                result = service.put_settings(body)
+                return self._send(200, {**result, "ned_key_configured": bool(ned.api_key(service.store.data_dir))})
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 return self._send(400, {"error": str(exc)})
             except Exception as exc:

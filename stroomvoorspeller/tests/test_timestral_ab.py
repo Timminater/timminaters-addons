@@ -13,6 +13,28 @@ NOW = datetime(2026, 11, 19, 13, tzinfo=timezone.utc)
 STEP = timedelta(minutes=15)
 
 
+def test_modal_key_replaces_existing_configuration(tmp_path, monkeypatch):
+    monkeypatch.delenv("NED_API_KEY", raising=False)
+    (tmp_path / "options.json").write_text('{"ned_api_key":"existing"}')
+    assert ned.api_key(tmp_path) == "existing"
+    ned.migrate_key(tmp_path)
+    (tmp_path / "options.json").write_text("{}")
+    assert ned.api_key(tmp_path) == "existing"
+    app = AppService(store=Store(tmp_path), clock=lambda: NOW)
+    saved = app.put_settings({"price_source": "energy_charts_nl", "ned_data_enabled": True,
+                              "ned_api_key": " new-key "})
+    assert saved["ned_data_enabled"] and "new-key" not in str(saved)
+    assert ned.api_key(tmp_path) == "new-key"
+    app.put_settings({"ned_data_enabled": False})
+    app._wake.clear()
+    monkeypatch.setattr(ned, "fetch_snapshot", lambda *args: pytest.fail("NED-dataverzameling staat uit"))
+    timestral_ab.collect(app, archive_only=True)
+    assert ned.api_key(tmp_path) == "new-key"
+    with pytest.raises(ValueError):
+        ned.save_key(tmp_path, "bad\r\nkey")
+    assert ned.api_key(tmp_path) == "new-key"
+
+
 def test_ned_residual_load_reads_same_utc_hour_and_ignores_later_versions():
     calls = []
     capacity = {59: 16000000, 2: 2000000, 1: 3000000, 51: 4000000}

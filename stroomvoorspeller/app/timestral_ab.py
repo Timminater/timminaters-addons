@@ -23,7 +23,7 @@ def _age(now, status, field):
 
 
 def _enabled(settings):
-    return (settings["timestral_ned_ab"] and settings["timestral_weather"]
+    return (settings["ned_data_enabled"] and settings["timestral_ned_ab"] and settings["timestral_weather"]
             and settings["forecast_methods"]["timestral"])
 
 
@@ -85,7 +85,8 @@ def _run_candidate(service, settings, now, statuses):
 
 def collect(service, *, archive_only=False, candidate_only=False):
     settings = service.get_settings()
-    if (not archive_only and not _enabled(settings)) or service._stop.is_set() or service._wake.is_set():
+    if (not settings["ned_data_enabled"] or (not archive_only and not _enabled(settings))
+            or service._stop.is_set() or service._wake.is_set()):
         return
     key = ned.api_key(service.store.data_dir)
     if not key:

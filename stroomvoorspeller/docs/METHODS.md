@@ -296,7 +296,7 @@ zijn geen bewijs met oorspronkelijke datavintages.
 
 ### Nederlandse restvraag in de Timestral A/B-test
 
-De test staat standaard uit. Vul `ned_api_key` in bij de Home Assistant-appconfiguratie, of gebruik `NED_API_KEY` als omgevingsvariabele voor lokaal testen. Zet daarna **A/B-test met Nederlandse restvraag** aan in Stroomvoorspeller terwijl Timestral met Open-Meteo-weer ingeschakeld is. De sleutel gaat uitsluitend naar de [NED API](https://ned.nl/nl/handleiding-api).
+Schakel in **Instellingen** van Stroomvoorspeller **NED-gegevens verzamelen** in. Maak bij NED onder **Mijn account → API** een sleutel aan en plak die in het veld dat verschijnt. Voor gepaarde voorspellingen schakel je ook **A/B-test met Nederlandse restvraag** in, samen met Timestral en Open-Meteo-weer. [API-sleutel aanmaken bij NED](https://ned.nl/nl/api)
 
 De app berekent per UTC-uur het Nederlandse elektriciteitsverbruik minus zon, wind op land en wind op zee. De gemiddelde capaciteit in kW wordt naar MW omgerekend. Elke uurwaarde geldt voor de vier kwartieren van dat uur. De context gebruikt maximaal veertien dagen NED-historie. De toekomst gebruikt alleen verwachtingen waarvan de snapshot vóór de uitgifte is opgeslagen. Binnen de prognose moeten de verwachte waarden aaneengesloten beschikbaar zijn. Ten hoogste de laatste 24 uur mogen ontbreken en tellen dan buiten de vergelijking.
 

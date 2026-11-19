@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.17
+
+- Beheer NED-dataverzameling in **Instellingen → NED-gegevens verzamelen**. Na inschakelen verschijnen het sleutelveld, de aanvraaglink en de optionele A/B-test. Het sleutelveld is verhuisd uit de Home Assistant-add-onconfiguratie.
+- Als Home Assistant de oude sleutel nog aan de add-on doorgeeft, neemt Stroomvoorspeller deze over. Anders vul je de sleutel opnieuw in bij Instellingen.
+
 ## 0.2.16
 
 - Met een eigen `ned_api_key` archiveert de app elke drie uur de beschikbare Nederlandse verbruiks-, zon- en windgegevens en de berekende restvraag. Vul de sleutel in bij de Home Assistant-appconfiguratie en herstart de app.
