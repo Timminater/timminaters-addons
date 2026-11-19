@@ -16,13 +16,15 @@ Tijdens een berekening, historische test of modeldownload wordt opruimen geweige
 
 ## Bestaande database compact kopiëren
 
+Bij het opstarten controleert de add-on of de database al het compacte formaat gebruikt. Bij een oudere database kan het opstarten enkele minuten duren. De add-on controleert de compacte kopie en vervangt daarna het oorspronkelijke databasebestand in één stap. Na succes blijft alleen het compacte actieve bestand over. Bij onvoldoende vrije schijfruimte of een mislukte controle start de add-on met het oorspronkelijke bestand en verschijnt de reden in het logboek.
+
 Voer vanuit de map `stroomvoorspeller` het volgende uit op een consistente databasekopie:
 
 ```shell
 python -m app.compact_database /pad/naar/stroomvoorspeller.sqlite3 /pad/naar/nieuwe-map
 ```
 
-SQLite neemt gecommitteerde WAL-wijzigingen mee als het bijbehorende WAL-bestand naast de bron staat. De opdracht zet bewaarde modelinvoer om naar gedeelde dagblokken, leest de historie van elke omgezette run ter controle terug en schrijft na de SQLite-integriteitscontrole een zelfstandig bestand in de nieuwe map. Reken voor de bewerking op ruimte voor een werkkopie én het compacte resultaat. Houd de oorspronkelijke database als herstelkopie. Gebruik het resultaat met een versie die de gedeelde dagblokken kan lezen.
+SQLite neemt gecommitteerde WAL-wijzigingen mee als het bijbehorende WAL-bestand naast de bron staat. De opdracht leest uit één momentopname en bouwt rechtstreeks een compact bestand in de nieuwe map. Ze controleert de omgezette invoer, de voorspelpunten en de SQLite-integriteit. Reken op vrije ruimte voor het compacte resultaat en tijdelijke SQLite-bestanden. Stop de add-on vóór een omzetting die je als nieuwe productiedatabase wilt gebruiken, zodat er na de momentopname geen nieuwe runs achterblijven. Bewaar het oorspronkelijke bestand als herstelkopie.
 
 ## Analyse-export
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.21
+
+- Zet een oude database bij de eerste start eenmalig om naar het compacte formaat. Na controle vervangt de app het oorspronkelijke bestand, zodat de bespaarde schijfruimte vrijkomt.
+- Tijdens de omzetting toont de app een opstartmelding. Bij onvoldoende ruimte of een mislukte controle start de app met de bestaande database en geeft het logboek de reden.
+
 ## 0.2.20
 
 - NED-aanvragen gebruiken kalenderdatums, zoals NED vereist voor reguliere API-sleutels. Stroomvoorspeller filtert de opgehaalde gegevens vervolgens lokaal op de exacte benodigde uren.

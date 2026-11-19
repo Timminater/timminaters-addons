@@ -4,6 +4,7 @@ from http.server import ThreadingHTTPServer
 import base64
 import io
 import json
+import os
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -13,7 +14,7 @@ import zlib
 import pytest
 
 from app.backend import AppService, make_handler
-from app.compact_database import compact_copy
+from app.compact_database import compact_copy, compact_on_start
 from app.data_management import cleanup, export_archive, storage_status
 from app.local_runtime import BUSY
 from app.storage import Store, price_archive_key, utc_iso
@@ -124,6 +125,50 @@ def test_compact_copy_preserves_history_points_and_source_wal(tmp_path):
         assert Store(target.parent).latest_forecast() == store.latest_forecast()
         with pytest.raises(FileExistsError):
             compact_copy(store.path, target.parent)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_DIRECTORY"), reason="Opstartmigratie draait in de Linux-add-on")
+def test_startup_compaction_retries_on_failure_and_replaces_only_after_verification(tmp_path, monkeypatch):
+    import app.compact_database as migration
+
+    store = Store(tmp_path)
+    history = [{"start_utc": utc_iso(NOW), "price": .12}]
+    packed = base64.b64encode(zlib.compress(json.dumps(history).encode())).decode()
+    store.save_forecast("legacy", NOW, "v", "q", [], {"history_zlib_b64": packed}, [
+        {"start_utc": NOW, "end_utc": NOW + timedelta(minutes=15), "price": .23}
+    ])
+    original = store.latest_forecast()
+    original_inode = store.path.stat().st_ino
+    with monkeypatch.context() as patch:
+        def fail_copy(source, target):
+            target.write_bytes(b"partial")
+            raise ValueError("Kopie niet intact")
+
+        patch.setattr(migration, "_copy_database", fail_copy)
+        with pytest.raises(ValueError, match="Kopie niet intact"):
+            compact_on_start(store.path)
+    assert store.path.stat().st_ino == original_inode
+    assert store.latest_forecast() == original
+
+    make_copy = migration._copy_database
+    with monkeypatch.context() as patch:
+        def copy_while_source_changes(source, target):
+            converted = make_copy(source, target)
+            store.set_settings({"changed_during_copy": True})
+            return converted
+
+        patch.setattr(migration, "_copy_database", copy_while_source_changes)
+        with pytest.raises(ValueError, match="tijdens het kopiëren gewijzigd"):
+            compact_on_start(store.path)
+    assert store.path.stat().st_ino == original_inode
+    assert store.get_settings()["changed_during_copy"] is True
+
+    assert compact_on_start(store.path)[2] == 1
+    assert store.path.stat().st_ino != original_inode
+    assert Store(tmp_path).latest_forecast() == original
+    assert compact_on_start(store.path) is None
+    assert list(tmp_path.glob("*.sqlite3")) == [store.path]
+    assert not (tmp_path / ".stroomvoorspeller-compaction").exists()
 
 
 def test_cleanup_models_preserves_selected_model_and_does_not_follow_symlinks(tmp_path):

@@ -177,7 +177,6 @@ class Store:
               source TEXT PRIMARY KEY, last_success TEXT, last_attempt TEXT,
               error TEXT, detail_json TEXT NOT NULL DEFAULT '{}'
             );
-            PRAGMA user_version=1;
             """)
 
     def read_quality(self, scope):

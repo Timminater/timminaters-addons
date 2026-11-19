@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import threading
 import time
 import uuid
@@ -1310,15 +1311,56 @@ def make_handler(service: AppService, static_dir: str | None = None):
 
 
 def serve(host: str = "0.0.0.0", port: int = 8099) -> None:
+    from contextlib import closing
+    from .compact_database import compact_on_start
+
+    class Starting(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/api/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true,"service":"stroomvoorspeller","starting":true}')
+                return
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Retry-After", "10")
+            self.send_header("Refresh", "10")
+            self.end_headers()
+            self.wfile.write("Stroomvoorspeller start op en controleert de database. Dit kan enkele minuten duren.".encode())
+
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-    app = AppService(); app.start()
-    server = ThreadingHTTPServer((host, port), make_handler(app))
+    server = ThreadingHTTPServer((host, port), Starting)
     server.daemon_threads = True
-    LOG.info("Listening on %s:%d (Ingress only; no host port binding)", host, port)
-    try: server.serve_forever(poll_interval=0.5)
-    except KeyboardInterrupt: pass
+    listener = threading.Thread(target=server.serve_forever, name="http-listener", daemon=True)
+    listener.start()
+    app = None
+    try:
+        store = Store()
+        LOG.info("Controle of de database moet worden omgezet")
+        try:
+            converted = compact_on_start(store.path) if os.name == "posix" else None
+            if converted:
+                before, after, runs = converted
+                LOG.info("Database omgezet: %.2f GiB → %.2f GiB, %d oude runs", before / 2**30, after / 2**30, runs)
+        except (OSError, ValueError, sqlite3.Error):
+            LOG.exception("Automatische databaseomzetting niet uitgevoerd")
+        with closing(store._connect()) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+        app = AppService(store=store)
+        app.start()
+        server.RequestHandlerClass = make_handler(app)
+        LOG.info("Listening on %s:%d (Ingress only; no host port binding)", host, port)
+        listener.join()
+    except KeyboardInterrupt:
+        pass
     finally:
-        server.shutdown(); server.server_close(); app.stop()
+        server.shutdown()
+        server.server_close()
+        if app is not None:
+            app.stop()
 
 
 if __name__ == "__main__":
