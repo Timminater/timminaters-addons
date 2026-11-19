@@ -245,10 +245,11 @@ class AppService:
             raise ValueError("Onbekende instellingenvelden")
         current = self.get_settings()
         merged = {**current, **body}
+        shared_weather = "weather_enabled" in body or "weather_enabled" in self.store.get_settings()
         if "weather_enabled" in body:
             merged["timestral_weather"] = merged["weather_enabled"]
-        elif "timestral_weather" in body and "weather_enabled" not in self.store.get_settings():
-            merged["weather_enabled"] = merged["timestral_weather"] or current["forecast_methods"]["epex"]
+        elif shared_weather:
+            merged["timestral_weather"] = merged["weather_enabled"]
         for key in ("weather_enabled", "energy_research_enabled"):
             if type(merged[key]) is not bool:
                 raise ValueError("Zet de databron aan of uit")
@@ -272,6 +273,9 @@ class AppService:
                 or any(type(v) is not bool for v in methods.values())):
             raise ValueError("Geef voor elke rekenmethode aan of deze ingeschakeld is")
         merged["forecast_methods"] = methods = {m: methods[m] for m in ("epex", "timestral")}
+        if not shared_weather:
+            # Older settings had a Timestral-only weather switch. Epex always used weather.
+            merged["weather_enabled"] = merged["timestral_weather"] or methods["epex"]
         if methods["epex"] and not merged["weather_enabled"]:
             raise ValueError("Zet Weersverwachting aan om EpexPredictor te gebruiken.")
         if not isinstance(merged["active_method"], str) or merged["active_method"] not in methods:
