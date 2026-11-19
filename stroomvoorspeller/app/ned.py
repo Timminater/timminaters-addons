@@ -16,6 +16,7 @@ from .ha_client import HAError, parse_dt
 from .storage import utc_iso
 
 SOURCE = "ned_residual_load"
+REQUEST_REVISION = 2
 VERSION_SUFFIX = ":ned-residual-load-1"
 HOUR = timedelta(hours=1)
 QUARTER = timedelta(minutes=15)
@@ -92,6 +93,8 @@ def _request(params, key, timeout):
                     raise ValueError("De beveiliging van NED blokkeerde de verbinding vóór sleutelcontrole") from None
                 if code == 401 or b"Invalid or expired API key" in body:
                     raise ValueError("NED meldt dat de API-sleutel ongeldig of verlopen is") from None
+                if b"The requested parameters do not match your subscription level" in body:
+                    raise ValueError("NED staat deze aanvraagparameters niet toe voor deze API-sleutel") from None
         raise ValueError(f"NED gaf HTTP {code}") from None
     except (URLError, OSError, UnicodeError, json.JSONDecodeError):
         raise ValueError("NED-aanvraag mislukt of gaf ongeldige JSON") from None
@@ -99,6 +102,13 @@ def _request(params, key, timeout):
 
 def _series(key, data_type, activity, classification, start, end, cutoff, deadline, request):
     rows = {}
+    # NED's standard access permits calendar-date filters. Expand to full
+    # UTC days here, then keep only the exact requested hours locally.
+    start_date = parse_dt(start).date()
+    utc_end = parse_dt(end)
+    end_date = utc_end.date()
+    if utc_end != utc_end.replace(hour=0, minute=0, second=0, microsecond=0):
+        end_date += timedelta(days=1)
     for page in range(1, 9):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -106,7 +116,8 @@ def _series(key, data_type, activity, classification, start, end, cutoff, deadli
         data = request({
             "point": 0, "type": data_type, "activity": activity, "classification": classification,
             "granularity": 5, "granularitytimezone": 0, "itemsPerPage": 200, "page": page,
-            "validfrom[after]": utc_iso(start), "validfrom[strictly_before]": utc_iso(end),
+            "validfrom[after]": start_date.isoformat(),
+            "validfrom[strictly_before]": end_date.isoformat(),
         }, key, min(5, remaining))
         members = data.get("hydra:member", data.get("member")) if isinstance(data, dict) else None
         if not isinstance(members, list):

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.20
+
+- NED-aanvragen gebruiken kalenderdatums, zoals NED vereist voor reguliere API-sleutels. Stroomvoorspeller filtert de opgehaalde gegevens vervolgens lokaal op de exacte benodigde uren.
+- Bij geweigerde aanvraagparameters toont Analyse nu de oorzaak apart van sleutel- en verbindingsfouten.
+
 ## 0.2.19
 
 - Stroomvoorspeller identificeert zich bij NED met een eigen clientnaam. De standaard Python-clientnaam werd geblokkeerd voordat NED de API-sleutel kon controleren.

@@ -98,16 +98,19 @@ def collect(service, *, archive_only=False, candidate_only=False):
     if candidate_only:
         return
     status = statuses.get(ned.SOURCE, {})
-    if (_age(now, status, "last_success") < NED_REFRESH or _age(now, status, "last_attempt") < FAILURE_RETRY
+    recent_attempt = (status.get("detail", {}).get("request_revision") == ned.REQUEST_REVISION
+                      and _age(now, status, "last_attempt") < FAILURE_RETRY)
+    if (_age(now, status, "last_success") < NED_REFRESH or recent_attempt
             or service._stop.is_set() or service._wake.is_set()):
         return
     try:
         snapshot = ned.fetch_snapshot(key, service.clock)
         service.store.save_snapshot(parse_dt(snapshot["observed_at"]), ned.SOURCE, snapshot)
         service.store.set_source_status(ned.SOURCE, success=True, attempted_at=now,
-                                        detail={"hours": len(snapshot["hourly"])})
+                                        detail={"hours": len(snapshot["hourly"]), "request_revision": ned.REQUEST_REVISION})
     except ValueError as exc:
-        service.store.set_source_status(ned.SOURCE, success=False, attempted_at=now, error=str(exc))
+        service.store.set_source_status(ned.SOURCE, success=False, attempted_at=now, error=str(exc),
+                                        detail={"request_revision": ned.REQUEST_REVISION})
 
 
 def report(service):

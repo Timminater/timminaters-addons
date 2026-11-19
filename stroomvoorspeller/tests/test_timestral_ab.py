@@ -18,6 +18,7 @@ STEP = timedelta(minutes=15)
 @pytest.mark.parametrize(("response", "message"), [
     (b"error code: 1010", "blokkeerde de verbinding"),
     (b'{"message":"Invalid or expired API key"}', "API-sleutel ongeldig"),
+    (b'{"message":"The requested parameters do not match your subscription level."}', "aanvraagparameters niet toe"),
     (b"Forbidden", "HTTP 403"),
 ])
 def test_ned_identifies_client_and_explains_access_errors(monkeypatch, response, message):
@@ -54,6 +55,22 @@ def test_modal_key_replaces_existing_configuration(tmp_path, monkeypatch):
     assert ned.api_key(tmp_path) == "new-key"
 
 
+def test_changed_ned_request_retries_old_failure_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("NED_API_KEY", "test-key")
+    app = AppService(store=Store(tmp_path), clock=lambda: NOW)
+    app.store.set_source_status(ned.SOURCE, success=False, attempted_at=NOW, error="HTTP 403")
+    attempts = []
+
+    def fetch(key, clock):
+        attempts.append(clock())
+        raise ValueError("NED temporarily down")
+
+    monkeypatch.setattr(ned, "fetch_snapshot", fetch)
+    timestral_ab.collect(app, archive_only=True)
+    timestral_ab.collect(app, archive_only=True)
+    assert attempts == [NOW]
+
+
 def test_ned_residual_load_reads_same_utc_hour_and_ignores_later_versions():
     calls = []
     capacity = {59: 16000000, 2: 2000000, 1: 3000000, 51: 4000000}
@@ -62,11 +79,17 @@ def test_ned_residual_load_reads_same_utc_hour_and_ignores_later_versions():
         calls.append(params)
         assert key == "test-key" and 0 < timeout <= 5
         assert (params["granularity"], params["granularitytimezone"], params["point"]) == (5, 0, 0)
+        period = (params["validfrom[after]"], params["validfrom[strictly_before]"])
+        assert period == (("2026-11-05", "2026-11-20") if params["classification"] == 2
+                          else ("2026-11-19", "2026-11-28"))
         stamp = NOW - ned.HOUR if params["classification"] == 2 else NOW
         row = {"validfrom": utc_iso(stamp), "validto": utc_iso(stamp + ned.HOUR),
                "lastupdate": utc_iso(NOW - STEP), "capacity": capacity[params["type"]]}
         if params["page"] == 1:
-            return {"hydra:member": [row], "hydra:view": {"hydra:next": "?page=2"}}
+            outside = NOW if params["classification"] == 2 else NOW + timedelta(days=8)
+            return {"hydra:member": [row, {**row, "validfrom": utc_iso(outside),
+                    "validto": utc_iso(outside + ned.HOUR), "capacity": 1}],
+                    "hydra:view": {"hydra:next": "?page=2"}}
         # A mid-download update may never leak into the saved vintage.
         return {"hydra:member": [{**row, "lastupdate": utc_iso(NOW + STEP), "capacity": 1},
                                  {**row, "lastupdate": "invalid"}]}
@@ -75,6 +98,7 @@ def test_ned_residual_load_reads_same_utc_hour_and_ignores_later_versions():
     assert len(calls) == 16
     assert {(c["type"], c["activity"]) for c in calls} == {(59, 2), (2, 1), (1, 1), (51, 1)}
     assert data["hourly"][utc_iso(NOW)][0] == 7000
+    assert utc_iso(NOW + timedelta(days=8)) not in data["hourly"]
     assert data["forecast_from"] == utc_iso(NOW)
     assert "test-key" not in str(data)
 
